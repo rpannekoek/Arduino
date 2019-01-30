@@ -17,19 +17,18 @@ time_t WiFiNTP::getServerTime()
 {
   Tracer tracer("WiFiNTP::getServerTime");
 
-  Serial.printf("Resolving NTP server name '%s' ...\n", _timeServerPool);
-  if (!WiFi.hostByName(_timeServerPool, _timeServerIP, 5000))
+  TRACE("Resolving NTP server name '%s' ...\n", _timeServerPool);
+  if (!WiFi.hostByName(_timeServerPool, _timeServerIP))
   {
-    Serial.println("Unable to resolve DNS name.");
+    TRACE("Unable to resolve DNS name.\n");
     return 0;
   } 
-  Serial.println(_timeServerIP);
 
   _udp.begin(LOCAL_PORT);
   
   sendPacket();
 
-  Serial.print("Awaiting NTP server response...");
+  TRACE("Awaiting NTP server response...");
   int packetSize = 0;
   for (int i = 0; i < 50; i++)
   {
@@ -42,10 +41,10 @@ time_t WiFiNTP::getServerTime()
 
   if (packetSize == 0)
   {
-    Serial.println("\nTimeout waiting for NTP Server response.");
+    TRACE("\nTimeout waiting for NTP Server response.\n");
     return 0;
   }
-  Serial.printf("\nPacket received. Size: %d bytes.\n", packetSize);
+  TRACE("\nPacket received. Size: %d bytes.\n", packetSize);
 
   unsigned long secondsSince1900 = readPacket();
 
@@ -58,12 +57,15 @@ time_t WiFiNTP::getServerTime()
 
 time_t WiFiNTP::getCurrentTime()
 {
-    unsigned long currentTime = millis() / 1000;
+    long currentTime = millis() / 1000;
 
     if (currentTime < _lastServerSync)
     {
       // Internal clock rollover (occurs approx. each 50 days)
-      Serial.println("Internal clock rollover."); // TODO
+      TRACE("Internal clock rollover.\n");
+      const long MAX_TIME = 4294967L;
+      _lastServerSync -= MAX_TIME;
+      _lastServerTry -= MAX_TIME;
     }
 
     if ((currentTime >= (_lastServerSync + _serverSyncInterval)) || (_lastServerSync == 0))
@@ -74,7 +76,7 @@ time_t WiFiNTP::getCurrentTime()
           time_t serverTime = getServerTime();
           if (serverTime != 0)
           {
-              Serial.printf("Time synchronized with server: %u\n", serverTime);
+              TRACE("Time synchronized with server: %u\n", serverTime);
               _lastServerTime = serverTime;
               _lastServerSync = currentTime;
           }

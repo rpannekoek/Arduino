@@ -4,6 +4,12 @@
 #include <Arduino.h>
 #include <WString.h>
 
+#ifdef TRACE_TO_SERIAL
+  #define TRACE(...) Serial.printf(__VA_ARGS__)
+#else
+  #define TRACE(...)
+#endif
+
 class Tracer
 {
   public:
@@ -12,9 +18,9 @@ class Tracer
     {
       _name = name;
       if (arg == NULL)
-        Serial.printf("%s() entry\n", _name);
+        TRACE("%s() entry\n", _name);
       else
-        Serial.printf("%s(%s) entry\n", _name, arg);
+        TRACE("%s(%s) entry\n", _name, arg);
       _startMicros = micros();
     }
 
@@ -22,7 +28,7 @@ class Tracer
     ~Tracer()
     {
       float duration = float(micros() - _startMicros) / 1000;
-      Serial.printf("%s exit. Duration: %0.1f ms.\n", _name, duration);
+      TRACE("%s exit. Duration: %0.1f ms.\n", _name, duration);
     }
 
   private:

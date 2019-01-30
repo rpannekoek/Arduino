@@ -2,23 +2,19 @@
     "configurations": [
         {
             "name": "Win32",
-            "browse": {
-                "path": [
-                    "${workspaceFolder}"
-                ],
-                "limitSymbolsToIncludedHeaders": true
-            },
             "includePath": [
                 "${workspaceFolder}/**",
-                "C:/Program Files (x86)/Arduino/**"
+                "C:/Program Files (x86)/Arduino/hardware/esp8266com/esp8266/libraries/**",
+                "C:/Program Files (x86)/Arduino/hardware/esp8266com/esp8266/cores/esp8266/**",
+                "C:/Program Files (x86)/Arduino/hardware/esp8266com/esp8266/tools/sdk/include/**",
+                "C:/Program Files (x86)/Arduino/hardware/esp8266com/esp8266/tools/sdk/libc/xtensa-lx106-elf/include",
+                "C:/Program Files (x86)/Arduino/hardware/esp8266com/esp8266/tools/xtensa-lx106-elf/lib/gcc/xtensa-lx106-elf/4.8.2/include"
             ],
             "defines": [
                 "_DEBUG",
                 "UNICODE",
                 "_UNICODE"
             ],
-            "cStandard": "c11",
-            "cppStandard": "c++17",
             "intelliSenseMode": "msvc-x64"
         }
     ],

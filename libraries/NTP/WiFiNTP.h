@@ -19,9 +19,9 @@ class WiFiNTP
     const char* _timeServerPool;
     IPAddress _timeServerIP;
     uint8_t _packetBuffer[NTP_PACKET_SIZE];
-    unsigned long  _serverSyncInterval;
-    unsigned long _lastServerSync;
-    unsigned long _lastServerTry;
+    long  _serverSyncInterval;
+    long _lastServerSync;
+    long _lastServerTry;
     time_t _lastServerTime;
 
     void sendPacket();
