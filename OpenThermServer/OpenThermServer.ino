@@ -55,8 +55,7 @@ ESP8266WebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer("0.europe.pool.ntp.org", 24 * 3600); // Synchronize daily
 StringBuilder HtmlResponse(16384); // 16KB HTML response buffer
 bool isInitialized = false;
-String eventLog[MAX_EVENT_LOG_SIZE];
-int eventLogEnd = 0;
+Log eventLog(MAX_EVENT_LOG_SIZE);
 Log openThermLog(OT_LOG_LENGTH);
 
 uint16_t lastThermostatStatus;
@@ -86,23 +85,17 @@ int formatTime(char* output, size_t output_size, const char* format, time_t time
 }
 
 
-void logEvent(String msg)
+void logEvent(const char* msg)
 {
-    Tracer tracer("logEvent", msg.c_str());
-      
-    char timestamp[32];
-    formatTime(timestamp, sizeof(timestamp), "%F %H:%M:%S : ", TimeServer.getCurrentTime());
+    Tracer tracer("logEvent", msg);
 
-    String event = timestamp;
-    event += msg;
-    eventLog[eventLogEnd++] = event;
+    size_t timestamp_size = strlen("2019-01-30 12:23:34  : ");
 
-    if (eventLogEnd == MAX_EVENT_LOG_SIZE)
-    {
-        TRACE("Event log is full\n");
-        for (int i = 1; i < eventLogEnd; i++) eventLog[i - 1] = eventLog[i];
-        eventLogEnd--;
-    }
+    char* event = new char[timestamp_size + strlen(msg) + 1];
+    formatTime(event, timestamp_size, "%F %H:%M:%S : ", TimeServer.getCurrentTime());
+    strcat(event, msg);
+
+    eventLog.add(event);
 }
 
 
@@ -209,7 +202,7 @@ void setup()
     // Turn built-in LED off
     digitalWrite(LED_BUILTIN, 1);
 
-    logEvent(F("Initialized after boot."));
+    logEvent("Initialized after boot.");
     isInitialized = true;
 }
 
@@ -294,8 +287,8 @@ void handleSerialData()
             break;
 
         case OpenThermGatewayDirection::Error:
-            String event = "Error from OpenTherm Gateway: ";
-            event += otgwMessage.message;
+            char event[64];
+            snprintf(event, sizeof(event), "Error from OpenTherm Gateway: %s", otgwMessage.message.c_str());
             logEvent(event);
     }
 }
@@ -457,15 +450,15 @@ void handleHttpRootRequest()
     HtmlResponse.println(F("<h3>Thermostat</h3>"));
     HtmlResponse.println(F("<table>"));
     HtmlResponse.printf(F("<tr><td>Status</td><td>0x%04X</td></tr>\r\n"), lastThermostatStatus);
-    HtmlResponse.printf(F("<tr><td>TSet</td><td>%d</td></tr>\r\n"), getDecimal(lastThermostatTSet));
-    HtmlResponse.printf(F("<tr><td>Max Modulation %</td><td>%d</td></tr>\r\n"), getDecimal(lastThermostatMaxRelModulation));
+    HtmlResponse.printf(F("<tr><td>TSet</td><td>%0.1f</td></tr>\r\n"), getDecimal(lastThermostatTSet));
+    HtmlResponse.printf(F("<tr><td>Max Modulation %</td><td>%0.1f</td></tr>\r\n"), getDecimal(lastThermostatMaxRelModulation));
     HtmlResponse.println(F("</table>"));
 
     HtmlResponse.println(F("<h3>Boiler</h3>"));
     HtmlResponse.println(F("<table>"));
     HtmlResponse.printf(F("<tr><td>Status</td><td>0x%04X</td></tr>\r\n"), lastBoilerStatus);
-    HtmlResponse.printf(F("<tr><td>TSet</td><td>%d</td></tr>\r\n"), getDecimal(lastBoilerTSet));
-    HtmlResponse.printf(F("<tr><td>TWater</td><td>%d</td></tr>\r\n"), getDecimal(lastBoilerTWater));
+    HtmlResponse.printf(F("<tr><td>TSet</td><td>%0.1f</td></tr>\r\n"), getDecimal(lastBoilerTSet));
+    HtmlResponse.printf(F("<tr><td>TWater</td><td>%0.1f</td></tr>\r\n"), getDecimal(lastBoilerTWater));
     HtmlResponse.println(F("</table>"));
 
     char timeString[8];
@@ -483,7 +476,7 @@ void handleHttpRootRequest()
     HtmlResponse.printf(F("<tr><td>currentBoilerLevelt time</td><td>%s</td></tr>\r\n"), timeString);
     HtmlResponse.println(F("</table>"));
 
-    HtmlResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), eventLogEnd);
+    HtmlResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), eventLog.count());
     HtmlResponse.printf(F("<p class=\"log\"><a href=\"/log\">%d OpenTherm log entries.</a></p>\r\n"), openThermLog.count());
 
     writeHtmlFooter();
@@ -504,7 +497,7 @@ void handleHttpOpenThermLogRequest()
     {
         uint16_t thermostatRequest = thermostatRequests[i];
         if (thermostatRequest != DATA_VALUE_NONE)
-            HtmlResponse.printf(F("<tr><td>%d</td><td>0x%04X</td><td>%d</td></tr>\r\n"), i, thermostatRequest, getDecimal(thermostatRequest));
+            HtmlResponse.printf(F("<tr><td>%d</td><td>0x%04X</td><td>%0.2f</td></tr>\r\n"), i, thermostatRequest, getDecimal(thermostatRequest));
     }
     HtmlResponse.println(F("</table>"));
 
@@ -514,7 +507,7 @@ void handleHttpOpenThermLogRequest()
     {
       uint16_t boilerResponse = boilerResponses[i];
       if (boilerResponse != DATA_VALUE_NONE)
-          HtmlResponse.printf(F("<tr><td>%d</td><td>0x%04X</td><td>%d</td></tr>\r\n"), i, boilerResponse, getDecimal(boilerResponse));
+          HtmlResponse.printf(F("<tr><td>%d</td><td>0x%04X</td><td>%0.2f</td></tr>\r\n"), i, boilerResponse, getDecimal(boilerResponse));
     }
     HtmlResponse.println(F("</table>"));
 
@@ -527,7 +520,7 @@ void handleHttpOpenThermLogRequest()
     {
         formatTime(timeString, sizeof(timeString), "%F %H:%M", otLogEntryPtr->time);
         HtmlResponse.printf(
-            F("<tr><td>%s</td><td>%d</td><td>%d</td><td>%d</td<td>%d</td></tr>\r\n"), 
+            F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td<td>%0.1f</td></tr>\r\n"), 
             timeString, 
             getDecimal(otLogEntryPtr->thermostatTSet), 
             getDecimal(otLogEntryPtr->thermostatMaxRelModulation), 
@@ -538,8 +531,6 @@ void handleHttpOpenThermLogRequest()
         otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getNextEntry());
     }
     HtmlResponse.println(F("</table>"));
-
-    HtmlResponse.println(F("<div><a href=\"/events/clear\">Clear event log</a></div>"));
 
     writeHtmlFooter();
 
@@ -553,8 +544,12 @@ void handleHttpEventLogRequest()
 
     writeHtmlHeader("Event log", false, true, true);
 
-    for (int i = 0; i < eventLogEnd; i ++)
-        HtmlResponse.printf(F("<div>%s</div>\r\n"), eventLog[i].c_str());
+    char* event = static_cast<char*>(eventLog.getFirstEntry());
+    while (event != NULL)
+    {
+        HtmlResponse.printf(F("<div>%s</div>\r\n"), event);
+        event = static_cast<char*>(eventLog.getNextEntry());
+    }
 
     HtmlResponse.println(F("<div><a href=\"/events/clear\">Clear event log</a></div>"));
 
@@ -567,8 +562,10 @@ void handleHttpEventLogRequest()
 void handleHttpEventLogClearRequest()
 {
     Tracer tracer("handleHttpEventLogClearRequest");
-    eventLogEnd = 0;
+
+    eventLog.clear();
     logEvent("Event log cleared.");
+
     handleHttpEventLogRequest();
 }
 
@@ -609,8 +606,8 @@ void handleHttpConfigFormPost()
     strcpy(PersistentData.HostName, WebServer.arg("hostName").c_str()); 
     String tzOffsetString = WebServer.arg("tzOffset");
 
-    Serial.printf("hostName: %s\n", PersistentData.HostName);
-    Serial.printf("tzOffset: %s\n", tzOffsetString.c_str());
+    TRACE("hostName: %s\n", PersistentData.HostName);
+    TRACE("tzOffset: %s\n", tzOffsetString.c_str());
     
     sscanf(tzOffsetString.c_str(), "%d", &PersistentData.TimeZoneOffset);
 
