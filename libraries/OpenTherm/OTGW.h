@@ -60,10 +60,13 @@ typedef struct
 class OpenThermGateway
 {
     public:
-        OpenThermGateway(Stream& serial) : _serial(serial) {}
+        uint32_t errors[5];
 
-    OpenThermGatewayMessage readMessage();
-    bool sendCommand(const char* cmd, const char* value);
+        OpenThermGateway(Stream& serial);
+
+        void reset();
+        OpenThermGatewayMessage readMessage();
+        bool sendCommand(const char* cmd, const char* value);
 
     protected:
         Stream& _serial;

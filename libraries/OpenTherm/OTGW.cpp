@@ -1,8 +1,27 @@
 #include <OTGW.h>
 #include <Tracer.h>
+#include <Arduino.h>
 
-#define OTGW_MESSAGE_SIZE 9
+#define OTGW_MESSAGE_SIZE 11
 #define MAX_RETRIES 5
+#define OTGW_RESET_PIN 14
+
+OpenThermGateway::OpenThermGateway(Stream& serial)
+    : _serial(serial)
+{
+    memset(errors, 0, sizeof(errors));
+}
+
+
+void OpenThermGateway::reset()
+{
+    Tracer tracer("OpenThermGateway::reset");
+
+    digitalWrite(OTGW_RESET_PIN, LOW);
+    delay(1);
+    digitalWrite(OTGW_RESET_PIN, HIGH);
+}
+
 
 OpenThermGatewayMessage OpenThermGateway::readMessage()
 {
@@ -11,18 +30,24 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
     OpenThermGatewayMessage result;
 
     char otgwMessage[OTGW_MESSAGE_SIZE + 1];
-    otgwMessage[OTGW_MESSAGE_SIZE] = 0; 
-    if (!_serial.readBytes(otgwMessage, OTGW_MESSAGE_SIZE)) 
+    size_t bytesRead = _serial.readBytesUntil('\n',  otgwMessage, OTGW_MESSAGE_SIZE);
+    if (bytesRead == 0) 
     {
         result.message = "Timeout";
         result.direction = OpenThermGatewayDirection::Error;
         return result;
     }
+    otgwMessage[bytesRead] = 0;
     result.message = otgwMessage;
 
     // Check for gateway errors
-    if (strncmp(otgwMessage, "Error", 5) == 0)
+    unsigned int errorCode;
+    if (sscanf(otgwMessage + 1, "Error %02X", &errorCode) == 1)
     {
+        if ((errorCode > 0) && (errorCode < 5))
+            errors[errorCode]++;
+        else
+            errors[0]++;
         result.direction = OpenThermGatewayDirection::Error;
         return result;
     }
@@ -79,7 +104,7 @@ bool OpenThermGateway::sendCommand(const char* cmd, const char* value)
         return false;
     }
 
-    int retries = MAX_RETRIES;
+    int retries = 0;
     bool responseReceived;
     do
     {
@@ -87,21 +112,15 @@ bool OpenThermGateway::sendCommand(const char* cmd, const char* value)
         _serial.print(otgwMessage);
 
         // Read OTWG response
-        size_t bytesRead = _serial.readBytesUntil('\r', otgwMessage, sizeof(otgwMessage) - 1);
+        size_t bytesRead = _serial.readBytesUntil('\n', otgwMessage, sizeof(otgwMessage) - 1);
         otgwMessage[bytesRead] = 0;
-        TRACE("OpenTherm gateway response: '%s'\n", otgwMessage);
+        TRACE("OpenTherm gateway response: %s", otgwMessage);
         responseReceived = strncmp(otgwMessage, cmd, 2);
     }
-    while (!responseReceived && (retries-- > 0));
+    while (!responseReceived && (retries++ < MAX_RETRIES));
 
-    if (retries == 0)
-    {
+    if (!responseReceived)
         TRACE("No valid response from OpenTherm gateway after %d retries.", MAX_RETRIES);
-        return false;
-    }
 
-    // Consume CR/LF
-    _serial.readBytes(otgwMessage, 2);
-
-    return true;
+    return responseReceived;
 }

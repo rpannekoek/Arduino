@@ -17,6 +17,7 @@
 #define MAX_EVENT_LOG_SIZE 100
 #define POLL_INTERVAL 60
 #define DATA_VALUE_NONE 0xFFFF
+#define OTGW_INIT_INTERVAL 60*60
 #define OT_LOG_INTERVAL 5*60
 #define OT_LOG_LENGTH 256
 #define KEEP_TSET_HIGH_DURATION 60*60
@@ -69,6 +70,7 @@ uint16_t thermostatRequests[256]; // Thermostat request data values indexed by d
 uint16_t boilerResponses[256]; // Boiler response data values indexed by data ID.
 
 time_t lastOpenThermLogTime = 0;
+time_t lastInitializeTime = 0;
 
 int boilerTSet[4] = {0, 40, 50, 60}; // TODO: configurable
 
@@ -96,23 +98,6 @@ void logEvent(const char* msg)
     strcat(event, msg);
 
     eventLog.add(event);
-}
-
-
-void setBoilerLevel(BoilerLevel level)
-{
-    Tracer tracer("setBoilerLevel");
-
-    currentBoilerLevel = level;
-
-    if (level == BoilerLevel::Off)
-        OTGW.sendCommand("CH", "0");
-    else
-    {
-        char tSet[8];
-        sprintf(tSet, "%d", boilerTSet[level]);
-        OTGW.sendCommand("CS", tSet);
-    }
 }
 
 
@@ -174,21 +159,12 @@ void setup()
     WebServer.begin();
     TRACE("Web Server started");
     
-    setBoilerLevel(BoilerLevel::Off);
-    changeBoilerLevel = BoilerLevel::Off;
-    changeBoilerLevelTime = 0;
-
-    char maxCHWaterSetpoint[8];
-    sprintf(maxCHWaterSetpoint, "%d", boilerTSet[BoilerLevel::High]);
-    OTGW.sendCommand("SH", maxCHWaterSetpoint);
-
-    // TODO: Set LED functions based on Configuration?
-
     currentTime = TimeServer.getCurrentTime();
     if (currentTime < 1000) 
         logEvent("Unable to obtain time from NTP server.");
 
     lastOpenThermLogTime = currentTime;
+    lastInitializeTime = currentTime;
 
     lastThermostatStatus = DATA_VALUE_NONE;
     lastThermostatTSet = DATA_VALUE_NONE;
@@ -199,11 +175,68 @@ void setup()
     memset(thermostatRequests, 0xFF, sizeof(thermostatRequests));
     memset(boilerResponses, 0xFF, sizeof(boilerResponses));
 
+    initializeOpenThermGateway();
+
+    /*
+    setBoilerLevel(BoilerLevel::Off);
+    changeBoilerLevel = BoilerLevel::Off;
+    changeBoilerLevelTime = 0;
+    */
+
     // Turn built-in LED off
     digitalWrite(LED_BUILTIN, 1);
 
     logEvent("Initialized after boot.");
     isInitialized = true;
+}
+
+
+void initializeOpenThermGateway()
+{
+    Tracer tracer("initializeOpenThermGateway");
+
+    setMaxWaterSetpoint();
+
+    // TODO: Set LED functions based on Configuration?
+    // TODO: Set GPIO functions (outside temperature sensor)
+}
+
+
+bool setMaxWaterSetpoint()
+{
+    Tracer tracer("setMaxWaterSetpoint");
+
+    char maxWaterSetpoint[8];
+    sprintf(maxWaterSetpoint, "%d", boilerTSet[BoilerLevel::High]);
+    
+    bool success = OTGW.sendCommand("SH", maxWaterSetpoint); 
+    if (!success)
+        logEvent("Unable to set max CH water setpoint");
+
+    return success;
+}
+
+
+bool setBoilerLevel(BoilerLevel level)
+{
+    Tracer tracer("setBoilerLevel");
+
+    currentBoilerLevel = level;
+
+    bool success;
+    if (level == BoilerLevel::Off)
+        success = OTGW.sendCommand("CH", "0");
+    else
+    {
+        char tSet[8];
+        sprintf(tSet, "%d", boilerTSet[level]);
+        success = OTGW.sendCommand("CS", tSet);
+    }
+
+    if (!success)
+        logEvent("Unable to set boiler level");
+
+    return success;
 }
 
 
@@ -230,25 +263,24 @@ void loop()
     }
 
     currentTime = TimeServer.getCurrentTime();
-    
+
+    // Re-initialize OpenTherm Gateway
+    // OTGW may be reset in which case it loses its non-persisent settings (max water setpoint)
+    if (currentTime >= lastInitializeTime + OTGW_INIT_INTERVAL)
+    {
+        lastInitializeTime = currentTime;
+        if (!setMaxWaterSetpoint())
+        {
+            logEvent("No response from OpenTherm gateway; resetting.");
+            OTGW.reset();
+        }
+    }
+
     // Log OpenTherm values from Thermostat and Boiler
     if (currentTime >= lastOpenThermLogTime + OT_LOG_INTERVAL)
     {
         lastOpenThermLogTime = currentTime;
-
-        OpenThermLogEntry* otLogEntryPtr = new OpenThermLogEntry();
-        otLogEntryPtr->time = currentTime;
-        
-        if (lastThermostatStatus & OpenThermStatus::MasterCHEnable)
-            otLogEntryPtr->thermostatTSet = lastThermostatTSet;
-        else
-            otLogEntryPtr->thermostatTSet = 0; // CH disabled
-
-        otLogEntryPtr->thermostatMaxRelModulation = lastThermostatMaxRelModulation;
-        otLogEntryPtr->boilerTSet = lastBoilerTSet;
-        otLogEntryPtr->boilerTWater = lastBoilerTWater;
-
-        openThermLog.add(otLogEntryPtr);
+        logOpenThermValues();
     }
 
     // Scheduled Boiler TSet change
@@ -259,6 +291,26 @@ void loop()
     }
     
     delay(10);
+}
+
+
+void logOpenThermValues()
+{
+    Tracer tracer("logOpenThermValues");
+
+    OpenThermLogEntry* otLogEntryPtr = new OpenThermLogEntry();
+    otLogEntryPtr->time = currentTime;
+    
+    if (lastThermostatStatus & OpenThermStatus::MasterCHEnable)
+        otLogEntryPtr->thermostatTSet = lastThermostatTSet;
+    else
+        otLogEntryPtr->thermostatTSet = 0; // CH disabled
+
+    otLogEntryPtr->thermostatMaxRelModulation = lastThermostatMaxRelModulation;
+    otLogEntryPtr->boilerTSet = lastBoilerTSet;
+    otLogEntryPtr->boilerTWater = lastBoilerTWater;
+
+    openThermLog.add(otLogEntryPtr);
 }
 
 
@@ -311,6 +363,8 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
 
     if (otFrame.dataId == OpenThermDataId::Status)
     {
+        // Don't override thermostat's TSet; it seems its doing fine as long as max CH Water TSet is properly set.
+        /*
         bool masterCHEnable = otFrame.dataValue & OpenThermStatus::MasterCHEnable;
         bool lastMasterCHEnable = lastThermostatStatus & OpenThermStatus::MasterCHEnable;
         if (masterCHEnable && !lastMasterCHEnable)
@@ -340,6 +394,7 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
             changeBoilerLevel = BoilerLevel::Off;
             changeBoilerLevelTime = currentTime + KEEP_TSET_LOW_DURATION;
         }
+        */
         lastThermostatStatus = otFrame.dataValue;
     }
     else if (otFrame.dataId == OpenThermDataId::TSet)
@@ -349,6 +404,8 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
     else if (otFrame.dataId == OpenThermDataId::MaxRelModulation)
     {
         lastThermostatMaxRelModulation = otFrame.dataValue;
+        // Don't override thermostat's TSet; it seems its doing fine as long as max CH Water TSet is properly set.
+        /*
         if (lastThermostatMaxRelModulation > LOW_POWER_MODULATION_THRESHOLD)
         {
             if (currentBoilerLevel == BoilerLevel::Low)
@@ -359,6 +416,7 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
             if (currentBoilerLevel > BoilerLevel::Low)
                 setBoilerLevel(BoilerLevel::Low);
         }
+        */
     }
 }
 
@@ -467,6 +525,7 @@ void handleHttpRootRequest()
     else
         formatTime(timeString, sizeof(timeString), "%H:%M", changeBoilerLevelTime);
 
+    /*
     HtmlResponse.println(F("<h2>Boiler TSet override</h2>"));
     HtmlResponse.println(F("<table>"));
     HtmlResponse.printf(F("<tr><td>currentBoilerLevelt level</td><td>%d</td></tr>\r\n"), currentBoilerLevel);
@@ -474,6 +533,13 @@ void handleHttpRootRequest()
     HtmlResponse.printf(F("<tr><td>Change at time</td><td>%s</td></tr>\r\n"), timeString);
     formatTime(timeString, sizeof(timeString), "%H:%M", currentTime);
     HtmlResponse.printf(F("<tr><td>currentBoilerLevelt time</td><td>%s</td></tr>\r\n"), timeString);
+    HtmlResponse.println(F("</table>"));
+    */
+
+    HtmlResponse.println(F("<h2>OpenTherm Gateway status</h2>"));
+    HtmlResponse.println(F("<table>"));
+    for (int i = 1; i < 4; i++)
+        HtmlResponse.printf(F("<tr><td>Error %02X</td><td>%d</td></tr>\r\n"), i, OTGW.errors[i]);
     HtmlResponse.println(F("</table>"));
 
     HtmlResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), eventLog.count());
@@ -513,7 +579,7 @@ void handleHttpOpenThermLogRequest()
 
     HtmlResponse.println(F("<h2>OpenTherm log</h2>"));
     HtmlResponse.println(F("<table>"));
-    HtmlResponse.println(F("<tr><td>Time</td><td>Thermostat TSet</td><td>Thermostat Max mod %</td><td>Boiler TSet</td><td>TBoiler</td></tr>"));
+    HtmlResponse.println(F("<tr><td>Time</td><td>Thermostat TSet</td><td>Thermostat Max mod %</td><td>Boiler TWater</td></tr>"));
     char timeString[8];
     OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getFirstEntry());
     while (otLogEntryPtr != NULL)
@@ -524,7 +590,6 @@ void handleHttpOpenThermLogRequest()
             timeString, 
             getDecimal(otLogEntryPtr->thermostatTSet), 
             getDecimal(otLogEntryPtr->thermostatMaxRelModulation), 
-            getDecimal(otLogEntryPtr->boilerTSet), 
             getDecimal(otLogEntryPtr->boilerTWater)
             );
 

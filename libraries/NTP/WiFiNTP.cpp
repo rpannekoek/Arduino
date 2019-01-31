@@ -35,7 +35,7 @@ time_t WiFiNTP::getServerTime()
     packetSize = _udp.parsePacket();
     if (packetSize != 0)
       break;
-    Serial.print(".");
+    TRACE(".");
     delay(100);
   }
 
