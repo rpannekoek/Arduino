@@ -3,7 +3,6 @@
 #include <Arduino.h>
 #include <Wire.h>
 
-#define OTGW_MESSAGE_SIZE 11
 #define MAX_RETRIES 5
 #define WATCHDOG_I2C_ADDRESS 38
 
@@ -44,9 +43,9 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
 
     OpenThermGatewayMessage result;
 
-    char otgwMessage[OTGW_MESSAGE_SIZE + 1];
-    size_t bytesRead = _serial.readBytesUntil('\n',  otgwMessage, OTGW_MESSAGE_SIZE);
-    if (bytesRead == 0) 
+    char otgwMessage[32];
+    size_t bytesRead = _serial.readBytesUntil('\n',  otgwMessage, sizeof(otgwMessage));
+    if (bytesRead < 2) 
     {
         result.message = "[Timeout]";
         result.direction = OpenThermGatewayDirection::Unexpected;
