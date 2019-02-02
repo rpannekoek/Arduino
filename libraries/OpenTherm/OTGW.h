@@ -47,7 +47,8 @@ typedef enum
     FromBoiler,
     ToThermostat,
     ToBoiler,
-    Error
+    Error,
+    Unexpected
 } OpenThermGatewayDirection;
 
 

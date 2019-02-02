@@ -324,6 +324,7 @@ void logOpenThermValues()
 void handleSerialData()
 {
     Tracer tracer("handleSerialData");
+    char event[64];
 
     OpenThermGatewayMessage otgwMessage = OTGW.readMessage();
 
@@ -346,8 +347,12 @@ void handleSerialData()
             break;
 
         case OpenThermGatewayDirection::Error:
-            char event[64];
             snprintf(event, sizeof(event), "OTGW Error: %s", otgwMessage.message.c_str());
+            logEvent(event);
+            break;
+
+        case OpenThermGatewayDirection::Unexpected:
+            snprintf(event, sizeof(event), "Unexpected OTGW Response: %s", otgwMessage.message.c_str());
             logEvent(event);
     }
 }

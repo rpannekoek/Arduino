@@ -48,9 +48,8 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
     size_t bytesRead = _serial.readBytesUntil('\n',  otgwMessage, OTGW_MESSAGE_SIZE);
     if (bytesRead == 0) 
     {
-        TRACE("Timeout\n");
-        result.message = "Timeout";
-        result.direction = OpenThermGatewayDirection::Error;
+        result.message = "[Timeout]";
+        result.direction = OpenThermGatewayDirection::Unexpected;
         return result;
     }
     otgwMessage[bytesRead] = 0;
@@ -77,7 +76,7 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
     if (mappedItems != 3)
     {
         TRACE("Failed parsing OpenTherm message. Mapped items: %d\n", mappedItems);
-        result.direction = OpenThermGatewayDirection::Error;
+        result.direction = OpenThermGatewayDirection::Unexpected;
         return result;
     }
     result.msgType = static_cast<OpenThermMsgType>((otMsgType >> 4) & 7);
@@ -102,8 +101,12 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
             result.direction = OpenThermGatewayDirection::ToThermostat;
             break;
 
-        default:
+        case 'E':
             result.direction = OpenThermGatewayDirection::Error;
+            break;
+
+        default:
+            result.direction = OpenThermGatewayDirection::Unexpected;
     }
 
     TRACE("direction=%d, msgType=%d, dataId=%d, dataValue=0x%04X\n", result.direction, result.msgType, result.dataId, result.dataValue);
