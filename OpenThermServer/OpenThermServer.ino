@@ -13,6 +13,7 @@
 #define ICON "/apple-touch-icon.png"
 #define MAX_EVENT_LOG_SIZE 100
 #define WATCHDOG_INTERVAL_MS 1000
+#define OTGW_STARTUP_TIME 5
 #define POLL_INTERVAL 60
 #define DATA_VALUE_NONE 0xFFFF
 #define OT_LOG_INTERVAL 5*60
@@ -54,6 +55,8 @@ WiFiNTP TimeServer("0.europe.pool.ntp.org", 24 * 3600); // Synchronize daily
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 bool isInitialized = false;
 
+uint16_t otgwResets = 0;
+
 Log eventLog(MAX_EVENT_LOG_SIZE);
 Log openThermLog(OT_LOG_LENGTH);
 
@@ -65,6 +68,9 @@ uint16_t otgwResponses[256]; // OTGW response data values (boiler overrides) ind
 uint32_t watchdogFeedTime = 0;
 time_t currentTime = 0;
 time_t lastOpenThermLogTime = 0;
+time_t otgwInitializeTime = 0;
+
+char cmdResponse[128];
 
 int boilerTSet[4] = {0, 40, 50, 60}; // TODO: configurable
 
@@ -107,8 +113,8 @@ void setup()
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, 0);
 
-    TRACE("Free heap: %d\n", ESP.getFreeHeap());
     TRACE("Boot mode: %d\n", ESP.getBootMode());
+    TRACE("Free heap: %d\n", ESP.getFreeHeap());
 
     // Read persistent data from EEPROM or initialize to defaults.
     //if (!PersistentData.readFromEEPROM())
@@ -150,6 +156,8 @@ void setup()
     WebServer.on("/log-json", handleHttpOpenThermLogJsonRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
     WebServer.on("/events/clear", handleHttpEventLogClearRequest);
+    WebServer.on("/cmd", HTTP_GET, handleHttpCommandFormRequest);
+    WebServer.on("/cmd", HTTP_POST, handleHttpCommandFormPost);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
     WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
     WebServer.serveStatic("/favicon.ico", SPIFFS, "/favicon.ico", cacheControl);
@@ -163,22 +171,23 @@ void setup()
     if (currentTime < 1000) 
         logEvent("Unable to obtain time from NTP server.");
 
+    otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
     lastOpenThermLogTime = currentTime;
+
+    cmdResponse[0] = 0;
 
     memset(thermostatRequests, 0xFF, sizeof(thermostatRequests));
     memset(boilerResponses, 0xFF, sizeof(boilerResponses));
     memset(otgwRequests, 0xFF, sizeof(otgwRequests));
     memset(otgwResponses, 0xFF, sizeof(otgwResponses));
 
-    initializeOpenThermGateway();
-
-    TRACE("Free heap: %d\n", ESP.getFreeHeap());
-
     // Turn built-in LED off
     digitalWrite(LED_BUILTIN, 1);
 
     logEvent("Initialized after boot.");
     isInitialized = true;
+
+    TRACE("Free heap: %d\n", ESP.getFreeHeap());
 }
 
 
@@ -186,10 +195,14 @@ void initializeOpenThermGateway()
 {
     Tracer tracer("initializeOpenThermGateway");
 
+    logEvent("Initializing OTGW");
+
     setMaxTSet();
 
     // TODO: Set LED functions based on Configuration?
     // TODO: Set GPIO functions (outside temperature sensor)
+    
+    otgwInitializeTime = 0;
 }
 
 
@@ -237,6 +250,7 @@ void loop()
     if (!isInitialized)
     {
         // Initialization failed. Blink LED.
+        // We don't feed the OTGW watchdog, so it will reset the ESP after a while.
         digitalWrite(LED_BUILTIN, 0);
         delay(500);
         digitalWrite(LED_BUILTIN, 1);
@@ -260,6 +274,9 @@ void loop()
     }
 
     currentTime = TimeServer.getCurrentTime();
+
+    if ((otgwInitializeTime != 0) && (currentTime >= otgwInitializeTime))
+        initializeOpenThermGateway();
 
     // Log OpenTherm values from Thermostat and Boiler
     if (currentTime >= lastOpenThermLogTime + OT_LOG_INTERVAL)
@@ -330,7 +347,7 @@ void handleSerialData()
 
         case OpenThermGatewayDirection::Error:
             char event[64];
-            snprintf(event, sizeof(event), "Error from OpenTherm Gateway: %s", otgwMessage.message.c_str());
+            snprintf(event, sizeof(event), "OTGW Error: %s", otgwMessage.message.c_str());
             logEvent(event);
     }
 }
@@ -388,8 +405,10 @@ void handleThermostatResponse(OpenThermGatewayMessage otFrame)
             logEvent("Re-applying Max CH Water Setpoint because it changed (by OTGW reset?)");
             if (!setMaxTSet())
             {
-                logEvent("Resetting OpenTherm Gateway because it does not respond.");
+                logEvent("Resetting OTGW because it does not respond.");
                 OTGW.reset();
+                otgwResets++;
+                otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
             }
         }
     }
@@ -455,12 +474,14 @@ void handleHttpRootRequest()
     HttpResponse.println(F("<table>"));
     for (int i = 0; i <= 4; i++)
         HttpResponse.printf(F("<tr><td>Error %02X</td><td>%d</td></tr>\r\n"), i, OTGW.errors[i]);
+    HttpResponse.printf(F("<tr><td>OTGW Resets</td><td>%d</td></tr>\r\n"), otgwResets);
     HttpResponse.printf(F("<tr><td>ESP Free Heap</td><td>%d</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.printf(F("<tr><td>ESP Reset</td><td>%s</td></tr>\r\n"), ESP.getResetReason().c_str());
     HttpResponse.println(F("</table>"));
 
     HttpResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), eventLog.count());
     HttpResponse.printf(F("<p class=\"log\"><a href=\"/log\">%d OpenTherm log entries.</a></p>\r\n"), openThermLog.count());
+    HttpResponse.println(F("<p class=\"cmd\"><a href=\"/cmd\">Send command to OpenTherm gateway</a></p>"));
 
     writeHtmlFooter();
 
@@ -520,7 +541,7 @@ void handleHttpOpenThermLogRequest()
     OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getFirstEntry());
     while (otLogEntryPtr != NULL)
     {
-        formatTime(timeString, sizeof(timeString), "%F %H:%M", otLogEntryPtr->time);
+        formatTime(timeString, sizeof(timeString), "%H:%M", otLogEntryPtr->time);
         HttpResponse.printf(
             F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td></tr>\r\n"), 
             timeString, 
@@ -543,38 +564,36 @@ void handleHttpOpenThermLogJsonRequest()
 {
     Tracer tracer("handleHttpOpenThermLogJsonRequest");
 
-    // TODO: write a JSON response
+    /* JSON format:
+    [
+        {"Time":"2019-02-02 12:30", "TSet":45.0, "MaxRelMod":100.0, "TWater":44.0},
+        {"Time":"2019-02-02 12:35", "TSet":40.0, "MaxRelMod":0.0, "TWater":42.0}
+    ]
+    */
+
     HttpResponse.clear();
+    HttpResponse.println("[");
 
-    for (int i = 0; i < 256; i++)
-    {
-        uint16_t thermostatRequest = thermostatRequests[i];
-        if (thermostatRequest != DATA_VALUE_NONE)
-            HttpResponse.printf(F("<tr><td>%d</td><td>0x%04X</td><td>%0.2f</td></tr>\r\n"), i, thermostatRequest, getDecimal(thermostatRequest));
-    }
-
-    for (int i = 0; i < 256; i++)
-    {
-      uint16_t boilerResponse = boilerResponses[i];
-      if (boilerResponse != DATA_VALUE_NONE)
-          HttpResponse.printf(F("<tr><td>%d</td><td>0x%04X</td><td>%0.2f</td></tr>\r\n"), i, boilerResponse, getDecimal(boilerResponse));
-    }
-
-    char timeString[8];
+    char timeString[strlen("2019-02-02 12:30") + 1];
     OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getFirstEntry());
     while (otLogEntryPtr != NULL)
     {
+        OpenThermLogEntry* nextOTLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getNextEntry());
+
         formatTime(timeString, sizeof(timeString), "%F %H:%M", otLogEntryPtr->time);
         HttpResponse.printf(
-            F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td<td>%0.1f</td></tr>\r\n"), 
+            F("\t{\"Time\":\"%s\", \"TSet\":%0.1f, \"MaxRelMod\":%0.1f, \"TWater\":%0.1f}%s\r\n"), 
             timeString, 
             getDecimal(otLogEntryPtr->thermostatTSet), 
             getDecimal(otLogEntryPtr->thermostatMaxRelModulation), 
-            getDecimal(otLogEntryPtr->boilerTWater)
+            getDecimal(otLogEntryPtr->boilerTWater),
+            (nextOTLogEntryPtr == NULL) ? "" : ","
             );
 
-        otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getNextEntry());
+        otLogEntryPtr = nextOTLogEntryPtr;
     }
+
+    HttpResponse.println("]");
 
     WebServer.send(200, "application/json", HttpResponse);
 }
@@ -615,6 +634,53 @@ void handleHttpEventLogClearRequest()
 void addTextBoxRow(StringBuilder& output, const char* name, const char* value, const char* label)
 {
     output.printf(F("<tr><td><label for=\"%s\">%s</label></td><td><input type=\"text\" name=\"%s\" value=\"%s\"></td></tr>\r\n"), name, label, name, value);
+}
+
+
+void handleHttpCommandFormRequest()
+{
+    Tracer tracer("handleHttpCommandFormRequest");
+
+    writeHtmlHeader("Send OTGW Command", true, true);
+
+    HttpResponse.println(F("<form action=\"/cmd\" method=\"POST\">"));
+    HttpResponse.println(F("<table>"));
+    addTextBoxRow(HttpResponse, "cmd", "PR", "Command");
+    addTextBoxRow(HttpResponse, "value", "M", "Value");
+    HttpResponse.println(F("</table>"));
+    HttpResponse.println(F("<input type=\"submit\">"));
+    HttpResponse.println(F("</form>"));
+
+    HttpResponse.println(F("<h2>OTGW Response</h2>"));
+    HttpResponse.printf(F("<div class=\"response\"><pre>%s</pre></div>"), cmdResponse);
+
+    writeHtmlFooter();
+
+    cmdResponse[0] = 0;
+
+    WebServer.send(200, "text/html", HttpResponse);
+}
+
+
+void handleHttpCommandFormPost()
+{
+    Tracer tracer("handleHttpCommandFormPost");
+
+    const char* cmd = WebServer.arg("cmd").c_str();
+    const char* value = WebServer.arg("value").c_str();
+
+    TRACE("cmd: '%s'\nvalue: '%s'\n", cmd, value);
+
+    if (strlen(cmd) != 2)
+        snprintf(cmdResponse, sizeof(cmdResponse), "Invalid command. Must be 2 characters.");
+    else
+    {
+        bool success = OTGW.sendCommand(cmd, value, cmdResponse);
+        if (!success)
+            snprintf(cmdResponse, sizeof(cmdResponse), "No valid response received from OTGW.");
+    }
+
+    handleHttpCommandFormRequest();
 }
 
 
