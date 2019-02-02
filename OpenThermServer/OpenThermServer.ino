@@ -117,7 +117,7 @@ void setup()
     TRACE("Free heap: %d\n", ESP.getFreeHeap());
 
     // Read persistent data from EEPROM or initialize to defaults.
-    //if (!PersistentData.readFromEEPROM())
+    // TODO: if (!PersistentData.readFromEEPROM())
     {
         TRACE("EEPROM not initialized; initializing with defaults.\n");
         strcpy(PersistentData.HostName, "OpenThermGateway");
@@ -486,7 +486,7 @@ void handleHttpRootRequest()
 
     HttpResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), eventLog.count());
     HttpResponse.printf(F("<p class=\"log\"><a href=\"/log\">%d OpenTherm log entries.</a></p>\r\n"), openThermLog.count());
-    HttpResponse.println(F("<p class=\"cmd\"><a href=\"/cmd\">Send command to OpenTherm gateway</a></p>"));
+    HttpResponse.println(F("<p class=\"cmd\"><a href=\"/cmd\">Send command to OpenTherm Gateway</a></p>"));
 
     writeHtmlFooter();
 
@@ -671,16 +671,16 @@ void handleHttpCommandFormPost()
 {
     Tracer tracer("handleHttpCommandFormPost");
 
-    const char* cmd = WebServer.arg("cmd").c_str();
-    const char* value = WebServer.arg("value").c_str();
+    String cmd = WebServer.arg("cmd");
+    String value = WebServer.arg("value");
 
-    TRACE("cmd: '%s'\nvalue: '%s'\n", cmd, value);
+    TRACE("cmd: '%s'\nvalue: '%s'\n", cmd.c_str(), value.c_str());
 
-    if (strlen(cmd) != 2)
+    if (cmd.length() != 2)
         snprintf(cmdResponse, sizeof(cmdResponse), "Invalid command. Must be 2 characters.");
     else
     {
-        bool success = OTGW.sendCommand(cmd, value, cmdResponse);
+        bool success = OTGW.sendCommand(cmd.c_str(), value.c_str(), cmdResponse, sizeof(cmdResponse));
         if (!success)
             snprintf(cmdResponse, sizeof(cmdResponse), "No valid response received from OTGW.");
     }

@@ -115,19 +115,25 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
 }
 
 
-bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* response)
+bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* response, size_t bufferSize)
 {
     Tracer tracer("OpenThermGateway::sendCommand", cmd);
 
     char otgwCommand[16];
-    int bufferSize = sizeof(otgwCommand);
-    if (snprintf(otgwCommand, bufferSize, "%s=%s\r\n", cmd, value) >= bufferSize)
+    int cmdBufferSize = sizeof(otgwCommand);
+    if (snprintf(otgwCommand, cmdBufferSize, "%s=%s\r\n", cmd, value) >= cmdBufferSize)
     {
         TRACE("Command too long");
         return false;
     }
 
-    char* otgwResponse = response ? response : new char[16];
+    char* otgwResponse = response;
+    if (response == NULL)
+    {
+        bufferSize = 16;
+        otgwResponse = new char[bufferSize];
+    }
+
     int retries = 0;
     bool responseReceived;
     do
@@ -136,7 +142,7 @@ bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* res
         _serial.print(otgwCommand);
 
         // Read OTWG response
-        size_t bytesRead = _serial.readBytesUntil('\n', otgwResponse, sizeof(otgwResponse) - 1);
+        size_t bytesRead = _serial.readBytesUntil('\n', otgwResponse, bufferSize - 1);
         otgwResponse[bytesRead] = 0;
         TRACE("OTGW response: %s\n", otgwResponse);
         responseReceived = (strncmp(otgwResponse, cmd, 2) == 0);

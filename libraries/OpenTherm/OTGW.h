@@ -72,7 +72,7 @@ class OpenThermGateway
         void reset();
         void feedWatchdog();
         OpenThermGatewayMessage readMessage();
-        bool sendCommand(const char* cmd, const char* value, char* response = NULL);
+        bool sendCommand(const char* cmd, const char* value, char* response = NULL, size_t bufferSize = 2);
 
     protected:
         Stream& _serial;
