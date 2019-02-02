@@ -130,7 +130,7 @@ bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* res
     char* otgwResponse = response;
     if (response == NULL)
     {
-        bufferSize = 16;
+        bufferSize = 32;
         otgwResponse = new char[bufferSize];
     }
 

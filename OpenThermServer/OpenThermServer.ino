@@ -352,7 +352,7 @@ void handleSerialData()
             break;
 
         case OpenThermGatewayDirection::Unexpected:
-            snprintf(event, sizeof(event), "Unexpected OTGW Response: %s", otgwMessage.message.c_str());
+            snprintf(event, sizeof(event), "Unexpected OTGW Message: %s", otgwMessage.message.c_str());
             logEvent(event);
     }
 }
@@ -651,7 +651,7 @@ void handleHttpCommandFormRequest()
     HttpResponse.println(F("<form action=\"/cmd\" method=\"POST\">"));
     HttpResponse.println(F("<table>"));
     addTextBoxRow(HttpResponse, "cmd", "PR", "Command");
-    addTextBoxRow(HttpResponse, "value", "M", "Value");
+    addTextBoxRow(HttpResponse, "value", "A", "Value");
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
     HttpResponse.println(F("</form>"));
