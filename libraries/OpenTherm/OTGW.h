@@ -22,6 +22,7 @@ typedef enum
 {
     Status = 0,
     TSet = 1,
+    SlaveFault = 5,
     MaxRelModulation = 14,
     TRoomSet = 16,
     TRoom = 24,
@@ -66,6 +67,7 @@ class OpenThermGateway
 {
     public:
         uint32_t errors[5];
+        uint32_t resets;
 
         OpenThermGateway(Stream& serial, uint8_t resetPin);
 
@@ -73,6 +75,11 @@ class OpenThermGateway
         void feedWatchdog();
         OpenThermGatewayMessage readMessage();
         bool sendCommand(const char* cmd, const char* value, char* response = NULL, size_t bufferSize = 2);
+
+        static const char* getMasterStatus(uint16_t dataValue);
+        static const char* getSlaveStatus(uint16_t dataValue);
+        static const char* getFaultFlags(uint16_t dataValue);
+        static float getDecimal(uint16_t dataValue);
 
     protected:
         Stream& _serial;

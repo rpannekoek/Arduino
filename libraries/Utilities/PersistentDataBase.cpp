@@ -4,10 +4,11 @@
 #include <EEPROM.h>
 
 #define INITIALIZED_MAGIC 0xCAFEBABE
+#define DATA_OFFSET sizeof(Magic) + 4
 
 // Constructor
 PersistentDataBase::PersistentDataBase(size_t dataSize)
-    : _dataSize(dataSize + sizeof(Magic))
+    : _dataSize(dataSize)
 {
     EEPROM.begin(512);
 }
@@ -24,13 +25,19 @@ void PersistentDataBase::writeToEEPROM()
 {
     Tracer tracer("PersistentDataBase::writeToEEPROM");
 
-    byte* bytePtr = (byte*) this;
-    TRACE("Writing %d bytes to EEPROM from %p ...\n", _dataSize, bytePtr);
-    printHex(bytePtr, _dataSize);
-
+    TRACE("Writing %d + %d bytes to EEPROM...\n", _dataSize, sizeof(Magic));
+    printData();
+ 
+    // Write Magic
     Magic = INITIALIZED_MAGIC;
-    for (size_t i = 0; i < _dataSize; i++)
+    byte* bytePtr = (byte*) &Magic;
+    for (size_t i = 0; i < sizeof(Magic); i++)
         EEPROM.write(i, *bytePtr++);
+
+    // Write actual data
+    bytePtr = ((byte*) this) + DATA_OFFSET ;
+    for (size_t i = 0; i < _dataSize; i++)
+        EEPROM.write(i + sizeof(Magic), *bytePtr++);
 
     EEPROM.commit();
 }
@@ -40,13 +47,30 @@ bool PersistentDataBase::readFromEEPROM()
 {
     Tracer tracer("PersistentDataBase::readFromEEPROM");
 
-    byte* bytePtr = (byte*) this;
-    TRACE("Reading %d bytes from EEPROM to %p ...\n", _dataSize, bytePtr); 
+    TRACE("Reading %d + %d bytes from EEPROM...\n", _dataSize, sizeof(Magic)); 
 
-    for (size_t i = 0; i < _dataSize; i++)
+    // Read Magic
+    byte* bytePtr = (byte*) &Magic;
+    for (size_t i = 0; i < sizeof(Magic); i++)
         *bytePtr++ = EEPROM.read(i);
 
-    printHex((byte*) this, _dataSize);
+    if (Magic != INITIALIZED_MAGIC)
+        return false;
 
-    return (Magic == INITIALIZED_MAGIC);
+    // Read actual data
+    bytePtr = ((byte*) this) + DATA_OFFSET ;
+    for (size_t i = 0; i < _dataSize; i++)
+        *bytePtr++ = EEPROM.read(i + sizeof(Magic));
+
+    printData();
+
+    return true;
+}
+
+
+void PersistentDataBase::printData()
+{
+    printHex((byte*) &Magic, sizeof(Magic));
+    byte* dataPtr = ((byte*) this) + DATA_OFFSET;
+    printHex(dataPtr, _dataSize);
 }

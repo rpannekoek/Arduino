@@ -13,6 +13,7 @@ struct PersistentDataBase
 
         void writeToEEPROM();
         bool readFromEEPROM();
+        void printData();
 
     private:
          size_t _dataSize;

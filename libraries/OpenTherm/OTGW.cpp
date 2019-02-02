@@ -1,16 +1,23 @@
-#include <OTGW.h>
+#include "OTGW.h"
 #include <Tracer.h>
+#include <PrintFlags.h>
 #include <Arduino.h>
 #include <Wire.h>
 
+#define BUFFER_SIZE 32
 #define MAX_RETRIES 5
 #define WATCHDOG_I2C_ADDRESS 38
+
+static const char* _masterStatusNames[5] = {"CH", "DHW", "Cool", "OTC", "CH2"};
+static const char* _slaveStatusNames[7] = {"Fault", "CH", "DHW", "Flame", "Cool", "CH2", "Diag"};
+static const char* _faultFlagNames[6] = {"Svc", "Lockout", "PWater", "Flame", "PAir", "TWater"};
 
 
 OpenThermGateway::OpenThermGateway(Stream& serial, uint8_t resetPin)
     : _serial(serial), _resetPin(resetPin)
 {
     memset(errors, 0, sizeof(errors));
+    resets = 0;
     Wire.begin();
 }
 
@@ -24,6 +31,8 @@ void OpenThermGateway::reset()
     delay(100);
     digitalWrite(_resetPin, HIGH);
     pinMode(_resetPin, INPUT_PULLUP);
+
+    resets++;
 }
 
 
@@ -43,7 +52,7 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
 
     OpenThermGatewayMessage result;
 
-    char otgwMessage[32];
+    char otgwMessage[BUFFER_SIZE];
     size_t bytesRead = _serial.readBytesUntil('\n',  otgwMessage, sizeof(otgwMessage));
     if (bytesRead < 2) 
     {
@@ -118,7 +127,7 @@ bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* res
 {
     Tracer tracer("OpenThermGateway::sendCommand", cmd);
 
-    char otgwCommand[16];
+    char otgwCommand[BUFFER_SIZE];
     int cmdBufferSize = sizeof(otgwCommand);
     if (snprintf(otgwCommand, cmdBufferSize, "%s=%s\r\n", cmd, value) >= cmdBufferSize)
     {
@@ -129,7 +138,7 @@ bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* res
     char* otgwResponse = response;
     if (response == NULL)
     {
-        bufferSize = 32;
+        bufferSize = BUFFER_SIZE;
         otgwResponse = new char[bufferSize];
     }
 
@@ -155,4 +164,28 @@ bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* res
         delete otgwResponse;
 
     return responseReceived;
+}
+
+
+const char* OpenThermGateway::getMasterStatus(uint16_t dataValue)
+{
+    return printFlags((dataValue >> 8), _masterStatusNames, 5, ",");
+}
+
+
+const char* OpenThermGateway::getSlaveStatus(uint16_t dataValue)
+{
+    return printFlags(dataValue, _slaveStatusNames, 7, ",");
+}
+
+
+const char* OpenThermGateway::getFaultFlags(uint16_t dataValue)
+{
+    return printFlags((dataValue >> 8), _faultFlagNames, 6, ",");
+}
+
+
+float OpenThermGateway::getDecimal(uint16_t dataValue)
+{
+    return float(static_cast<int16_t>(dataValue)) / 256;
 }
