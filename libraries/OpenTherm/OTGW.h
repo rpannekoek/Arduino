@@ -10,7 +10,7 @@ typedef enum
 {
     ReadData = 0,
     WriteData = 1,
-    InvalidDate = 2,
+    InvalidData = 2,
     ReadAck = 4,
     WriteAck = 5,
     DataInvalid = 6,
@@ -24,8 +24,9 @@ typedef enum
     TSet = 1,
     MaxRelModulation = 14,
     TRoomSet = 16,
-    TRoot = 24,
-    TBoiler = 25
+    TRoom = 24,
+    TBoiler = 25,
+    MaxTSet = 57
 } OpenThermDataId;
 
 
@@ -47,14 +48,14 @@ typedef enum
 } OpenThermGatewayDirection;
 
 
-typedef struct 
+struct OpenThermGatewayMessage
 {
     String message;
     OpenThermGatewayDirection direction;
     OpenThermMsgType msgType;
     OpenThermDataId dataId;
     uint16_t dataValue;
-} OpenThermGatewayMessage;
+};
 
 
 class OpenThermGateway
@@ -62,14 +63,16 @@ class OpenThermGateway
     public:
         uint32_t errors[5];
 
-        OpenThermGateway(Stream& serial);
+        OpenThermGateway(Stream& serial, uint8_t resetPin);
 
         void reset();
+        void feedWatchdog();
         OpenThermGatewayMessage readMessage();
         bool sendCommand(const char* cmd, const char* value);
 
     protected:
         Stream& _serial;
+        uint8_t _resetPin;
 };
 
 

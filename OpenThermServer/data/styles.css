@@ -1,6 +1,6 @@
 html 
 {
-    background-color: yellow;
+    background-color: orange;
     font-family: sans-serif;
     font-size: 12pt;
 }
@@ -10,7 +10,12 @@ h1
 	font-size: 16pt;
 }
 
-table.devstats
+h2
+{
+	font-size: 14pt;
+}
+
+table.otTable
 {
 	border: thin solid black;
 }
@@ -19,6 +24,7 @@ td
 {
 	padding-left: 4px;
 	padding-right: 4px;
+	border: thin solid black;
 }
 
 .bar

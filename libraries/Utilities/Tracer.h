@@ -4,32 +4,17 @@
 #include <Arduino.h>
 #include <WString.h>
 
-#ifdef TRACE_TO_SERIAL
-  #define TRACE(...) Serial.printf(__VA_ARGS__)
-#else
-  #define TRACE(...)
-#endif
+#define TRACE(...) Tracer::trace(__VA_ARGS__)
+
 
 class Tracer
 {
   public:
-    //Constructor
-    Tracer(const char* name, const char* arg = NULL)
-    {
-      _name = name;
-      if (arg == NULL)
-        TRACE("%s() entry\n", _name);
-      else
-        TRACE("%s(%s) entry\n", _name, arg);
-      _startMicros = micros();
-    }
+    Tracer(const char* name, const char* arg = NULL);
+    ~Tracer();
 
-    //Destructor
-    ~Tracer()
-    {
-      float duration = float(micros() - _startMicros) / 1000;
-      TRACE("%s exit. Duration: %0.1f ms.\n", _name, duration);
-    }
+    static void traceTo(Print& dest);
+    static void trace(const char* format, ...);
 
   private:
     const char* _name;
