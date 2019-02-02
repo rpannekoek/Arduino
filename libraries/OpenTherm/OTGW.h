@@ -26,7 +26,10 @@ typedef enum
     TRoomSet = 16,
     TRoom = 24,
     TBoiler = 25,
-    MaxTSet = 57
+    MaxTSet = 57,
+    BoilerBurnerStarts = 116,
+    BoilerBurnerHours = 120,
+    BoilerDHWBurnerHours = 123
 } OpenThermDataId;
 
 
@@ -68,7 +71,7 @@ class OpenThermGateway
         void reset();
         void feedWatchdog();
         OpenThermGatewayMessage readMessage();
-        bool sendCommand(const char* cmd, const char* value);
+        bool sendCommand(const char* cmd, const char* value, char* response = NULL);
 
     protected:
         Stream& _serial;

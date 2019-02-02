@@ -51,22 +51,16 @@ PersistentDataClass PersistentData;
 OpenThermGateway OTGW(Serial, 14);
 ESP8266WebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer("0.europe.pool.ntp.org", 24 * 3600); // Synchronize daily
-StringBuilder HttpResponse(8192); // 32KB HTTP response buffer
+StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 bool isInitialized = false;
 
 Log eventLog(MAX_EVENT_LOG_SIZE);
 Log openThermLog(OT_LOG_LENGTH);
 
-uint16_t lastThermostatStatus;
-uint16_t lastThermostatTSet;
-uint16_t lastThermostatMaxRelModulation;
-int lastThermostatMaxTSet;
-uint16_t lastBoilerStatus;
-uint16_t lastBoilerTSet;
-uint16_t lastBoilerTWater;
-
 uint16_t thermostatRequests[256]; // Thermostat request data values indexed by data ID
 uint16_t boilerResponses[256]; // Boiler response data values indexed by data ID.
+uint16_t otgwRequests[256]; // OTGW request data values (thermostat overrides) indexed by data ID.
+uint16_t otgwResponses[256]; // OTGW response data values (boiler overrides) indexed by data ID.
 
 uint32_t watchdogFeedTime = 0;
 time_t currentTime = 0;
@@ -171,23 +165,12 @@ void setup()
 
     lastOpenThermLogTime = currentTime;
 
-    lastThermostatStatus = DATA_VALUE_NONE;
-    lastThermostatTSet = DATA_VALUE_NONE;
-    lastThermostatMaxRelModulation = DATA_VALUE_NONE;
-    lastThermostatMaxTSet = 0;
-    lastBoilerStatus = DATA_VALUE_NONE;
-    lastBoilerTWater = DATA_VALUE_NONE;
-
     memset(thermostatRequests, 0xFF, sizeof(thermostatRequests));
     memset(boilerResponses, 0xFF, sizeof(boilerResponses));
+    memset(otgwRequests, 0xFF, sizeof(otgwRequests));
+    memset(otgwResponses, 0xFF, sizeof(otgwResponses));
 
     initializeOpenThermGateway();
-
-    /*
-    setBoilerLevel(BoilerLevel::Off);
-    changeBoilerLevel = BoilerLevel::Off;
-    changeBoilerLevelTime = 0;
-    */
 
     TRACE("Free heap: %d\n", ESP.getFreeHeap());
 
@@ -305,14 +288,15 @@ void logOpenThermValues()
     OpenThermLogEntry* otLogEntryPtr = new OpenThermLogEntry();
     otLogEntryPtr->time = currentTime;
     
+    uint16_t lastThermostatStatus = thermostatRequests[OpenThermDataId::Status];
     if (lastThermostatStatus & OpenThermStatus::MasterCHEnable)
-        otLogEntryPtr->thermostatTSet = lastThermostatTSet;
+        otLogEntryPtr->thermostatTSet = thermostatRequests[OpenThermDataId::TSet];
     else
         otLogEntryPtr->thermostatTSet = 0; // CH disabled
 
-    otLogEntryPtr->thermostatMaxRelModulation = lastThermostatMaxRelModulation;
-    otLogEntryPtr->boilerTSet = lastBoilerTSet;
-    otLogEntryPtr->boilerTWater = lastBoilerTWater;
+    otLogEntryPtr->thermostatMaxRelModulation = thermostatRequests[OpenThermDataId::MaxRelModulation];
+    otLogEntryPtr->boilerTSet = boilerResponses[OpenThermDataId::TSet];
+    otLogEntryPtr->boilerTWater = boilerResponses[OpenThermDataId::TBoiler];
 
     openThermLog.add(otLogEntryPtr);
 
@@ -366,64 +350,6 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
     Tracer tracer("handleThermostatRequest");
     
     thermostatRequests[otFrame.dataId] = otFrame.dataValue;
-
-    if (otFrame.dataId == OpenThermDataId::Status)
-    {
-        // Don't override thermostat's TSet; it seems its doing fine as long as max CH Water TSet is properly set.
-        /*
-        bool masterCHEnable = otFrame.dataValue & OpenThermStatus::MasterCHEnable;
-        bool lastMasterCHEnable = lastThermostatStatus & OpenThermStatus::MasterCHEnable;
-        if (masterCHEnable && !lastMasterCHEnable)
-        {
-            // CH switched on
-            if (currentBoilerLevel == BoilerLevel::Off)
-            {
-                if (lastThermostatMaxRelModulation > LOW_POWER_MODULATION_THRESHOLD)
-                {
-                    setBoilerLevel(BoilerLevel::High);
-                    changeBoilerLevel = BoilerLevel::Medium;
-                    changeBoilerLevelTime = currentTime + KEEP_TSET_HIGH_DURATION;
-                }
-                else
-                    setBoilerLevel(BoilerLevel::Low); // TODO: Medium ?
-            }
-            else if (currentBoilerLevel == BoilerLevel::Low)
-            {
-                changeBoilerLevel = BoilerLevel::Medium;
-                changeBoilerLevelTime = currentTime + KEEP_TSET_LOW_DURATION;
-            }
-        }
-        else if (!masterCHEnable && lastMasterCHEnable)
-        {
-            // CH switched off
-            setBoilerLevel(BoilerLevel::Low);
-            changeBoilerLevel = BoilerLevel::Off;
-            changeBoilerLevelTime = currentTime + KEEP_TSET_LOW_DURATION;
-        }
-        */
-        lastThermostatStatus = otFrame.dataValue;
-    }
-    else if (otFrame.dataId == OpenThermDataId::TSet)
-    {
-        lastThermostatTSet = otFrame.dataValue;
-    }
-    else if (otFrame.dataId == OpenThermDataId::MaxRelModulation)
-    {
-        lastThermostatMaxRelModulation = otFrame.dataValue;
-        // Don't override thermostat's TSet; it seems its doing fine as long as max CH Water TSet is properly set.
-        /*
-        if (lastThermostatMaxRelModulation > LOW_POWER_MODULATION_THRESHOLD)
-        {
-            if (currentBoilerLevel == BoilerLevel::Low)
-                setBoilerLevel(BoilerLevel::Medium);
-        }
-        else
-        {
-            if (currentBoilerLevel > BoilerLevel::Low)
-                setBoilerLevel(BoilerLevel::Low);
-        }
-        */
-    }
 }
 
 
@@ -435,25 +361,6 @@ void handleBoilerResponse(OpenThermGatewayMessage otFrame)
         return;
     
     boilerResponses[otFrame.dataId] = otFrame.dataValue;
-
-    switch (otFrame.dataId)
-    {
-        case OpenThermDataId::Status:
-            lastBoilerStatus = otFrame.dataValue;
-            break;
-      
-        case OpenThermDataId::TSet:
-            lastBoilerTSet = otFrame.dataValue;
-            break;
-          
-        case OpenThermDataId::TBoiler:
-            lastBoilerTWater = otFrame.dataValue;
-            break;
-
-        default:
-          // Nothing to do
-          break;
-    }
 }
 
 
@@ -462,6 +369,7 @@ void handleBoilerRequest(OpenThermGatewayMessage otFrame)
     Tracer tracer("handleBoilerRequest");
 
     // Modified request from OTGW to boiler (e.g. TSet override)
+    otgwRequests[otFrame.dataId] = otFrame.dataValue;
 }
 
 
@@ -470,24 +378,20 @@ void handleThermostatResponse(OpenThermGatewayMessage otFrame)
     Tracer tracer("handleThermostatResponse");
 
     // Modified response from OTGW to thermostat (e.g. TOutside override)
-    switch (otFrame.dataId)
-    {
-        case OpenThermDataId::MaxTSet:
-            lastThermostatMaxTSet = static_cast<int>(getDecimal(otFrame.dataValue));
-            if (lastThermostatMaxTSet != boilerTSet[BoilerLevel::High])
-            {
-                logEvent("Re-applying Max CH Water Setpoint because it changed (by OTGW reset?)");
-                if (!setMaxTSet())
-                {
-                    logEvent("Resetting OpenTherm Gateway because it does not respond.");
-                    OTGW.reset();
-                }
-            }
-            break;
+    otgwResponses[otFrame.dataId] = otFrame.dataValue;
 
-        default:
-          // Nothing to do
-          break;
+    if (otFrame.dataId == OpenThermDataId::MaxTSet)
+    {
+        int maxTSet = static_cast<int>(getDecimal(otFrame.dataValue));
+        if (maxTSet != boilerTSet[BoilerLevel::High])
+        {
+            logEvent("Re-applying Max CH Water Setpoint because it changed (by OTGW reset?)");
+            if (!setMaxTSet())
+            {
+                logEvent("Resetting OpenTherm Gateway because it does not respond.");
+                OTGW.reset();
+            }
+        }
     }
 }
 
@@ -498,17 +402,17 @@ void writeHtmlHeader(const char* title, bool includeHomePageLink, bool includeHe
     HttpResponse.println(F("<html>"));
     
     HttpResponse.println(F("<head>"));
-    HttpResponse.println(F("<link rel=\"stylesheet\" type=\"text/css\" href=\"/styles.css\">"));
     HttpResponse.printf(F("<title>%s - %s</title>\r\n"), PersistentData.HostName, title);
+    HttpResponse.println(F("<link rel=\"stylesheet\" type=\"text/css\" href=\"/styles.css\">"));
     HttpResponse.printf(F("<link rel=\"icon\" sizes=\"196x196\" href=\"%s\">\r\n<link rel=\"apple-touch-icon-precomposed\" sizes=\"196x196\" href=\"%s\">\r\n"), ICON, ICON);
     HttpResponse.printf(F("<meta http-equiv=\"refresh\" content=\"%d\">\r\n") , POLL_INTERVAL);
     HttpResponse.println(F("</head>"));
     
     HttpResponse.println(F("<body>"));
     if (includeHomePageLink)
-      HttpResponse.println(F("<a href=\"/\"><img src=\"" ICON "\"></a>"));
+        HttpResponse.println(F("<a href=\"/\"><img src=\"" ICON "\"></a>"));
     if (includeHeading)
-      HttpResponse.printf(F("<h1>%s</h1>"), title);
+        HttpResponse.printf(F("<h1>%s</h1>\r\n"), title);
 }
 
 
@@ -529,42 +433,30 @@ void handleHttpRootRequest()
 
     HttpResponse.println(F("<h3>Thermostat</h3>"));
     HttpResponse.println(F("<table>"));
-    HttpResponse.printf(F("<tr><td>Status</td><td>0x%04X</td></tr>\r\n"), lastThermostatStatus);
-    HttpResponse.printf(F("<tr><td>TSet</td><td>%0.1f</td></tr>\r\n"), getDecimal(lastThermostatTSet));
-    HttpResponse.printf(F("<tr><td>Max Modulation %</td><td>%0.1f</td></tr>\r\n"), getDecimal(lastThermostatMaxRelModulation));
-    HttpResponse.printf(F("<tr><td>Max TSet</td><td>%d</td></tr>\r\n"), lastThermostatMaxTSet);
+    HttpResponse.printf(F("<tr><td>Status</td><td>0x%04X</td></tr>\r\n"), thermostatRequests[OpenThermDataId::Status]);
+    HttpResponse.printf(F("<tr><td>TSet</td><td>%0.1f</td></tr>\r\n"), getDecimal(thermostatRequests[OpenThermDataId::TSet]));
+    HttpResponse.printf(F("<tr><td>Max Modulation %%</td><td>%0.1f</td></tr>\r\n"), getDecimal(thermostatRequests[OpenThermDataId::MaxRelModulation]));
+    HttpResponse.printf(F("<tr><td>Max TSet</td><td>%0.1f</td></tr>\r\n"), getDecimal(thermostatRequests[OpenThermDataId::MaxTSet]));
     HttpResponse.println(F("</table>"));
 
     HttpResponse.println(F("<h3>Boiler</h3>"));
     HttpResponse.println(F("<table>"));
-    HttpResponse.printf(F("<tr><td>Status</td><td>0x%04X</td></tr>\r\n"), lastBoilerStatus);
-    HttpResponse.printf(F("<tr><td>TSet</td><td>%0.1f</td></tr>\r\n"), getDecimal(lastBoilerTSet));
-    HttpResponse.printf(F("<tr><td>TWater</td><td>%0.1f</td></tr>\r\n"), getDecimal(lastBoilerTWater));
+    HttpResponse.printf(F("<tr><td>Status</td><td>0x%04X</td></tr>\r\n"), boilerResponses[OpenThermDataId::Status]);
+    HttpResponse.printf(F("<tr><td>TSet</td><td>%0.1f</td></tr>\r\n"), getDecimal(boilerResponses[OpenThermDataId::TSet]));
+    HttpResponse.printf(F("<tr><td>TWater</td><td>%0.1f</td></tr>\r\n"), getDecimal(boilerResponses[OpenThermDataId::TBoiler]));
+    HttpResponse.printf(F("<tr><td>Burner starts</td><td>%d</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerBurnerStarts]);
+    HttpResponse.printf(F("<tr><td>Burner hours</td><td>%d</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerBurnerHours]);
+    HttpResponse.printf(F("<tr><td>DHW hours</td><td>%d</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerDHWBurnerHours]);
     HttpResponse.println(F("</table>"));
 
     HttpResponse.println(F("<p class=\"traffic\"><a href=\"/traffic\">View all OpenTherm traffic</a></p>"));
 
-    /*
-    char timeString[8];
-    if (changeBoilerLevelTime == 0)
-        sprintf(timeString, "Not set");
-    else
-        formatTime(timeString, sizeof(timeString), "%H:%M", changeBoilerLevelTime);
-
-    HttpResponse.println(F("<h2>Boiler TSet override</h2>"));
-    HttpResponse.println(F("<table>"));
-    HttpResponse.printf(F("<tr><td>currentBoilerLevelt level</td><td>%d</td></tr>\r\n"), currentBoilerLevel);
-    HttpResponse.printf(F("<tr><td>Change to level</td><td>%d</td></tr>\r\n"), changeBoilerLevel);
-    HttpResponse.printf(F("<tr><td>Change at time</td><td>%s</td></tr>\r\n"), timeString);
-    formatTime(timeString, sizeof(timeString), "%H:%M", currentTime);
-    HttpResponse.printf(F("<tr><td>currentBoilerLevelt time</td><td>%s</td></tr>\r\n"), timeString);
-    HttpResponse.println(F("</table>"));
-    */
-
     HttpResponse.println(F("<h2>OpenTherm Gateway status</h2>"));
     HttpResponse.println(F("<table>"));
-    for (int i = 1; i <= 4; i++)
+    for (int i = 0; i <= 4; i++)
         HttpResponse.printf(F("<tr><td>Error %02X</td><td>%d</td></tr>\r\n"), i, OTGW.errors[i]);
+    HttpResponse.printf(F("<tr><td>ESP Free Heap</td><td>%d</td></tr>\r\n"), ESP.getFreeHeap());
+    HttpResponse.printf(F("<tr><td>ESP Reset</td><td>%s</td></tr>\r\n"), ESP.getResetReason().c_str());
     HttpResponse.println(F("</table>"));
 
     HttpResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), eventLog.count());
@@ -576,31 +468,39 @@ void handleHttpRootRequest()
 }
 
 
+void writeHtmlOpenThermDataTable(const char* title, uint16_t* otDataTable)
+{
+    HttpResponse.printf(F("<h2>%s</h2>\r\n"), title);
+    HttpResponse.println(F("<table>"));
+    HttpResponse.println(F("<tr><th>Data ID</th><th>Data Value (hex)</th><th>Data value (dec)</th></tr>"));
+
+    for (int i = 0; i < 256; i++)
+    {
+      uint16_t dataValue = otDataTable[i];
+      if (dataValue == DATA_VALUE_NONE)
+        continue;
+        HttpResponse.printf
+            (F("<tr><td>%d</td><td>0x%04X</td><td>%0.2f</td></tr>\r\n"), 
+            i, 
+            dataValue, 
+            getDecimal(dataValue)
+            );
+    }
+
+    HttpResponse.println(F("</table>"));
+}
+
+
 void handleHttpOpenThermTrafficRequest()
 {
     Tracer tracer("handleHttpOpenThermTrafficRequest");
 
     writeHtmlHeader("OpenTherm traffic", true, true);
     
-    HttpResponse.println(F("<h2>Thermostat requests</h2>"));
-    HttpResponse.println(F("<table>"));
-    for (int i = 0; i < 256; i++)
-    {
-        uint16_t thermostatRequest = thermostatRequests[i];
-        if (thermostatRequest != DATA_VALUE_NONE)
-            HttpResponse.printf(F("<tr><td>%d</td><td>0x%04X</td><td>%0.2f</td></tr>\r\n"), i, thermostatRequest, getDecimal(thermostatRequest));
-    }
-    HttpResponse.println(F("</table>"));
-
-    HttpResponse.println(F("<h2>Boiler responses</h2>"));
-    HttpResponse.println(F("<table>"));
-    for (int i = 0; i < 256; i++)
-    {
-      uint16_t boilerResponse = boilerResponses[i];
-      if (boilerResponse != DATA_VALUE_NONE)
-          HttpResponse.printf(F("<tr><td>%d</td><td>0x%04X</td><td>%0.2f</td></tr>\r\n"), i, boilerResponse, getDecimal(boilerResponse));
-    }
-    HttpResponse.println(F("</table>"));
+    writeHtmlOpenThermDataTable("Thermostat requests", thermostatRequests);
+    writeHtmlOpenThermDataTable("Boiler responses", boilerResponses);
+    writeHtmlOpenThermDataTable("OTGW requests (thermostat overrides)", otgwRequests);
+    writeHtmlOpenThermDataTable("OTGW responses (boiler overrides)", otgwResponses);
 
     writeHtmlFooter();
 
@@ -615,7 +515,7 @@ void handleHttpOpenThermLogRequest()
     writeHtmlHeader("OpenTherm log", true, true);
     
     HttpResponse.println(F("<table>"));
-    HttpResponse.println(F("<tr><td>Time</td><td>TSet</td><td>Max mod %</td><td>TWater</td></tr>"));
+    HttpResponse.println(F("<tr><th>Time</th><th>TSet</th><th>Max mod %</th><th>TWater</th></tr>"));
     char timeString[8];
     OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getFirstEntry());
     while (otLogEntryPtr != NULL)

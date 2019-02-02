@@ -112,18 +112,19 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
 }
 
 
-bool OpenThermGateway::sendCommand(const char* cmd, const char* value)
+bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* response)
 {
     Tracer tracer("OpenThermGateway::sendCommand", cmd);
 
     char otgwCommand[16];
-    if (snprintf(otgwCommand, sizeof(otgwCommand), "%s=%s\r\n", cmd, value) >= sizeof(otgwCommand))
+    int bufferSize = sizeof(otgwCommand);
+    if (snprintf(otgwCommand, bufferSize, "%s=%s\r\n", cmd, value) >= bufferSize)
     {
         TRACE("Command too long");
         return false;
     }
 
-    char otgwResponse[16];
+    char* otgwResponse = response ? response : new char[16];
     int retries = 0;
     bool responseReceived;
     do
@@ -140,7 +141,10 @@ bool OpenThermGateway::sendCommand(const char* cmd, const char* value)
     while (!responseReceived && (retries++ < MAX_RETRIES));
 
     if (!responseReceived)
-        TRACE("No valid response from OpenTherm gateway after %d retries.\n", MAX_RETRIES);
+        TRACE("No valid response from OTGW after %d retries.\n", MAX_RETRIES);
+
+    if (response == NULL)
+        delete otgwResponse;
 
     return responseReceived;
 }
