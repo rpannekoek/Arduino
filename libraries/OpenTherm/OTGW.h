@@ -38,7 +38,9 @@ typedef enum
 {
     SlaveCHMode = 0x2,
     SlaveDHWMode = 0x4,
+    SlaveFlame = 0x8,
     MasterCHEnable = 0x100,
+    MasterDHWEnable = 0x200,
 } OpenThermStatus;
 
 
