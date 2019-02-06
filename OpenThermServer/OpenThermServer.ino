@@ -17,15 +17,18 @@
 #define HTTP_POLL_INTERVAL 60
 #define DATA_VALUE_NONE 0xFFFF
 #define EVENT_LOG_LENGTH 100
-#define OT_LOG_LENGTH 300
+#define OT_LOG_LENGTH 240
+#define KEEP_TSET_LOW_DURATION 10*60
 
+const char* _boilerLevelNames[5] = {"Off", "Low", "Medium", "High", "Thermostat"};
 
 typedef enum
 {
     Off,
     Low,
     Medium,
-    High
+    High,
+    Thermostat
 } BoilerLevel;
 
 struct OpenThermLogEntry
@@ -40,19 +43,19 @@ struct OpenThermLogEntry
 
 struct PersistentDataClass : PersistentDataBase
 {
-    public:
-        char HostName[20];
-        int8_t TimeZoneOffset; // hours
-        uint16_t OpenThermLogInterval; // seconds
+    char HostName[20];
+    int8_t TimeZoneOffset; // hours
+    uint16_t OpenThermLogInterval; // seconds
 
-        PersistentDataClass() : PersistentDataBase(sizeof(HostName) + sizeof(TimeZoneOffset) + sizeof(OpenThermLogInterval)) {}
+    PersistentDataClass() 
+        : PersistentDataBase(sizeof(HostName) + sizeof(TimeZoneOffset) + sizeof(OpenThermLogInterval)) {}
 
-        void initialize()
-        {
-            strcpy(HostName, "OpenThermGateway");
-            TimeZoneOffset = 1;
-            OpenThermLogInterval = 60;
-        }
+    void initialize()
+    {
+        strcpy(HostName, "OpenThermGateway");
+        TimeZoneOffset = 1;
+        OpenThermLogInterval = 60;
+    }
 };
 
 PersistentDataClass PersistentData;
@@ -78,13 +81,13 @@ time_t otgwTimeout = 0;
 
 char cmdResponse[128];
 
-int boilerTSet[4] = {0, 40, 50, 60}; // TODO: configurable
+int boilerTSet[5] = {0, 40, 50, 60, 0}; // TODO: configurable
 
-/*
-BoilerLevel currentBoilerLevel;
+BoilerLevel currentBoilerLevel = BoilerLevel::Thermostat;
 BoilerLevel changeBoilerLevel;
-time_t changeBoilerLevelTime;
-*/
+time_t changeBoilerLevelTime = 0;
+time_t boilerOverrideStartTime = 0;
+uint32_t totalOverrideDuration = 0;
 
 
 int formatTime(char* output, size_t output_size, const char* format, time_t time)
@@ -114,8 +117,8 @@ void logEvent(const char* msg)
 void setup() 
 {
     Serial.begin(9600);
-    Serial.setTimeout(500);
-    // Tracer::traceTo(Serial);
+    Serial.setTimeout(1000);
+    //Tracer::traceTo(Serial);
 
     // Turn built-in LED on
     pinMode(LED_BUILTIN, OUTPUT);
@@ -210,9 +213,21 @@ void initializeOpenThermGateway()
 
     // TODO: Set LED functions based on Configuration?
     // TODO: Set GPIO functions (outside temperature sensor)
-    
+
     if (success)
         logEvent("OTGW initialized.");
+}
+
+
+void resetOpenThermGateway()
+{
+    Tracer tracer("resetOpenThermGateway");
+
+    OTGW.reset();
+    otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
+    otgwTimeout = otgwInitializeTime + OTGW_TIMEOUT;
+
+    logEvent("OTGW reset");
 }
 
 
@@ -225,18 +240,31 @@ bool setMaxTSet()
     
     bool success = OTGW.sendCommand("SH", maxTSet); 
     if (!success)
+    {
         logEvent("Unable to set max CH water setpoint");
+        resetOpenThermGateway();
+    }
 
     return success;
 }
 
 
-/*
 bool setBoilerLevel(BoilerLevel level)
 {
     Tracer tracer("setBoilerLevel");
 
+    if (level == currentBoilerLevel)
+        return true;
+
     currentBoilerLevel = level;
+
+    if (level == BoilerLevel::Thermostat)
+        totalOverrideDuration += (currentTime - boilerOverrideStartTime);
+    else
+        boilerOverrideStartTime = currentTime;
+
+    if ((changeBoilerLevelTime != 0) && (level == changeBoilerLevel))
+        changeBoilerLevelTime = 0;
 
     bool success;
     if (level == BoilerLevel::Off)
@@ -249,11 +277,14 @@ bool setBoilerLevel(BoilerLevel level)
     }
 
     if (!success)
+    {
         logEvent("Unable to set boiler level");
+        resetOpenThermGateway();
+    }
 
     return success;
 }
-*/
+
 
 // Called repeatedly
 void loop() 
@@ -289,16 +320,14 @@ void loop()
 
     if (currentTime >= otgwTimeout)
     {
-        logEvent("OTGW Timeout. Resetting.");
-        OTGW.reset();
-        otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
-        otgwTimeout = otgwInitializeTime + OTGW_TIMEOUT;
+        logEvent("OTGW Timeout");
+        resetOpenThermGateway();
     }
 
     if ((otgwInitializeTime != 0) && (currentTime >= otgwInitializeTime))
     {
-        initializeOpenThermGateway();
         otgwInitializeTime = 0;
+        initializeOpenThermGateway();
     }
 
     // Log OpenTherm values from Thermostat and Boiler
@@ -310,14 +339,12 @@ void loop()
         TRACE("Free heap: %d\n", ESP.getFreeHeap());
     }
 
-    /*
     // Scheduled Boiler TSet change
     if ((changeBoilerLevelTime != 0) && (currentTime >= changeBoilerLevelTime))
     {
-        setBoilerLevel(changeBoilerLevel);
         changeBoilerLevelTime = 0;
+        setBoilerLevel(changeBoilerLevel);
     }
-    */
 
     delay(10);
 }
@@ -411,6 +438,56 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
 {
     Tracer tracer("handleThermostatRequest");
     
+    // Prevent thermostat on/off switching behavior
+    if (otFrame.dataId == OpenThermDataId::Status)
+    {
+        bool masterCHEnable = otFrame.dataValue & OpenThermStatus::MasterCHEnable;
+        bool lastMasterCHEnable = thermostatRequests[OpenThermDataId::Status] & OpenThermStatus::MasterCHEnable;
+        if (!masterCHEnable && lastMasterCHEnable)
+        {
+            // Thermostat switched CH off
+            // Keep boiler at Low level for a while.
+            if (currentBoilerLevel != BoilerLevel::Low)
+                setBoilerLevel(BoilerLevel::Low);
+            changeBoilerLevel = BoilerLevel::Thermostat;
+            changeBoilerLevelTime = currentTime + KEEP_TSET_LOW_DURATION;
+        }
+    }
+    else if (otFrame.dataId == OpenThermDataId::TSet)
+    {
+        if (getInteger(otFrame.dataValue) < boilerTSet[BoilerLevel::Low])
+        {
+            // TSet set below Low level; keep boiler at Low level
+            bool lastMasterCHEnable = thermostatRequests[OpenThermDataId::Status] & OpenThermStatus::MasterCHEnable;
+            if (lastMasterCHEnable && (currentBoilerLevel != BoilerLevel::Low))
+            {
+                setBoilerLevel(BoilerLevel::Low);
+            }
+        }
+        else
+        {
+            // TSet set above Low level
+            if (thermostatRequests[OpenThermDataId::MaxRelModulation] == 0)
+            {
+                // Thermostat is in "Low Load Mode" (using on/off switching)
+                // Keep boiler at Low level for a while before letting thermostat control TSet again.
+                if (currentBoilerLevel != BoilerLevel::Low)
+                {
+                    setBoilerLevel(BoilerLevel::Low);
+                    changeBoilerLevel = BoilerLevel::Thermostat;
+                    changeBoilerLevelTime = currentTime + KEEP_TSET_LOW_DURATION;
+                }
+            }
+            else
+            {
+                // Thermostat is requesting more than minimal Modulation (not in "Low Load Mode").
+                // Let thermostat control boiler TSet again.
+                if (currentBoilerLevel != BoilerLevel::Thermostat)
+                    setBoilerLevel(BoilerLevel::Thermostat);
+            }
+        }
+    }
+
     thermostatRequests[otFrame.dataId] = otFrame.dataValue;
 }
 
@@ -510,6 +587,17 @@ void handleHttpRootRequest()
 
     HttpResponse.println(F("<p class=\"traffic\"><a href=\"/traffic\">View all OpenTherm traffic</a></p>"));
 
+    HttpResponse.println(F("<h2>Boiler override</h2>"));
+    HttpResponse.println(F("<table>"));
+    HttpResponse.printf(F("<tr><td>Current level</td><td>%s</td></tr>\r\n"), _boilerLevelNames[currentBoilerLevel]);
+    if (changeBoilerLevelTime != 0)
+    {
+        HttpResponse.printf(F("<tr><td>Change to</td><td>%s</td></tr>\r\n"), _boilerLevelNames[changeBoilerLevel]);
+        HttpResponse.printf(F("<tr><td>Change in</td><td>%d s</td></tr>\r\n"), changeBoilerLevelTime - currentTime);
+    }
+    HttpResponse.printf(F("<tr><td>Override duration</td><td>%0.1f h</td></tr>\r\n"), float(totalOverrideDuration) / 3600);
+    HttpResponse.println(F("</table>"));
+
     HttpResponse.println(F("<h2>OpenTherm Gateway status</h2>"));
     HttpResponse.println(F("<table>"));
     for (int i = 0; i <= 4; i++)
@@ -575,22 +663,18 @@ void handleHttpOpenThermLogRequest()
 
     writeHtmlHeader("OpenTherm log", true, true);
     
+    HttpResponse.println(F("<p class=\"log-csv\"><a href=\"log-csv\">Get log in CSV format</a></p>"));
+
     // If the OT log contains many entries, we render every other so the max HTTP response size is not exceeded.
-    bool skipEvenEntries = openThermLog.count() > 150;
+    bool skipEvenEntries = openThermLog.count() > 100;
 
     HttpResponse.println(F("<table>"));
-    HttpResponse.println(F("<tr><th>Time</th><th>TSet(t)</th><th>Max mod %</th><th>TSet(b)</th><th>TWater</th><th>Status/th></tr>"));
+    HttpResponse.println(F("<tr><th>Time</th><th>TSet(t)</th><th>Max mod %</th><th>TSet(b)</th><th>TWater</th><th>Status</th></tr>"));
     char timeString[8];
     OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getFirstEntry());
     while (otLogEntryPtr != NULL)
     {
         formatTime(timeString, sizeof(timeString), "%H:%M", otLogEntryPtr->time);
-
-        const char* status;
-        if (otLogEntryPtr->boilerStatus & OpenThermStatus::SlaveFlame)
-            status = (otLogEntryPtr->boilerStatus & OpenThermStatus::SlaveCHMode) ? "CH" : "DHW";
-        else
-            status = "Off";
 
         HttpResponse.printf(
             F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%s</td></tr>\r\n"),
@@ -599,7 +683,7 @@ void handleHttpOpenThermLogRequest()
             getDecimal(otLogEntryPtr->thermostatMaxRelModulation),
             getDecimal(otLogEntryPtr->boilerTSet),
             getDecimal(otLogEntryPtr->boilerTWater),
-            status
+            OTGW.getSlaveStatus(otLogEntryPtr->boilerStatus)
             );
 
         otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getNextEntry());
@@ -671,7 +755,7 @@ void handleHttpEventLogRequest()
         event = static_cast<char*>(eventLog.getNextEntry());
     }
 
-    HttpResponse.println(F("<div><a href=\"/events/clear\">Clear event log</a></div>"));
+    HttpResponse.println(F("<p><a href=\"/events/clear\">Clear event log</a></p>"));
 
     writeHtmlFooter();
 
@@ -809,6 +893,7 @@ void handleHttpConfigFormPost()
 
     handleHttpConfigFormRequest();
 
+    delay(1000);
     ESP.reset();
 }
 
