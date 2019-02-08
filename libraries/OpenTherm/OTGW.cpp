@@ -24,7 +24,7 @@ OpenThermGateway::OpenThermGateway(Stream& serial, uint8_t resetPin)
 
 void OpenThermGateway::reset()
 {
-    Tracer tracer("OpenThermGateway::reset");
+    Tracer tracer(F("OpenThermGateway::reset"));
 
     pinMode(_resetPin, OUTPUT);
     digitalWrite(_resetPin, LOW);
@@ -38,7 +38,7 @@ void OpenThermGateway::reset()
 
 void OpenThermGateway::feedWatchdog()
 {
-    Tracer tracer("OpenThermGateway::feedWatchdog");
+    Tracer tracer(F("OpenThermGateway::feedWatchdog"));
 
     Wire.beginTransmission(WATCHDOG_I2C_ADDRESS);
     Wire.write(0xA5);
@@ -48,7 +48,7 @@ void OpenThermGateway::feedWatchdog()
 
 OpenThermGatewayMessage OpenThermGateway::readMessage()
 {
-    Tracer tracer("OpenThermGateway::readMessage");
+    Tracer tracer(F("OpenThermGateway::readMessage"));
 
     OpenThermGatewayMessage result;
 
@@ -56,12 +56,12 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
     size_t bytesRead = _serial.readBytesUntil('\n',  otgwMessage, sizeof(otgwMessage));
     if (bytesRead < 2) 
     {
-        result.message = "[Timeout]";
+        result.message = F("[Timeout]");
         result.direction = OpenThermGatewayDirection::Unexpected;
         return result;
     }
     otgwMessage[bytesRead] = 0;
-    TRACE("Message from OTGW: %s\n", otgwMessage);
+    TRACE(F("Message from OTGW: %s\n"), otgwMessage);
     result.message = otgwMessage;
 
     // Check for gateway errors
@@ -83,7 +83,7 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
     int mappedItems = sscanf(otgwMessage + 1, "%02x%02x%04x", &otMsgType, &otDataId, &otDataValue); 
     if (mappedItems != 3)
     {
-        TRACE("Failed parsing OpenTherm message. Mapped items: %d\n", mappedItems);
+        TRACE(F("Failed parsing OpenTherm message. Mapped items: %d\n"), mappedItems);
         result.direction = OpenThermGatewayDirection::Unexpected;
         return result;
     }
@@ -117,7 +117,7 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
             result.direction = OpenThermGatewayDirection::Unexpected;
     }
 
-    TRACE("direction=%d, msgType=%d, dataId=%d, dataValue=0x%04X\n", result.direction, result.msgType, result.dataId, result.dataValue);
+    TRACE(F("direction=%d, msgType=%d, dataId=%d, dataValue=0x%04X\n"), result.direction, result.msgType, result.dataId, result.dataValue);
 
     return result;
 }
@@ -125,13 +125,13 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
 
 bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* response, size_t bufferSize)
 {
-    Tracer tracer("OpenThermGateway::sendCommand", cmd);
+    Tracer tracer(F("OpenThermGateway::sendCommand"), cmd);
 
     char otgwCommand[BUFFER_SIZE];
     int cmdBufferSize = sizeof(otgwCommand);
     if (snprintf(otgwCommand, cmdBufferSize, "%s=%s\r\n", cmd, value) >= cmdBufferSize)
     {
-        TRACE("Command too long");
+        TRACE(F("Command too long"));
         return false;
     }
 
@@ -152,13 +152,13 @@ bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* res
         // Read OTWG response
         size_t bytesRead = _serial.readBytesUntil('\n', otgwResponse, bufferSize - 1);
         otgwResponse[bytesRead] = 0;
-        TRACE("OTGW response: %s\n", otgwResponse);
+        TRACE(F("OTGW response: %s\n"), otgwResponse);
         responseReceived = (strncmp(otgwResponse, cmd, 2) == 0);
     }
     while (!responseReceived && (retries++ < MAX_RETRIES));
 
     if (!responseReceived)
-        TRACE("No valid response from OTGW after %d retries.\n", MAX_RETRIES);
+        TRACE(F("No valid response from OTGW after %d retries.\n"), MAX_RETRIES);
 
     if (response == NULL)
         delete otgwResponse;

@@ -10,14 +10,14 @@
 class Tracer
 {
   public:
-    Tracer(const char* name, const char* arg = NULL);
+    Tracer(String name, const char* arg = NULL);
     ~Tracer();
 
     static void traceTo(Print& dest);
-    static void trace(const char* format, ...);
+    static void trace(String format, ...);
 
   private:
-    const char* _name;
+    String _name;
     unsigned long _startMicros;
 };
 

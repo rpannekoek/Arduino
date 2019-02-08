@@ -39,6 +39,16 @@ struct OpenThermLogEntry
     uint16_t boilerStatus;
     uint16_t boilerTSet;
     uint16_t boilerTWater;
+    uint8_t repeat;
+
+    bool equals(OpenThermLogEntry* otherPtr)
+    {
+        return (otherPtr->thermostatTSet == thermostatTSet) &&
+            (otherPtr->thermostatMaxRelModulation == thermostatMaxRelModulation) &&
+            (otherPtr->boilerStatus == boilerStatus) &&
+            (otherPtr->boilerTSet == boilerTSet) &&
+            (otherPtr->boilerTWater == boilerTWater);
+    }
 };
 
 struct PersistentDataClass : PersistentDataBase
@@ -79,6 +89,8 @@ time_t otLogTime = 0;
 time_t otgwInitializeTime = 0;
 time_t otgwTimeout = 0;
 
+OpenThermLogEntry* lastOTLogEntryPtr = NULL;
+
 char cmdResponse[128];
 
 int boilerTSet[5] = {0, 40, 50, 60, 0}; // TODO: configurable
@@ -97,19 +109,19 @@ int formatTime(char* output, size_t output_size, const char* format, time_t time
 }
 
 
-void logEvent(const char* msg)
+void logEvent(String msg)
 {
-    Tracer tracer("logEvent", msg);
+    Tracer tracer(F("logEvent"), msg.c_str());
 
-    size_t timestamp_size = strlen("2019-01-30 12:23:34  : ");
+    size_t timestamp_size = 23; // strlen("2019-01-30 12:23:34 : ") + 1;
 
-    char* event = new char[timestamp_size + strlen(msg) + 1];
+    char* event = new char[timestamp_size + msg.length()];
     formatTime(event, timestamp_size, "%F %H:%M:%S : ", TimeServer.getCurrentTime());
-    strcat(event, msg);
+    strcat(event, msg.c_str());
 
     eventLog.add(event);
 
-    TRACE("%d event log entries\n", eventLog.count());
+    TRACE(F("%d event log entries\n"), eventLog.count());
 }
 
 
@@ -124,13 +136,13 @@ void setup()
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, 0);
 
-    TRACE("Boot mode: %d\n", ESP.getBootMode());
-    TRACE("Free heap: %d\n", ESP.getFreeHeap());
+    TRACE(F("Boot mode: %d\n"), ESP.getBootMode());
+    TRACE(F("Free heap: %d\n"), ESP.getFreeHeap());
 
     // Read persistent data from EEPROM or initialize to defaults.
     if (!PersistentData.readFromEEPROM())
     {
-        TRACE("EEPROM not initialized; initializing with defaults.\n");
+        TRACE(F("EEPROM not initialized; initializing with defaults.\n"));
         PersistentData.initialize();
         PersistentData.printData();
     }
@@ -138,7 +150,7 @@ void setup()
         PersistentData.OpenThermLogInterval = 5;
 
     // Connect to WiFi network
-    TRACE("Connecting to WiFi network '%s' ", WIFI_SSID);
+    TRACE(F("Connecting to WiFi network '%s' "), WIFI_SSID);
     WiFi.mode(WIFI_STA);
     WiFi.hostname(PersistentData.HostName);
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -149,16 +161,16 @@ void setup()
         delay(500);
         if (i++ == 60)
         {
-            TRACE("\nTimeout connecting WiFi.\n");
+            TRACE(F("\nTimeout connecting WiFi.\n"));
             return;
         }
     }
     if (WiFi.status() != WL_CONNECTED)
     {
-        TRACE("\nError connecting WiFi. Status: %d\n", WiFi.status());
+        TRACE(F("\nError connecting WiFi. Status: %d\n"), WiFi.status());
         return;
     }
-    TRACE("\nWiFi connected. IP address: %s\n", WiFi.localIP().toString().c_str());
+    TRACE(F("\nWiFi connected. IP address: %s\n"), WiFi.localIP().toString().c_str());
 
     SPIFFS.begin();
 
@@ -178,11 +190,11 @@ void setup()
     WebServer.serveStatic("/styles.css", SPIFFS, "/styles.css", cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
     WebServer.begin();
-    TRACE("Web Server started\n");
+    TRACE(F("Web Server started\n"));
     
     currentTime = TimeServer.getCurrentTime();
     if (currentTime < 1000) 
-        logEvent("Unable to obtain time from NTP server.");
+        logEvent(F("Unable to obtain time from NTP server"));
 
     otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
     otgwTimeout = otgwInitializeTime + OTGW_TIMEOUT;
@@ -198,16 +210,16 @@ void setup()
     // Turn built-in LED off
     digitalWrite(LED_BUILTIN, 1);
 
-    logEvent("Initialized after boot.");
+    logEvent(F("Initialized after boot."));
     isInitialized = true;
 
-    TRACE("Free heap: %d\n", ESP.getFreeHeap());
+    TRACE(F("Free heap: %d\n"), ESP.getFreeHeap());
 }
 
 
 void initializeOpenThermGateway()
 {
-    Tracer tracer("initializeOpenThermGateway");
+    Tracer tracer(F("initializeOpenThermGateway"));
 
     bool success = setMaxTSet();
 
@@ -215,25 +227,25 @@ void initializeOpenThermGateway()
     // TODO: Set GPIO functions (outside temperature sensor)
 
     if (success)
-        logEvent("OTGW initialized.");
+        logEvent(F("OTGW initialized"));
 }
 
 
 void resetOpenThermGateway()
 {
-    Tracer tracer("resetOpenThermGateway");
+    Tracer tracer(F("resetOpenThermGateway"));
 
     OTGW.reset();
     otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
     otgwTimeout = otgwInitializeTime + OTGW_TIMEOUT;
 
-    logEvent("OTGW reset");
+    logEvent(F("OTGW reset"));
 }
 
 
 bool setMaxTSet()
 {
-    Tracer tracer("setMaxTSet");
+    Tracer tracer(F("setMaxTSet"));
 
     char maxTSet[8];
     sprintf(maxTSet, "%d", boilerTSet[BoilerLevel::High]);
@@ -241,7 +253,7 @@ bool setMaxTSet()
     bool success = OTGW.sendCommand("SH", maxTSet); 
     if (!success)
     {
-        logEvent("Unable to set max CH water setpoint");
+        logEvent(F("Unable to set max CH water setpoint"));
         resetOpenThermGateway();
     }
 
@@ -251,7 +263,7 @@ bool setMaxTSet()
 
 bool setBoilerLevel(BoilerLevel level)
 {
-    Tracer tracer("setBoilerLevel");
+    Tracer tracer(F("setBoilerLevel"));
 
     if (level == currentBoilerLevel)
         return true;
@@ -278,7 +290,7 @@ bool setBoilerLevel(BoilerLevel level)
 
     if (!success)
     {
-        logEvent("Unable to set boiler level");
+        logEvent(F("Unable to set boiler level"));
         resetOpenThermGateway();
     }
 
@@ -320,7 +332,7 @@ void loop()
 
     if (currentTime >= otgwTimeout)
     {
-        logEvent("OTGW Timeout");
+        logEvent(F("OTGW Timeout"));
         resetOpenThermGateway();
     }
 
@@ -336,7 +348,7 @@ void loop()
         logOpenThermValues();
         otLogTime = currentTime + PersistentData.OpenThermLogInterval;
         
-        TRACE("Free heap: %d\n", ESP.getFreeHeap());
+        TRACE(F("Free heap: %d\n"), ESP.getFreeHeap());
     }
 
     // Scheduled Boiler TSet change
@@ -352,32 +364,38 @@ void loop()
 
 void logOpenThermValues()
 {
-    Tracer tracer("logOpenThermValues");
+    Tracer tracer(F("logOpenThermValues"));
+
+    uint16_t thermostatTSet;
+    if (thermostatRequests[OpenThermDataId::Status] & OpenThermStatus::MasterCHEnable)
+        thermostatTSet = thermostatRequests[OpenThermDataId::TSet];
+    else
+        thermostatTSet = 0; // CH disabled
 
     OpenThermLogEntry* otLogEntryPtr = new OpenThermLogEntry();
     otLogEntryPtr->time = currentTime;
-    
-    uint16_t lastThermostatStatus = thermostatRequests[OpenThermDataId::Status];
-    if (lastThermostatStatus & OpenThermStatus::MasterCHEnable)
-        otLogEntryPtr->thermostatTSet = thermostatRequests[OpenThermDataId::TSet];
-    else
-        otLogEntryPtr->thermostatTSet = 0; // CH disabled
-
+    otLogEntryPtr->thermostatTSet = thermostatTSet;
     otLogEntryPtr->thermostatMaxRelModulation = thermostatRequests[OpenThermDataId::MaxRelModulation];
     otLogEntryPtr->boilerStatus = boilerResponses[OpenThermDataId::Status];
     otLogEntryPtr->boilerTSet = boilerResponses[OpenThermDataId::TSet];
     otLogEntryPtr->boilerTWater = boilerResponses[OpenThermDataId::TBoiler];
+    otLogEntryPtr->repeat = 0;
 
-    openThermLog.add(otLogEntryPtr);
+    if ((lastOTLogEntryPtr != NULL) && (lastOTLogEntryPtr->equals(otLogEntryPtr)))
+        lastOTLogEntryPtr->repeat++;
+    else
+    {
+        openThermLog.add(otLogEntryPtr);
+        lastOTLogEntryPtr = otLogEntryPtr;
+    }
 
-    TRACE("%d OpenTherm log entries.\n", openThermLog.count());
+    TRACE(F("%d OpenTherm log entries.\n"), openThermLog.count());
 }
 
 
 void handleSerialData()
 {
-    Tracer tracer("handleSerialData");
-    char event[64];
+    Tracer tracer(F("handleSerialData"));
 
     OpenThermGatewayMessage otgwMessage = OTGW.readMessage();
 
@@ -400,18 +418,10 @@ void handleSerialData()
             break;
 
         case OpenThermGatewayDirection::Error:
-            snprintf(event, sizeof(event), "OTGW Error: %s", otgwMessage.message.c_str());
-            logEvent(event);
-            break;
-
         case OpenThermGatewayDirection::Unexpected:
-            if (otgwInitializeTime == 0)
-            {
-                snprintf(event, sizeof(event), "Unexpected OTGW Message: %s", otgwMessage.message.c_str());
-                logEvent(event);
-            }
-            else
-                logEvent(otgwMessage.message.c_str());
+            char event[64];
+            snprintf(event, sizeof(event), "OTGW: %s", otgwMessage.message.c_str());
+            logEvent(event);
     }
 }
 
@@ -436,7 +446,7 @@ int8_t getInteger(uint16_t dataValue)
 
 void handleThermostatRequest(OpenThermGatewayMessage otFrame)
 {
-    Tracer tracer("handleThermostatRequest");
+    Tracer tracer(F("handleThermostatRequest"));
     
     // Prevent thermostat on/off switching behavior
     if (otFrame.dataId == OpenThermDataId::Status)
@@ -494,7 +504,7 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
 
 void handleBoilerResponse(OpenThermGatewayMessage otFrame)
 {
-    Tracer tracer("handleBoilerResponse");
+    Tracer tracer(F("handleBoilerResponse"));
 
     if (otFrame.msgType == OpenThermMsgType::UnknownDataId)
         return;
@@ -505,7 +515,7 @@ void handleBoilerResponse(OpenThermGatewayMessage otFrame)
 
 void handleBoilerRequest(OpenThermGatewayMessage otFrame)
 {
-    Tracer tracer("handleBoilerRequest");
+    Tracer tracer(F("handleBoilerRequest"));
 
     // Modified request from OTGW to boiler (e.g. TSet override)
     otgwRequests[otFrame.dataId] = otFrame.dataValue;
@@ -514,7 +524,7 @@ void handleBoilerRequest(OpenThermGatewayMessage otFrame)
 
 void handleThermostatResponse(OpenThermGatewayMessage otFrame)
 {
-    Tracer tracer("handleThermostatResponse");
+    Tracer tracer(F("handleThermostatResponse"));
 
     // Modified response from OTGW to thermostat (e.g. TOutside override)
     otgwResponses[otFrame.dataId] = otFrame.dataValue;
@@ -524,20 +534,20 @@ void handleThermostatResponse(OpenThermGatewayMessage otFrame)
         int8_t maxTSet = getInteger(otFrame.dataValue);
         if (maxTSet != boilerTSet[BoilerLevel::High])
         {
-            logEvent("Max CH Water Setpoint is changed (by OTGW reset?). Re-initializing OTGW.");
+            logEvent(F("Max CH Water Setpoint is changed (by OTGW reset?)"));
             otgwInitializeTime = currentTime;
         }
     }
 }
 
 
-void writeHtmlHeader(const char* title, bool includeHomePageLink, bool includeHeading)
+void writeHtmlHeader(String title, bool includeHomePageLink, bool includeHeading)
 {
     HttpResponse.clear();
     HttpResponse.println(F("<html>"));
     
     HttpResponse.println(F("<head>"));
-    HttpResponse.printf(F("<title>%s - %s</title>\r\n"), PersistentData.HostName, title);
+    HttpResponse.printf(F("<title>%s - %s</title>\r\n"), PersistentData.HostName, title.c_str());
     HttpResponse.println(F("<link rel=\"stylesheet\" type=\"text/css\" href=\"/styles.css\">"));
     HttpResponse.printf(F("<link rel=\"icon\" sizes=\"196x196\" href=\"%s\">\r\n<link rel=\"apple-touch-icon-precomposed\" sizes=\"196x196\" href=\"%s\">\r\n"), ICON, ICON);
     HttpResponse.printf(F("<meta http-equiv=\"refresh\" content=\"%d\">\r\n") , HTTP_POLL_INTERVAL);
@@ -547,7 +557,7 @@ void writeHtmlHeader(const char* title, bool includeHomePageLink, bool includeHe
     if (includeHomePageLink)
         HttpResponse.println(F("<a href=\"/\"><img src=\"" ICON "\"></a>"));
     if (includeHeading)
-        HttpResponse.printf(F("<h1>%s</h1>\r\n"), title);
+        HttpResponse.printf(F("<h1>%s</h1>\r\n"), title.c_str());
 }
 
 
@@ -560,9 +570,9 @@ void writeHtmlFooter()
 
 void handleHttpRootRequest()
 {
-    Tracer tracer("handleHttpRootRequest");
+    Tracer tracer(F("handleHttpRootRequest"));
     
-    writeHtmlHeader("Home", false, false);
+    writeHtmlHeader(F("Home"), false, false);
 
     HttpResponse.println(F("<h2>Last OpenTherm values</h2>"));
 
@@ -613,13 +623,13 @@ void handleHttpRootRequest()
 
     writeHtmlFooter();
 
-    WebServer.send(200, "text/html", HttpResponse);
+    WebServer.send(200, F("text/html"), HttpResponse);
 }
 
 
-void writeHtmlOpenThermDataTable(const char* title, uint16_t* otDataTable)
+void writeHtmlOpenThermDataTable(String title, uint16_t* otDataTable)
 {
-    HttpResponse.printf(F("<h2>%s</h2>\r\n"), title);
+    HttpResponse.printf(F("<h2>%s</h2>\r\n"), title.c_str());
     HttpResponse.println(F("<table>"));
     HttpResponse.println(F("<tr><th>Data ID</th><th>Data Value (hex)</th><th>Data value (dec)</th></tr>"));
 
@@ -642,26 +652,26 @@ void writeHtmlOpenThermDataTable(const char* title, uint16_t* otDataTable)
 
 void handleHttpOpenThermTrafficRequest()
 {
-    Tracer tracer("handleHttpOpenThermTrafficRequest");
+    Tracer tracer(F("handleHttpOpenThermTrafficRequest"));
 
-    writeHtmlHeader("OpenTherm traffic", true, true);
+    writeHtmlHeader(F("OpenTherm traffic"), true, true);
     
-    writeHtmlOpenThermDataTable("Thermostat requests", thermostatRequests);
-    writeHtmlOpenThermDataTable("Boiler responses", boilerResponses);
-    writeHtmlOpenThermDataTable("OTGW requests (thermostat overrides)", otgwRequests);
-    writeHtmlOpenThermDataTable("OTGW responses (boiler overrides)", otgwResponses);
+    writeHtmlOpenThermDataTable(F("Thermostat requests"), thermostatRequests);
+    writeHtmlOpenThermDataTable(F("Boiler responses"), boilerResponses);
+    writeHtmlOpenThermDataTable(F("OTGW requests (thermostat overrides)"), otgwRequests);
+    writeHtmlOpenThermDataTable(F("OTGW responses (boiler overrides)"), otgwResponses);
 
     writeHtmlFooter();
 
-    WebServer.send(200, "text/html", HttpResponse);
+    WebServer.send(200, F("text/html"), HttpResponse);
 }
 
 
 void handleHttpOpenThermLogRequest()
 {
-    Tracer tracer("handleHttpOpenThermLogRequest");
+    Tracer tracer(F("handleHttpOpenThermLogRequest"));
 
-    writeHtmlHeader("OpenTherm log", true, true);
+    writeHtmlHeader(F("OpenTherm log"), true, true);
     
     HttpResponse.println(F("<p class=\"log-csv\"><a href=\"log-csv\">Get log in CSV format</a></p>"));
 
@@ -694,13 +704,13 @@ void handleHttpOpenThermLogRequest()
 
     writeHtmlFooter();
 
-    WebServer.send(200, "text/html", HttpResponse);
+    WebServer.send(200, F("text/html"), HttpResponse);
 }
 
 
 void handleHttpOpenThermLogCsvRequest()
 {
-    Tracer tracer("handleHttpOpenThermLogCsvRequest");
+    Tracer tracer(F("handleHttpOpenThermLogCsvRequest"));
 
     /* CSV format:
     "Time","TSet(t)","Max Modulation %","TSet(b)","TWater","CH","DHW"
@@ -709,44 +719,59 @@ void handleHttpOpenThermLogCsvRequest()
     */
 
     HttpResponse.clear();
-    HttpResponse.println("\"Time\",\"TSet(t)\",\"Max Modulation %\",\"TSet(b)\",\"TWater\",\"CH\",\"DHW\"");
+    HttpResponse.println(F("\"Time\",\"TSet(t)\",\"Max Modulation %\",\"TSet(b)\",\"TWater\",\"CH\",\"DHW\""));
 
-    char timeString[strlen("2019-02-02 12:30") + 1];
     OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getFirstEntry());
     while (otLogEntryPtr != NULL)
     {
-        int statusCH = 0;
-        int statusDHW = 0;
-        if (otLogEntryPtr->boilerStatus & OpenThermStatus::SlaveFlame)
+        time_t otLogEntryTime = otLogEntryPtr->time;
+        writeCsvDataLine(otLogEntryPtr, otLogEntryTime);
+        if (otLogEntryPtr->repeat > 0)
         {
-            statusCH = (otLogEntryPtr->boilerStatus & OpenThermStatus::SlaveCHMode) ? 5 : 0;
-            statusDHW = (otLogEntryPtr->boilerStatus & OpenThermStatus::SlaveDHWMode) ? 5 : 0;
+            // OpenTherm log entry repeats at least once.
+            // Write an additional CSV data line for the end of the interval to prevent interpolation in the graphs. 
+            otLogEntryTime += (PersistentData.OpenThermLogInterval * otLogEntryPtr->repeat);
+            writeCsvDataLine(otLogEntryPtr, otLogEntryTime);
         }
-
-        formatTime(timeString, sizeof(timeString), "%F %H:%M", otLogEntryPtr->time);
-        HttpResponse.printf(
-            F("\"%s\",%d,%d,%d,%d,%d,%d\r\n"), 
-            timeString, 
-            getInteger(otLogEntryPtr->thermostatTSet),
-            getInteger(otLogEntryPtr->thermostatMaxRelModulation),
-            getInteger(otLogEntryPtr->boilerTSet),
-            getInteger(otLogEntryPtr->boilerTWater),
-            statusCH,
-            statusDHW
-            );
-
+        
         otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getNextEntry());
     }
 
-    WebServer.send(200, "text/plain", HttpResponse);
+    WebServer.send(200, F("text/plain"), HttpResponse);
+}
+
+
+void writeCsvDataLine(OpenThermLogEntry* otLogEntryPtr, time_t time)
+{
+    int statusCH = 0;
+    int statusDHW = 0;
+    if (otLogEntryPtr->boilerStatus & OpenThermStatus::SlaveFlame)
+    {
+        statusCH = (otLogEntryPtr->boilerStatus & OpenThermStatus::SlaveCHMode) ? 5 : 0;
+        statusDHW = (otLogEntryPtr->boilerStatus & OpenThermStatus::SlaveDHWMode) ? 5 : 0;
+    }
+
+    char timeString[17]; // strlen("2019-02-02 12:30") + 1
+    formatTime(timeString, sizeof(timeString), "%F %H:%M", time);
+
+    HttpResponse.printf(
+        F("\"%s\",%d,%d,%d,%d,%d,%d\r\n"), 
+        timeString, 
+        getInteger(otLogEntryPtr->thermostatTSet),
+        getInteger(otLogEntryPtr->thermostatMaxRelModulation),
+        getInteger(otLogEntryPtr->boilerTSet),
+        getInteger(otLogEntryPtr->boilerTWater),
+        statusCH,
+        statusDHW
+        );
 }
 
 
 void handleHttpEventLogRequest()
 {
-    Tracer tracer("handleHttpEventLogRequest");
+    Tracer tracer(F("handleHttpEventLogRequest"));
 
-    writeHtmlHeader("Event log", true, true);
+    writeHtmlHeader(F("Event log"), true, true);
 
     char* event = static_cast<char*>(eventLog.getFirstEntry());
     while (event != NULL)
@@ -759,37 +784,43 @@ void handleHttpEventLogRequest()
 
     writeHtmlFooter();
 
-    WebServer.send(200, "text/html", HttpResponse);
+    WebServer.send(200, F("text/html"), HttpResponse);
 }
 
 
 void handleHttpEventLogClearRequest()
 {
-    Tracer tracer("handleHttpEventLogClearRequest");
+    Tracer tracer(F("handleHttpEventLogClearRequest"));
 
     eventLog.clear();
-    logEvent("Event log cleared.");
+    logEvent(F("Event log cleared."));
 
     handleHttpEventLogRequest();
 }
 
 
-void addTextBoxRow(StringBuilder& output, const char* name, const char* value, const char* label)
+void addTextBoxRow(StringBuilder& output, String name, String value, String label)
 {
-    output.printf(F("<tr><td><label for=\"%s\">%s</label></td><td><input type=\"text\" name=\"%s\" value=\"%s\"></td></tr>\r\n"), name, label, name, value);
+    output.printf(
+        F("<tr><td><label for=\"%s\">%s</label></td><td><input type=\"text\" name=\"%s\" value=\"%s\"></td></tr>\r\n"), 
+        name.c_str(),
+        label.c_str(),
+        name.c_str(),
+        value.c_str()
+        );
 }
 
 
 void handleHttpCommandFormRequest()
 {
-    Tracer tracer("handleHttpCommandFormRequest");
+    Tracer tracer(F("handleHttpCommandFormRequest"));
 
-    writeHtmlHeader("Send OTGW Command", true, true);
+    writeHtmlHeader(F("Send OTGW Command"), true, true);
 
     HttpResponse.println(F("<form action=\"/cmd\" method=\"POST\">"));
     HttpResponse.println(F("<table>"));
-    addTextBoxRow(HttpResponse, "cmd", "PR", "Command");
-    addTextBoxRow(HttpResponse, "value", "A", "Value");
+    addTextBoxRow(HttpResponse, F("cmd"), F("PR"), F("Command"));
+    addTextBoxRow(HttpResponse, F("value"), F("A"), F("Value"));
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
     HttpResponse.println(F("</form>"));
@@ -801,18 +832,18 @@ void handleHttpCommandFormRequest()
 
     cmdResponse[0] = 0;
 
-    WebServer.send(200, "text/html", HttpResponse);
+    WebServer.send(200, F("text/html"), HttpResponse);
 }
 
 
 void handleHttpCommandFormPost()
 {
-    Tracer tracer("handleHttpCommandFormPost");
+    Tracer tracer(("handleHttpCommandFormPost"));
 
     String cmd = WebServer.arg("cmd");
     String value = WebServer.arg("value");
 
-    TRACE("cmd: '%s'\nvalue: '%s'\n", cmd.c_str(), value.c_str());
+    TRACE(F("cmd: '%s'\nvalue: '%s'\n"), cmd.c_str(), value.c_str());
 
     if (cmd.length() != 2)
         snprintf(cmdResponse, sizeof(cmdResponse), "Invalid command. Must be 2 characters.");
@@ -829,7 +860,7 @@ void handleHttpCommandFormPost()
 
 void handleHttpConfigFormRequest()
 {
-    Tracer tracer("handleHttpConfigFormRequest");
+    Tracer tracer(F("handleHttpConfigFormRequest"));
 
     char tzOffsetString[4];
     sprintf(tzOffsetString, "%d", PersistentData.TimeZoneOffset);
@@ -837,19 +868,19 @@ void handleHttpConfigFormRequest()
     char otLogIntervalString[4];
     sprintf(otLogIntervalString, "%u", PersistentData.OpenThermLogInterval);
 
-    writeHtmlHeader("Configuration", true, true);
+    writeHtmlHeader(F("Configuration"), true, true);
 
     HttpResponse.println(F("<form action=\"/config\" method=\"POST\">"));
     HttpResponse.println(F("<table>"));
-    addTextBoxRow(HttpResponse, "hostName", PersistentData.HostName, "Host name");
-    addTextBoxRow(HttpResponse, "tzOffset", tzOffsetString, "Timezone offset");
-    addTextBoxRow(HttpResponse, "otLogInterval", otLogIntervalString, "OT Log Interval");
+    addTextBoxRow(HttpResponse, F("hostName"), PersistentData.HostName, F("Host name"));
+    addTextBoxRow(HttpResponse, F("tzOffset"), tzOffsetString, F("Timezone offset"));
+    addTextBoxRow(HttpResponse, F("otLogInterval"), otLogIntervalString, F("OT Log Interval"));
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
     HttpResponse.println(F("</form>"));
 
     HttpResponse.printf(
-        F("<div>OpenTherm log length: %d * %d s = %0.1f hours</div>"), 
+        F("<div>OpenTherm log length: minimal %d * %d s = %0.1f hours</div>"), 
         OT_LOG_LENGTH, 
         PersistentData.OpenThermLogInterval,
         float(OT_LOG_LENGTH * PersistentData.OpenThermLogInterval) / 3600
@@ -857,21 +888,21 @@ void handleHttpConfigFormRequest()
 
     writeHtmlFooter();
 
-    WebServer.send(200, "text/html", HttpResponse);
+    WebServer.send(200, F("text/html"), HttpResponse);
 }
 
 
 void handleHttpConfigFormPost()
 {
-    Tracer tracer("handleHttpConfigFormPost");
+    Tracer tracer(F("handleHttpConfigFormPost"));
 
     strcpy(PersistentData.HostName, WebServer.arg("hostName").c_str()); 
     String tzOffsetString = WebServer.arg("tzOffset");
     String otLogIntervalString = WebServer.arg("otLogInterval");
 
-    TRACE("hostName: %s\n", PersistentData.HostName);
-    TRACE("tzOffset: %s\n", tzOffsetString.c_str());
-    TRACE("otLogInterval: %s\n", otLogIntervalString.c_str());
+    TRACE(F("hostName: %s\n"), PersistentData.HostName);
+    TRACE(F("tzOffset: %s\n"), tzOffsetString.c_str());
+    TRACE(F("otLogInterval: %s\n"), otLogIntervalString.c_str());
     
     int tzOffset;
     sscanf(tzOffsetString.c_str(), "%d", &tzOffset);
@@ -900,6 +931,6 @@ void handleHttpConfigFormPost()
 
 void handleHttpNotFound()
 {
-    TRACE("Unexpected HTTP request: %s\n", WebServer.uri().c_str());
-    WebServer.send(404, "text/plain", "Unexpected request.");
+    TRACE(F("Unexpected HTTP request: %s\n"), WebServer.uri().c_str());
+    WebServer.send(404, F("text/plain"), F("Unexpected request."));
 }

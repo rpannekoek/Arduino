@@ -23,9 +23,9 @@ PersistentDataBase::~PersistentDataBase()
 
 void PersistentDataBase::writeToEEPROM()
 {
-    Tracer tracer("PersistentDataBase::writeToEEPROM");
+    Tracer tracer(F("PersistentDataBase::writeToEEPROM"));
 
-    TRACE("Writing %d + %d bytes to EEPROM...\n", _dataSize, sizeof(Magic));
+    TRACE(F("Writing %d + %d bytes to EEPROM...\n"), _dataSize, sizeof(Magic));
     printData();
  
     // Write Magic
@@ -45,9 +45,9 @@ void PersistentDataBase::writeToEEPROM()
 
 bool PersistentDataBase::readFromEEPROM()
 {
-    Tracer tracer("PersistentDataBase::readFromEEPROM");
+    Tracer tracer(F("PersistentDataBase::readFromEEPROM"));
 
-    TRACE("Reading %d + %d bytes from EEPROM...\n", _dataSize, sizeof(Magic)); 
+    TRACE(F("Reading %d + %d bytes from EEPROM...\n"), _dataSize, sizeof(Magic)); 
 
     // Read Magic
     byte* bytePtr = (byte*) &Magic;

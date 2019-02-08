@@ -5,6 +5,7 @@ Log::Log(uint16_t size)
     : _size(size)
 {
     _entriesPtr = new void*[size];
+    _entriesPtr[0] = NULL;
     _start = 0;
     _end = 0;
     _count = 0;
@@ -31,6 +32,7 @@ void Log::clear()
     {
         void* entry = _entriesPtr[i]; 
         delete entry;
+        _entriesPtr[i] = NULL;
     }
 
     _start = 0;
@@ -42,10 +44,7 @@ void Log::clear()
 
 void Log::add(void* entry)
 {
-    _entriesPtr[_end] = entry;
-
-    _end = (_end + 1) % _size;
-    if (_end == _start)
+   if ((_end == _start) && (_entriesPtr[_end] != NULL))
     {
         // Log is full; drop oldest entry.
         delete _entriesPtr[_start];
@@ -53,6 +52,10 @@ void Log::add(void* entry)
     }
     else
         _count++;
+        
+    _entriesPtr[_end] = entry;
+
+    _end = (_end + 1) % _size;
 }
 
 

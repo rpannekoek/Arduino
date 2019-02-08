@@ -11,14 +11,14 @@ void Tracer::traceTo(Print& dest)
 }
 
 
-void Tracer::trace(const char* format, ...)
+void Tracer::trace(String format, ...)
 {
     if (_traceToPtr == NULL)
         return;
 
     va_list args;
     va_start(args, format);
-    vsnprintf(_traceMsg, sizeof(_traceMsg), format, args);
+    vsnprintf(_traceMsg, sizeof(_traceMsg), format.c_str(), args);
     va_end(args);
 
     _traceToPtr->print(_traceMsg);
@@ -26,13 +26,13 @@ void Tracer::trace(const char* format, ...)
 
 
 //Constructor
-Tracer::Tracer(const char* name, const char* arg)
+Tracer::Tracer(String name, const char* arg)
 {
     _name = name;
     if (arg == NULL)
-        trace("%s() entry\n", _name);
+        trace(F("%s() entry\n"), _name.c_str());
     else
-        trace("%s(\"%s\") entry\n", _name, arg);
+        trace(F("%s(\"%s\") entry\n"), _name.c_str(), arg);
     _startMicros = micros();
 }
 
@@ -40,5 +40,5 @@ Tracer::Tracer(const char* name, const char* arg)
 Tracer::~Tracer()
 {
     float duration = float(micros() - _startMicros) / 1000;
-    trace("%s exit. Duration: %0.1f ms.\n", _name, duration);
+    trace(F("%s exit. Duration: %0.1f ms.\n"), _name.c_str(), duration);
 }

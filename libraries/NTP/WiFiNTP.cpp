@@ -15,12 +15,12 @@ WiFiNTP::WiFiNTP(const char* timeServerPool, int serverSyncInterval)
 
 time_t WiFiNTP::getServerTime()
 {
-  Tracer tracer("WiFiNTP::getServerTime");
+  Tracer tracer(F("WiFiNTP::getServerTime"));
 
-  TRACE("Resolving NTP server name '%s' ...\n", _timeServerPool);
+  TRACE(F("Resolving NTP server name '%s' ...\n"), _timeServerPool);
   if (!WiFi.hostByName(_timeServerPool, _timeServerIP))
   {
-    TRACE("Unable to resolve DNS name.\n");
+    TRACE(F("Unable to resolve DNS name.\n"));
     return 0;
   } 
 
@@ -28,7 +28,7 @@ time_t WiFiNTP::getServerTime()
   
   sendPacket();
 
-  TRACE("Awaiting NTP server response...");
+  TRACE(F("Awaiting NTP server response..."));
   int packetSize = 0;
   for (int i = 0; i < 50; i++)
   {
@@ -41,10 +41,10 @@ time_t WiFiNTP::getServerTime()
 
   if (packetSize == 0)
   {
-    TRACE("\nTimeout waiting for NTP Server response.\n");
+    TRACE(F("\nTimeout waiting for NTP Server response.\n"));
     return 0;
   }
-  TRACE("\nPacket received. Size: %d bytes.\n", packetSize);
+  TRACE(F("\nPacket received. Size: %d bytes.\n"), packetSize);
 
   unsigned long secondsSince1900 = readPacket();
 
@@ -62,7 +62,7 @@ time_t WiFiNTP::getCurrentTime()
     if (currentTime < _lastServerSync)
     {
       // Internal clock rollover (occurs approx. each 50 days)
-      TRACE("Internal clock rollover.\n");
+      TRACE(F("Internal clock rollover.\n"));
       const long MAX_TIME = 4294967L;
       _lastServerSync -= MAX_TIME;
       _lastServerTry -= MAX_TIME;
@@ -76,7 +76,7 @@ time_t WiFiNTP::getCurrentTime()
           time_t serverTime = getServerTime();
           if (serverTime != 0)
           {
-              TRACE("Time synchronized with server: %u\n", serverTime);
+              TRACE(F("Time synchronized with server: %u\n"), serverTime);
               _lastServerTime = serverTime;
               _lastServerSync = currentTime;
           }
@@ -117,4 +117,3 @@ unsigned long WiFiNTP::readPacket()
     // Combine the four bytes (two words) into a long integer. This is NTP time (seconds since Jan 1 1900):
     return  highWord << 16 | lowWord;
 }
-
