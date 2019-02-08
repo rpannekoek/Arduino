@@ -27,6 +27,7 @@ typedef enum
     TRoomSet = 16,
     TRoom = 24,
     TBoiler = 25,
+    TOutside = 27,
     MaxTSet = 57,
     BoilerBurnerStarts = 116,
     BoilerBurnerHours = 120,

@@ -8,6 +8,7 @@
 #include <OTGW.h>
 #include <PersistentDataBase.h>
 #include <Log.h>
+#include <WeatherAPI.h>
 #include "WiFiCredentials.private.h"
 
 #define ICON "/apple-touch-icon.png"
@@ -17,8 +18,9 @@
 #define HTTP_POLL_INTERVAL 60
 #define DATA_VALUE_NONE 0xFFFF
 #define EVENT_LOG_LENGTH 100
-#define OT_LOG_LENGTH 240
+#define OT_LOG_LENGTH 200
 #define KEEP_TSET_LOW_DURATION 10*60
+#define WEATHER_SERVICE_POLL_INTERVAL 15*60
 
 const char* _boilerLevelNames[5] = {"Off", "Low", "Medium", "High", "Thermostat"};
 
@@ -39,6 +41,7 @@ struct OpenThermLogEntry
     uint16_t boilerStatus;
     uint16_t boilerTSet;
     uint16_t boilerTWater;
+    uint16_t tOutside;
     uint8_t repeat;
 
     bool equals(OpenThermLogEntry* otherPtr)
@@ -47,7 +50,8 @@ struct OpenThermLogEntry
             (otherPtr->thermostatMaxRelModulation == thermostatMaxRelModulation) &&
             (otherPtr->boilerStatus == boilerStatus) &&
             (otherPtr->boilerTSet == boilerTSet) &&
-            (otherPtr->boilerTWater == boilerTWater);
+            (otherPtr->boilerTWater == boilerTWater) &&
+            (otherPtr->tOutside == tOutside);
     }
 };
 
@@ -56,15 +60,29 @@ struct PersistentDataClass : PersistentDataBase
     char HostName[20];
     int8_t TimeZoneOffset; // hours
     uint16_t OpenThermLogInterval; // seconds
+    char WeatherApiKey[16];
+    char WeatherLocation[16];
 
     PersistentDataClass() 
-        : PersistentDataBase(sizeof(HostName) + sizeof(TimeZoneOffset) + sizeof(OpenThermLogInterval)) {}
+        : PersistentDataBase(sizeof(HostName) + sizeof(TimeZoneOffset) + sizeof(OpenThermLogInterval) + sizeof(WeatherApiKey) + sizeof(WeatherLocation)) {}
 
     void initialize()
     {
         strcpy(HostName, "OpenThermGateway");
         TimeZoneOffset = 1;
         OpenThermLogInterval = 60;
+        WeatherApiKey[0] = 0;
+        WeatherLocation[0] = 0; 
+    }
+
+    void validate()
+    {
+        if (TimeZoneOffset < -12) TimeZoneOffset = -12;
+        if (TimeZoneOffset > 14) TimeZoneOffset = 14;
+        if (OpenThermLogInterval < 5) OpenThermLogInterval = 5;
+        if (OpenThermLogInterval > 900) OpenThermLogInterval = 900;
+        if (WeatherApiKey[0] == 0xFF) WeatherApiKey[0] = 0;
+        if (WeatherLocation[0] == 0xFF) WeatherLocation[0] = 0;
     }
 };
 
@@ -72,6 +90,7 @@ PersistentDataClass PersistentData;
 OpenThermGateway OTGW(Serial, 14);
 ESP8266WebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer("0.europe.pool.ntp.org", 24 * 3600); // Synchronize daily
+WeatherAPI WeatherService(2000); // 2 sec request timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 bool isInitialized = false;
 
@@ -88,6 +107,11 @@ time_t currentTime = 0;
 time_t otLogTime = 0;
 time_t otgwInitializeTime = 0;
 time_t otgwTimeout = 0;
+time_t weatherServicePollTime = 0;
+time_t lastWeatherUpdateTime = 0;
+
+int lastWeatherResult = 0;
+bool updateTOutside = false;
 
 OpenThermLogEntry* lastOTLogEntryPtr = NULL;
 
@@ -130,6 +154,7 @@ void setup()
 {
     Serial.begin(9600);
     Serial.setTimeout(1000);
+    Serial.println("Boot"); // Flush garbage caused by ESP boot output.
     //Tracer::traceTo(Serial);
 
     // Turn built-in LED on
@@ -144,10 +169,9 @@ void setup()
     {
         TRACE(F("EEPROM not initialized; initializing with defaults.\n"));
         PersistentData.initialize();
-        PersistentData.printData();
     }
-    if (PersistentData.OpenThermLogInterval < 5)
-        PersistentData.OpenThermLogInterval = 5;
+    PersistentData.validate();
+    PersistentData.printData();
 
     // Connect to WiFi network
     TRACE(F("Connecting to WiFi network '%s' "), WIFI_SSID);
@@ -198,8 +222,10 @@ void setup()
 
     otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
     otgwTimeout = otgwInitializeTime + OTGW_TIMEOUT;
-    otLogTime = otgwInitializeTime + PersistentData.OpenThermLogInterval;
+    weatherServicePollTime = otgwInitializeTime + 5;
+    otLogTime = otgwInitializeTime + 10;
 
+    updateTOutside = false;
     cmdResponse[0] = 0;
 
     memset(thermostatRequests, 0xFF, sizeof(thermostatRequests));
@@ -214,6 +240,98 @@ void setup()
     isInitialized = true;
 
     TRACE(F("Free heap: %d\n"), ESP.getFreeHeap());
+}
+
+
+// Called repeatedly
+void loop() 
+{
+    if (!isInitialized)
+    {
+        // Initialization failed. Blink LED.
+        // We don't feed the OTGW watchdog, so it will reset the ESP after a while.
+        digitalWrite(LED_BUILTIN, 0);
+        delay(500);
+        digitalWrite(LED_BUILTIN, 1);
+        delay(500);
+        return;
+    }
+    
+    currentTime = TimeServer.getCurrentTime();
+
+    WebServer.handleClient();
+
+    if (millis() >= watchdogFeedTime)
+    {
+        OTGW.feedWatchdog();
+        watchdogFeedTime = millis() + WATCHDOG_INTERVAL_MS;
+    }
+
+    if (Serial.available())
+    {
+        digitalWrite(LED_BUILTIN, 0);
+        handleSerialData();
+        otgwTimeout = currentTime + OTGW_TIMEOUT;
+        digitalWrite(LED_BUILTIN, 1);
+        return;
+    }
+
+    if (currentTime >= otgwTimeout)
+    {
+        logEvent(F("OTGW Timeout"));
+        resetOpenThermGateway();
+        return;
+    }
+
+    if ((otgwInitializeTime != 0) && (currentTime >= otgwInitializeTime))
+    {
+        otgwInitializeTime = 0;
+        initializeOpenThermGateway();
+        return;
+    }
+
+    if (updateTOutside)
+    {
+        updateTOutside = false;
+        setTOutside(WeatherService.temperature);
+        return;
+    }
+    
+    // Get outside temperature from Weather Service
+    if (currentTime >= weatherServicePollTime)
+    {
+        weatherServicePollTime = currentTime + WEATHER_SERVICE_POLL_INTERVAL;
+
+        const char* apiKey = PersistentData.WeatherApiKey;
+        if (apiKey[0] != 0)
+        {
+            OTGW.feedWatchdog();
+            lastWeatherResult = WeatherService.requestData(apiKey, PersistentData.WeatherLocation); 
+            if (lastWeatherResult == 200)
+            {
+                lastWeatherUpdateTime = currentTime;
+                updateTOutside = (WeatherService.temperature != getDecimal(getTOutside()));
+            }
+        }
+    }
+
+    // Log OpenTherm values from Thermostat and Boiler
+    if (currentTime >= otLogTime)
+    {
+        logOpenThermValues(false);
+        otLogTime = currentTime + PersistentData.OpenThermLogInterval;
+        
+        TRACE(F("Free heap: %d\n"), ESP.getFreeHeap());
+    }
+
+    // Scheduled Boiler TSet change
+    if ((changeBoilerLevelTime != 0) && (currentTime >= changeBoilerLevelTime))
+    {
+        changeBoilerLevelTime = 0;
+        setBoilerLevel(changeBoilerLevel);
+    }
+
+    delay(10);
 }
 
 
@@ -238,6 +356,8 @@ void resetOpenThermGateway()
     OTGW.reset();
     otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
     otgwTimeout = otgwInitializeTime + OTGW_TIMEOUT;
+    weatherServicePollTime = otgwInitializeTime + 5;
+    otLogTime = otgwInitializeTime + 10;
 
     logEvent(F("OTGW reset"));
 }
@@ -248,12 +368,30 @@ bool setMaxTSet()
     Tracer tracer(F("setMaxTSet"));
 
     char maxTSet[8];
-    sprintf(maxTSet, "%d", boilerTSet[BoilerLevel::High]);
+    snprintf(maxTSet, sizeof(maxTSet), "%d", boilerTSet[BoilerLevel::High]);
     
     bool success = OTGW.sendCommand("SH", maxTSet); 
     if (!success)
     {
         logEvent(F("Unable to set max CH water setpoint"));
+        resetOpenThermGateway();
+    }
+
+    return success;
+}
+
+
+bool setTOutside(float temperature)
+{
+    Tracer tracer(F("setTOutside"));
+
+    char tOutside[8];
+    snprintf(tOutside, sizeof(tOutside), "%0.1f", temperature);
+    
+    bool success = OTGW.sendCommand("OT", tOutside); 
+    if (!success)
+    {
+        logEvent(F("Unable to set outside temperature"));
         resetOpenThermGateway();
     }
 
@@ -298,71 +436,34 @@ bool setBoilerLevel(BoilerLevel level)
 }
 
 
-// Called repeatedly
-void loop() 
+float getDecimal(uint16_t dataValue)
 {
-    if (!isInitialized)
-    {
-        // Initialization failed. Blink LED.
-        // We don't feed the OTGW watchdog, so it will reset the ESP after a while.
-        digitalWrite(LED_BUILTIN, 0);
-        delay(500);
-        digitalWrite(LED_BUILTIN, 1);
-        delay(500);
-        return;
-    }
-    
-    currentTime = TimeServer.getCurrentTime();
-
-    WebServer.handleClient();
-
-    if (Serial.available())
-    {
-        digitalWrite(LED_BUILTIN, 0);
-        handleSerialData();
-        otgwTimeout = currentTime + OTGW_TIMEOUT;
-        digitalWrite(LED_BUILTIN, 1);
-    }
-
-    if (millis() >= watchdogFeedTime)
-    {
-        OTGW.feedWatchdog();
-        watchdogFeedTime = millis() + WATCHDOG_INTERVAL_MS;
-    }
-
-    if (currentTime >= otgwTimeout)
-    {
-        logEvent(F("OTGW Timeout"));
-        resetOpenThermGateway();
-    }
-
-    if ((otgwInitializeTime != 0) && (currentTime >= otgwInitializeTime))
-    {
-        otgwInitializeTime = 0;
-        initializeOpenThermGateway();
-    }
-
-    // Log OpenTherm values from Thermostat and Boiler
-    if (currentTime >= otLogTime)
-    {
-        logOpenThermValues();
-        otLogTime = currentTime + PersistentData.OpenThermLogInterval;
-        
-        TRACE(F("Free heap: %d\n"), ESP.getFreeHeap());
-    }
-
-    // Scheduled Boiler TSet change
-    if ((changeBoilerLevelTime != 0) && (currentTime >= changeBoilerLevelTime))
-    {
-        changeBoilerLevelTime = 0;
-        setBoilerLevel(changeBoilerLevel);
-    }
-
-    delay(10);
+    if (dataValue == DATA_VALUE_NONE)
+        return 0.0;
+    else
+        return OTGW.getDecimal(dataValue);
 }
 
 
-void logOpenThermValues()
+int8_t getInteger(uint16_t dataValue)
+{
+    if (dataValue == DATA_VALUE_NONE)
+        return 0;
+    else
+        return static_cast<int8_t>(OTGW.getDecimal(dataValue) + 0.5);
+}
+
+
+uint16_t getTOutside()
+{
+    uint16_t result = boilerResponses[OpenThermDataId::TOutside];
+    if ((result == DATA_VALUE_NONE) || (getInteger(result) < -30))
+        result = otgwResponses[OpenThermDataId::TOutside];
+    return result;
+}
+
+
+void logOpenThermValues(bool forceCreate)
 {
     Tracer tracer(F("logOpenThermValues"));
 
@@ -379,9 +480,10 @@ void logOpenThermValues()
     otLogEntryPtr->boilerStatus = boilerResponses[OpenThermDataId::Status];
     otLogEntryPtr->boilerTSet = boilerResponses[OpenThermDataId::TSet];
     otLogEntryPtr->boilerTWater = boilerResponses[OpenThermDataId::TBoiler];
+    otLogEntryPtr->tOutside = getTOutside();
     otLogEntryPtr->repeat = 0;
 
-    if ((lastOTLogEntryPtr != NULL) && (lastOTLogEntryPtr->equals(otLogEntryPtr)))
+    if ((lastOTLogEntryPtr != NULL) && (lastOTLogEntryPtr->equals(otLogEntryPtr)) && !forceCreate)
         lastOTLogEntryPtr->repeat++;
     else
     {
@@ -417,30 +519,30 @@ void handleSerialData()
             handleThermostatResponse(otgwMessage);
             break;
 
-        case OpenThermGatewayDirection::Error:
         case OpenThermGatewayDirection::Unexpected:
-            char event[64];
+            if (otgwMessage.message.startsWith("fillHeap"))
+            {
+                fillHeap();
+                break;
+            }
+
+        case OpenThermGatewayDirection::Error:
+            char event[32];
             snprintf(event, sizeof(event), "OTGW: %s", otgwMessage.message.c_str());
             logEvent(event);
     }
 }
 
 
-float getDecimal(uint16_t dataValue)
+void fillHeap()
 {
-    if (dataValue == DATA_VALUE_NONE)
-        return 0.0;
-    else
-        return OTGW.getDecimal(dataValue);
-}
+    Tracer tracer(F("fillHeap"));
 
+    for (int i = 0; i < EVENT_LOG_LENGTH; i++)
+        logEvent(F("Test event to fill the event log"));
 
-int8_t getInteger(uint16_t dataValue)
-{
-    if (dataValue == DATA_VALUE_NONE)
-        return 0;
-    else
-        return static_cast<int8_t>(dataValue >> 8);
+    for (int i = 0; i < OT_LOG_LENGTH; i++)
+        logOpenThermValues(true);
 }
 
 
@@ -589,6 +691,7 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><td>Status</td><td>%s</td></tr>\r\n"), OTGW.getSlaveStatus(boilerResponses[OpenThermDataId::Status]));
     HttpResponse.printf(F("<tr><td>TSet</td><td>%0.1f</td></tr>\r\n"), getDecimal(boilerResponses[OpenThermDataId::TSet]));
     HttpResponse.printf(F("<tr><td>TWater</td><td>%0.1f</td></tr>\r\n"), getDecimal(boilerResponses[OpenThermDataId::TBoiler]));
+    HttpResponse.printf(F("<tr><td>TOutside</td><td>%0.1f</td></tr>\r\n"), getDecimal(getTOutside()));
     HttpResponse.printf(F("<tr><td>Fault flags</td><td>%s</td></tr>\r\n"), OTGW.getFaultFlags(boilerResponses[OpenThermDataId::SlaveFault]));
     HttpResponse.printf(F("<tr><td>Burner starts</td><td>%d</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerBurnerStarts]);
     HttpResponse.printf(F("<tr><td>Burner hours</td><td>%d</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerBurnerHours]);
@@ -613,6 +716,13 @@ void handleHttpRootRequest()
     for (int i = 0; i <= 4; i++)
         HttpResponse.printf(F("<tr><td>Error %02X</td><td>%d</td></tr>\r\n"), i, OTGW.errors[i]);
     HttpResponse.printf(F("<tr><td>OTGW Resets</td><td>%d</td></tr>\r\n"), OTGW.resets);
+    HttpResponse.printf(F("<tr><td>Weather result</td><td>%d</td></tr>\r\n"), lastWeatherResult);
+    if (lastWeatherUpdateTime != 0)
+    {
+        char timeString[8];
+        formatTime(timeString, sizeof(timeString), "%H:%M", lastWeatherUpdateTime);
+        HttpResponse.printf(F("<tr><td>Weather update</td><td>%s</td></tr>\r\n"), timeString);
+    }
     HttpResponse.printf(F("<tr><td>ESP Free Heap</td><td>%d</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.printf(F("<tr><td>ESP Reset</td><td>%s</td></tr>\r\n"), ESP.getResetReason().c_str());
     HttpResponse.println(F("</table>"));
@@ -679,7 +789,7 @@ void handleHttpOpenThermLogRequest()
     bool skipEvenEntries = openThermLog.count() > 100;
 
     HttpResponse.println(F("<table>"));
-    HttpResponse.println(F("<tr><th>Time</th><th>TSet(t)</th><th>Max mod %</th><th>TSet(b)</th><th>TWater</th><th>Status</th></tr>"));
+    HttpResponse.println(F("<tr><th>Time</th><th>TSet(t)</th><th>Max mod %</th><th>TSet(b)</th><th>TWater</th><th>TOutside</th><th>Status</th></tr>"));
     char timeString[8];
     OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getFirstEntry());
     while (otLogEntryPtr != NULL)
@@ -687,12 +797,13 @@ void handleHttpOpenThermLogRequest()
         formatTime(timeString, sizeof(timeString), "%H:%M", otLogEntryPtr->time);
 
         HttpResponse.printf(
-            F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%s</td></tr>\r\n"),
+            F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%s</td></tr>\r\n"),
             timeString, 
             getDecimal(otLogEntryPtr->thermostatTSet),
             getDecimal(otLogEntryPtr->thermostatMaxRelModulation),
             getDecimal(otLogEntryPtr->boilerTSet),
             getDecimal(otLogEntryPtr->boilerTWater),
+            getDecimal(otLogEntryPtr->tOutside),
             OTGW.getSlaveStatus(otLogEntryPtr->boilerStatus)
             );
 
@@ -713,13 +824,13 @@ void handleHttpOpenThermLogCsvRequest()
     Tracer tracer(F("handleHttpOpenThermLogCsvRequest"));
 
     /* CSV format:
-    "Time","TSet(t)","Max Modulation %","TSet(b)","TWater","CH","DHW"
-    "2019-02-02 12:30",45,100,45,44,5,0
-    "2019-02-02 12:35",50,100,48,65,0,5
+    "Time","TSet(t)","Max Modulation %","TSet(b)","TWater","TOutside","CH","DHW"
+    "2019-02-02 12:30",45,100,45,44,15,5,0
+    "2019-02-02 12:35",50,100,48,65,14,0,5
     */
 
     HttpResponse.clear();
-    HttpResponse.println(F("\"Time\",\"TSet(t)\",\"Max Modulation %\",\"TSet(b)\",\"TWater\",\"CH\",\"DHW\""));
+    HttpResponse.println(F("\"Time\",\"TSet(t)\",\"Max Modulation %\",\"TSet(b)\",\"TWater\",\"TOutside\",\"CH\",\"DHW\""));
 
     OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getFirstEntry());
     while (otLogEntryPtr != NULL)
@@ -755,12 +866,13 @@ void writeCsvDataLine(OpenThermLogEntry* otLogEntryPtr, time_t time)
     formatTime(timeString, sizeof(timeString), "%F %H:%M", time);
 
     HttpResponse.printf(
-        F("\"%s\",%d,%d,%d,%d,%d,%d\r\n"), 
+        F("\"%s\",%d,%d,%d,%d,%d,%d,%d\r\n"), 
         timeString, 
         getInteger(otLogEntryPtr->thermostatTSet),
         getInteger(otLogEntryPtr->thermostatMaxRelModulation),
         getInteger(otLogEntryPtr->boilerTSet),
         getInteger(otLogEntryPtr->boilerTWater),
+        getInteger(otLogEntryPtr->tOutside),
         statusCH,
         statusDHW
         );
@@ -875,6 +987,8 @@ void handleHttpConfigFormRequest()
     addTextBoxRow(HttpResponse, F("hostName"), PersistentData.HostName, F("Host name"));
     addTextBoxRow(HttpResponse, F("tzOffset"), tzOffsetString, F("Timezone offset"));
     addTextBoxRow(HttpResponse, F("otLogInterval"), otLogIntervalString, F("OT Log Interval"));
+    addTextBoxRow(HttpResponse, F("weatherApiKey"), PersistentData.WeatherApiKey, F("Weather API Key"));
+    addTextBoxRow(HttpResponse, F("weatherLocation"), PersistentData.WeatherLocation, F("Weather Location"));
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
     HttpResponse.println(F("</form>"));
@@ -897,35 +1011,24 @@ void handleHttpConfigFormPost()
     Tracer tracer(F("handleHttpConfigFormPost"));
 
     strcpy(PersistentData.HostName, WebServer.arg("hostName").c_str()); 
+    strcpy(PersistentData.WeatherApiKey, WebServer.arg("weatherApiKey").c_str()); 
+    strcpy(PersistentData.WeatherLocation, WebServer.arg("weatherLocation").c_str()); 
+
     String tzOffsetString = WebServer.arg("tzOffset");
     String otLogIntervalString = WebServer.arg("otLogInterval");
 
-    TRACE(F("hostName: %s\n"), PersistentData.HostName);
-    TRACE(F("tzOffset: %s\n"), tzOffsetString.c_str());
-    TRACE(F("otLogInterval: %s\n"), otLogIntervalString.c_str());
-    
     int tzOffset;
     sscanf(tzOffsetString.c_str(), "%d", &tzOffset);
-    if (tzOffset < -12)
-        tzOffset = -12;
-    if (tzOffset> 14)
-        tzOffset = 14;
     PersistentData.TimeZoneOffset = static_cast<int8_t>(tzOffset);
 
     int otLogInterval;
     sscanf(otLogIntervalString.c_str(), "%d", &otLogInterval);
-    if (otLogInterval < 5)
-        otLogInterval = 5;
-    if (otLogInterval > 15*60)
-        otLogInterval = 15*60;
     PersistentData.OpenThermLogInterval = static_cast<uint16_t>(otLogInterval);
 
+    PersistentData.validate();
     PersistentData.writeToEEPROM();
 
     handleHttpConfigFormRequest();
-
-    delay(1000);
-    ESP.reset();
 }
 
 
