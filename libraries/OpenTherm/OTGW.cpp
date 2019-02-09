@@ -5,7 +5,6 @@
 #include <Wire.h>
 
 #define BUFFER_SIZE 32
-#define MAX_RETRIES 5
 #define WATCHDOG_I2C_ADDRESS 38
 
 static const char* _masterStatusNames[5] = {"CH", "DHW", "Cool", "OTC", "CH2"};
@@ -150,15 +149,22 @@ bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* res
         _serial.print(otgwCommand);
 
         // Read OTWG response
-        size_t bytesRead = _serial.readBytesUntil('\n', otgwResponse, bufferSize - 1);
-        otgwResponse[bytesRead] = 0;
-        TRACE(F("OTGW response: %s\n"), otgwResponse);
-        responseReceived = (strncmp(otgwResponse, cmd, 2) == 0);
-    }
-    while (!responseReceived && (retries++ < MAX_RETRIES));
+        for (int i = 0; i < 3; i++)
+        {
+            feedWatchdog();
 
-    if (!responseReceived)
-        TRACE(F("No valid response from OTGW after %d retries.\n"), MAX_RETRIES);
+            size_t bytesRead = _serial.readBytesUntil('\n', otgwResponse, bufferSize - 1);
+            otgwResponse[bytesRead] = 0;
+            TRACE(F("OTGW: %s\n"), otgwResponse);
+            responseReceived = (strncmp(otgwResponse, cmd, 2) == 0);
+            if (responseReceived)
+                break;
+        }
+
+        if (!responseReceived)
+            TRACE(F("No valid response from OTGW\n"));
+
+    } while (!responseReceived && (retries++ < 1));
 
     if (response == NULL)
         delete otgwResponse;
