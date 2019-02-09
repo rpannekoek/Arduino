@@ -62,10 +62,7 @@ void Log::add(void* entry)
 void* Log::getFirstEntry()
 {
     _iterator = _start;
-    if (_iterator == _end)
-        return NULL;
-    else 
-        return _entriesPtr[_iterator];
+    return _entriesPtr[_iterator];
 }
 
 
