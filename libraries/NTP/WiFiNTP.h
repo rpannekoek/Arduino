@@ -8,6 +8,9 @@ class WiFiNTP
 {
   public:
     WiFiNTP(const char* timeServerPool, int serverSyncInterval);
+
+    bool beginGetServerTime();
+    time_t endGetServerTime();
     time_t getServerTime();
     time_t getCurrentTime();
 

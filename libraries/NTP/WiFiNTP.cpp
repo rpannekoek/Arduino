@@ -3,6 +3,9 @@
 #include <Arduino.h>
 #include <Tracer.h>
 
+#define SEVENTY_YEARS 2208988800UL
+
+
 // Constructor
 WiFiNTP::WiFiNTP(const char* timeServerPool, int serverSyncInterval)
 {
@@ -11,47 +14,67 @@ WiFiNTP::WiFiNTP(const char* timeServerPool, int serverSyncInterval)
   _lastServerSync = 0;
   _lastServerTry = 0;
 }
-    
+
+
+bool WiFiNTP::beginGetServerTime()
+{
+    Tracer tracer(F("WiFiNTP::beginGetServerTime"));
+
+    TRACE(F("Resolving NTP server name '%s' ...\n"), _timeServerPool);
+    if (!WiFi.hostByName(_timeServerPool, _timeServerIP))
+    {
+        TRACE(F("Unable to resolve DNS name.\n"));
+        return false;
+    } 
+
+    _udp.begin(LOCAL_PORT);
+
+    sendPacket();
+
+    return true;
+}
+
+
+time_t WiFiNTP::endGetServerTime()
+{
+    Tracer tracer(F("WiFiNTP::endGetServerTime"));
+
+    int packetSize = _udp.parsePacket();
+    if (packetSize == 0)
+        return 0;
+
+    TRACE(F("Packet received. Size: %d bytes.\n"), packetSize);
+
+    unsigned long secondsSince1900 = readPacket();
+
+    _lastServerTime = static_cast<time_t>(secondsSince1900 - SEVENTY_YEARS); 
+    _lastServerSync = millis() / 1000;
+
+    _udp.stopAll();
+
+    return _lastServerTime;
+}
+
 
 time_t WiFiNTP::getServerTime()
 {
-  Tracer tracer(F("WiFiNTP::getServerTime"));
+    Tracer tracer(F("WiFiNTP::getServerTime"));
 
-  TRACE(F("Resolving NTP server name '%s' ...\n"), _timeServerPool);
-  if (!WiFi.hostByName(_timeServerPool, _timeServerIP))
-  {
-    TRACE(F("Unable to resolve DNS name.\n"));
-    return 0;
-  } 
+    if (!beginGetServerTime())
+        return 0;
 
-  _udp.begin(LOCAL_PORT);
-  
-  sendPacket();
+    TRACE(F("Awaiting NTP server response..."));
+    for (int i = 0; i < 20; i++)
+    {
+        time_t result = endGetServerTime();
+        if (result != 0)
+            return result;
+        TRACE(".");
+        delay(100);
+    }
 
-  TRACE(F("Awaiting NTP server response..."));
-  int packetSize = 0;
-  for (int i = 0; i < 50; i++)
-  {
-    packetSize = _udp.parsePacket();
-    if (packetSize != 0)
-      break;
-    TRACE(".");
-    delay(100);
-  }
-
-  if (packetSize == 0)
-  {
     TRACE(F("\nTimeout waiting for NTP Server response.\n"));
     return 0;
-  }
-  TRACE(F("\nPacket received. Size: %d bytes.\n"), packetSize);
-
-  unsigned long secondsSince1900 = readPacket();
-
-  _udp.stopAll();
-  
-  const unsigned long SEVENTY_YEARS = 2208988800UL;
-  return static_cast<time_t>(secondsSince1900 - SEVENTY_YEARS);
 }
 
 
@@ -89,20 +112,20 @@ time_t WiFiNTP::getCurrentTime()
 
 void WiFiNTP::sendPacket()
 {
-  memset(_packetBuffer, 0, NTP_PACKET_SIZE);
-  _packetBuffer[0] = 0b11100011;   // LI, Version, Mode
-  _packetBuffer[1] = 0;     // Stratum, or type of clock
-  _packetBuffer[2] = 6;     // Polling Interval
-  _packetBuffer[3] = 0xEC;  // Peer Clock Precision
-  // 8 bytes of zero for Root Delay & Root Dispersion
-  _packetBuffer[12]  = 49;
-  _packetBuffer[13]  = 0x4E;
-  _packetBuffer[14]  = 49;
-  _packetBuffer[15]  = 52;
+    memset(_packetBuffer, 0, NTP_PACKET_SIZE);
+    _packetBuffer[0] = 0b11100011;   // LI, Version, Mode
+    _packetBuffer[1] = 0;     // Stratum, or type of clock
+    _packetBuffer[2] = 6;     // Polling Interval
+    _packetBuffer[3] = 0xEC;  // Peer Clock Precision
+    // 8 bytes of zero for Root Delay & Root Dispersion
+    _packetBuffer[12]  = 49;
+    _packetBuffer[13]  = 0x4E;
+    _packetBuffer[14]  = 49;
+    _packetBuffer[15]  = 52;
 
-  _udp.beginPacket(_timeServerIP, 123); //NTP requests are to port 123
-  _udp.write(_packetBuffer, NTP_PACKET_SIZE);
-  _udp.endPacket();
+    _udp.beginPacket(_timeServerIP, 123); //NTP requests are to port 123
+    _udp.write(_packetBuffer, NTP_PACKET_SIZE);
+    _udp.endPacket();
 }
 
 

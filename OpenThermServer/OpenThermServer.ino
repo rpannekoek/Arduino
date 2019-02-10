@@ -26,6 +26,17 @@ const char* _boilerLevelNames[5] = {"Off", "Low", "Medium", "High", "Thermostat"
 
 typedef enum
 {
+    Initializing,
+    Connecting,
+    ConnectFailed,
+    Connected,
+    TimeServerSyncing,
+    TimeServerSyncFailed,
+    Initialized
+} WifiInitState;
+
+typedef enum
+{
     Off,
     Low,
     Medium,
@@ -92,7 +103,8 @@ ESP8266WebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer("0.europe.pool.ntp.org", 24 * 3600); // Synchronize daily
 WeatherAPI WeatherService(2000); // 2 sec request timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
-bool isInitialized = false;
+WifiInitState wifiInitState;
+uint32_t wifiInitStateChangeTime;
 
 Log eventLog(EVENT_LOG_LENGTH);
 Log openThermLog(OT_LOG_LENGTH);
@@ -105,8 +117,8 @@ uint16_t otgwResponses[256]; // OTGW response data values (boiler overrides) ind
 uint32_t watchdogFeedTime = 0;
 time_t currentTime = 0;
 time_t otLogTime = 0;
-time_t otgwInitializeTime = 0;
-time_t otgwTimeout = 0;
+time_t otgwInitializeTime = OTGW_STARTUP_TIME;
+time_t otgwTimeout = OTGW_TIMEOUT;
 time_t weatherServicePollTime = 0;
 time_t lastWeatherUpdateTime = 0;
 
@@ -115,7 +127,7 @@ bool updateTOutside = false;
 
 OpenThermLogEntry* lastOTLogEntryPtr = NULL;
 
-char cmdResponse[128];
+char stringBuffer[128];
 
 int boilerTSet[5] = {0, 40, 50, 60, 0}; // TODO: configurable
 
@@ -124,6 +136,14 @@ BoilerLevel changeBoilerLevel;
 time_t changeBoilerLevelTime = 0;
 time_t boilerOverrideStartTime = 0;
 uint32_t totalOverrideDuration = 0;
+
+
+void setWifiInitState(WifiInitState newState)
+{
+    wifiInitState = newState;
+    wifiInitStateChangeTime = millis();
+    TRACE(F("WifiInitState: %d @ %d ms\n"), wifiInitState, wifiInitStateChangeTime);
+}
 
 
 int formatTime(char* output, size_t output_size, const char* format, time_t time)
@@ -140,7 +160,7 @@ void logEvent(String msg)
     size_t timestamp_size = 23; // strlen("2019-01-30 12:23:34 : ") + 1;
 
     char* event = new char[timestamp_size + msg.length()];
-    formatTime(event, timestamp_size, "%F %H:%M:%S : ", TimeServer.getCurrentTime());
+    formatTime(event, timestamp_size, "%F %H:%M:%S : ", currentTime);
     strcat(event, msg.c_str());
 
     eventLog.add(event);
@@ -149,20 +169,25 @@ void logEvent(String msg)
 }
 
 
+void traceFreeHeap()
+{
+    TRACE(F("Free heap: %d\n"), ESP.getFreeHeap());
+}
+
+
 // Boot code
 void setup() 
 {
+    // Turn built-in LED on
+    pinMode(LED_BUILTIN, OUTPUT);
+    digitalWrite(LED_BUILTIN, 0);
+
     Serial.begin(9600);
     Serial.setTimeout(1000);
     Serial.println("Boot"); // Flush garbage caused by ESP boot output.
     //Tracer::traceTo(Serial);
 
-    // Turn built-in LED on
-    pinMode(LED_BUILTIN, OUTPUT);
-    digitalWrite(LED_BUILTIN, 0);
-
-    TRACE(F("Boot mode: %d\n"), ESP.getBootMode());
-    TRACE(F("Free heap: %d\n"), ESP.getFreeHeap());
+    traceFreeHeap();
 
     // Read persistent data from EEPROM or initialize to defaults.
     if (!PersistentData.readFromEEPROM())
@@ -172,29 +197,6 @@ void setup()
     }
     PersistentData.validate();
     PersistentData.printData();
-
-    // Connect to WiFi network
-    TRACE(F("Connecting to WiFi network '%s' "), WIFI_SSID);
-    WiFi.mode(WIFI_STA);
-    WiFi.hostname(PersistentData.HostName);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    int i = 0;
-    while (WiFi.status() == WL_IDLE_STATUS || WiFi.status() == WL_DISCONNECTED)
-    {
-        TRACE(".");
-        delay(500);
-        if (i++ == 60)
-        {
-            TRACE(F("\nTimeout connecting WiFi.\n"));
-            return;
-        }
-    }
-    if (WiFi.status() != WL_CONNECTED)
-    {
-        TRACE(F("\nError connecting WiFi. Status: %d\n"), WiFi.status());
-        return;
-    }
-    TRACE(F("\nWiFi connected. IP address: %s\n"), WiFi.localIP().toString().c_str());
 
     SPIFFS.begin();
 
@@ -213,53 +215,30 @@ void setup()
     WebServer.serveStatic(ICON, SPIFFS, ICON, cacheControl);
     WebServer.serveStatic("/styles.css", SPIFFS, "/styles.css", cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
-    WebServer.begin();
-    TRACE(F("Web Server started\n"));
     
-    currentTime = TimeServer.getCurrentTime();
-    if (currentTime < 1000) 
-        logEvent(F("Unable to obtain time from NTP server"));
-
-    otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
-    otgwTimeout = otgwInitializeTime + OTGW_TIMEOUT;
-    weatherServicePollTime = otgwInitializeTime + 5;
-    otLogTime = otgwInitializeTime + 10;
-
-    updateTOutside = false;
-    cmdResponse[0] = 0;
+    memset(stringBuffer, 0, sizeof(stringBuffer));
 
     memset(thermostatRequests, 0xFF, sizeof(thermostatRequests));
     memset(boilerResponses, 0xFF, sizeof(boilerResponses));
     memset(otgwRequests, 0xFF, sizeof(otgwRequests));
     memset(otgwResponses, 0xFF, sizeof(otgwResponses));
 
+    setWifiInitState(WifiInitState::Initializing);
+
+    traceFreeHeap();
+
     // Turn built-in LED off
     digitalWrite(LED_BUILTIN, 1);
-
-    logEvent(F("Initialized after boot."));
-    isInitialized = true;
-
-    TRACE(F("Free heap: %d\n"), ESP.getFreeHeap());
 }
 
 
 // Called repeatedly
 void loop() 
 {
-    if (!isInitialized)
-    {
-        // Initialization failed. Blink LED.
-        // We don't feed the OTGW watchdog, so it will reset the ESP after a while.
-        digitalWrite(LED_BUILTIN, 0);
-        delay(500);
-        digitalWrite(LED_BUILTIN, 1);
-        delay(500);
-        return;
-    }
-    
-    currentTime = TimeServer.getCurrentTime();
-
-    WebServer.handleClient();
+    if (wifiInitState == WifiInitState::Initialized)
+        currentTime =  TimeServer.getCurrentTime();
+    else
+        currentTime = millis() / 1000;
 
     if (millis() >= watchdogFeedTime)
     {
@@ -290,6 +269,14 @@ void loop()
         return;
     }
 
+    // Scheduled Boiler TSet change
+    if ((changeBoilerLevelTime != 0) && (currentTime >= changeBoilerLevelTime))
+    {
+        changeBoilerLevelTime = 0;
+        setBoilerLevel(changeBoilerLevel);
+        return;
+    }
+
     if (updateTOutside)
     {
         updateTOutside = false;
@@ -297,41 +284,149 @@ void loop()
         return;
     }
     
-    // Get outside temperature from Weather Service
-    if (currentTime >= weatherServicePollTime)
+    if (wifiInitState == WifiInitState::Initialized)
     {
-        weatherServicePollTime = currentTime + WEATHER_SERVICE_POLL_INTERVAL;
-
-        const char* apiKey = PersistentData.WeatherApiKey;
-        if (apiKey[0] != 0)
+        // Get outside temperature from Weather Service
+        if (currentTime >= weatherServicePollTime)
         {
-            OTGW.feedWatchdog();
-            lastWeatherResult = WeatherService.requestData(apiKey, PersistentData.WeatherLocation); 
-            if (lastWeatherResult == 200)
+            weatherServicePollTime = currentTime + WEATHER_SERVICE_POLL_INTERVAL;
+
+            const char* apiKey = PersistentData.WeatherApiKey;
+            if (apiKey[0] != 0)
             {
-                lastWeatherUpdateTime = currentTime;
-                updateTOutside = (WeatherService.temperature != getDecimal(getTOutside()));
+                OTGW.feedWatchdog();
+                lastWeatherResult = WeatherService.requestData(apiKey, PersistentData.WeatherLocation); 
+                if (lastWeatherResult == 200)
+                {
+                    lastWeatherUpdateTime = currentTime;
+                    updateTOutside = (WeatherService.temperature != getDecimal(getTOutside()));
+                }
+                return;
             }
         }
-    }
 
-    // Log OpenTherm values from Thermostat and Boiler
-    if (currentTime >= otLogTime)
-    {
-        logOpenThermValues(false);
-        otLogTime = currentTime + PersistentData.OpenThermLogInterval;
-        
-        TRACE(F("Free heap: %d\n"), ESP.getFreeHeap());
+        // Log OpenTherm values from Thermostat and Boiler
+        if (currentTime >= otLogTime)
+        {
+            otLogTime = currentTime + PersistentData.OpenThermLogInterval;
+            logOpenThermValues(false);
+            traceFreeHeap();
+        }
     }
+    else
+        handleWifiInitialization();
 
-    // Scheduled Boiler TSet change
-    if ((changeBoilerLevelTime != 0) && (currentTime >= changeBoilerLevelTime))
-    {
-        changeBoilerLevelTime = 0;
-        setBoilerLevel(changeBoilerLevel);
-    }
+    if (wifiInitState > WifiInitState::Connected)
+        WebServer.handleClient();
 
     delay(10);
+}
+
+
+// WiFi initialization state machine
+void handleWifiInitialization()
+{
+    uint32_t currentMillis = millis();
+    uint8_t wifiStatus = WiFi.status();
+    time_t serverTime;
+
+    switch (wifiInitState)
+    {
+        case WifiInitState::Initializing:
+            TRACE(F("Connecting to WiFi network '%s' ...\n"), WIFI_SSID);
+            WiFi.mode(WIFI_STA);
+            WiFi.hostname(PersistentData.HostName);
+            WiFi.setAutoReconnect(true);
+            WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+            setWifiInitState(WifiInitState::Connecting);
+            break;
+
+        case WifiInitState::Connecting:
+            if (wifiStatus == WL_CONNECTED)
+            {
+                TRACE(F("WiFi connected. IP address: %s\n"), WiFi.localIP().toString().c_str());
+                setWifiInitState(WifiInitState::Connected);
+            }
+            else if ((wifiStatus == WL_IDLE_STATUS) || (wifiStatus == WL_DISCONNECTED))
+            {
+                // Timeout after 15 seconds
+                if (currentMillis >= (wifiInitStateChangeTime + 15000))
+                {
+                    TRACE(F("Timeout connecting WiFi\n"));
+                    setWifiInitState(WifiInitState::ConnectFailed);
+                }
+            }
+            else
+            {
+                TRACE(F("Error connecting WiFi. Status: %d\n"), wifiStatus);
+                setWifiInitState(WifiInitState::ConnectFailed);
+            }
+            break;
+
+        case WifiInitState::ConnectFailed:
+            // Retry WiFi initialization after 60 seconds
+            if (currentMillis >= (wifiInitStateChangeTime + 60000))
+            {
+                WiFi.disconnect();
+                setWifiInitState(WifiInitState::Initializing);
+            }
+            else
+                blinkLED(2);
+            break;
+
+        case WifiInitState::Connected:
+            WebServer.begin();
+            TRACE(F("Web Server started\n"));
+            TRACE(F("Getting time from NTP server...\n"));
+            OTGW.feedWatchdog(); // DNS lookup in beginGetServerTime may take a few seconds
+            if (TimeServer.beginGetServerTime())
+                setWifiInitState(WifiInitState::TimeServerSyncing);
+            else
+                setWifiInitState(WifiInitState::TimeServerSyncFailed);
+            break;
+
+        case WifiInitState::TimeServerSyncing:
+            serverTime = TimeServer.endGetServerTime(); 
+            if (serverTime == 0)
+            {
+                // Timeout after 5 seconds
+                if (currentMillis >= (wifiInitStateChangeTime + 5000))
+                {
+                    TRACE(F("Timeout waiting for NTP server response\n"));
+                    setWifiInitState(WifiInitState::TimeServerSyncFailed);
+                }
+            }
+            else
+            {
+                currentTime = serverTime;
+                otgwTimeout = serverTime + OTGW_TIMEOUT;
+                logEvent(F("Initialized after boot"));
+                setWifiInitState(WifiInitState::Initialized);
+            }
+            break;
+        
+        case WifiInitState::TimeServerSyncFailed:
+            // Retry Time Server sync after 5 seconds
+            if (currentMillis >= (wifiInitStateChangeTime + 5000))
+                setWifiInitState(WifiInitState::TimeServerSyncing);
+            else
+                blinkLED(3);
+            break;
+
+        case WifiInitState::Initialized:
+            // Nothing to do (shouldn't get here in the first place)
+            break;
+    }
+}
+
+
+void blinkLED(int freq)
+{
+    int interval = 500 / freq;
+    digitalWrite(LED_BUILTIN, 0);
+    delay(interval);
+    digitalWrite(LED_BUILTIN, 1);
+    delay(interval);
 }
 
 
@@ -356,8 +451,6 @@ void resetOpenThermGateway()
     OTGW.reset();
     otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
     otgwTimeout = otgwInitializeTime + OTGW_TIMEOUT;
-    weatherServicePollTime = otgwInitializeTime + 5;
-    otLogTime = otgwInitializeTime + 10;
 
     logEvent(F("OTGW reset"));
 }
@@ -725,6 +818,7 @@ void handleHttpRootRequest()
     }
     HttpResponse.printf(F("<tr><td>ESP Free Heap</td><td>%d</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.printf(F("<tr><td>ESP Reset</td><td>%s</td></tr>\r\n"), ESP.getResetReason().c_str());
+    HttpResponse.printf(F("<tr><td>Init state</td><td>%d</td></tr>\r\n"), wifiInitState);
     HttpResponse.println(F("</table>"));
 
     HttpResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), eventLog.count());
@@ -938,11 +1032,11 @@ void handleHttpCommandFormRequest()
     HttpResponse.println(F("</form>"));
 
     HttpResponse.println(F("<h2>OTGW Response</h2>"));
-    HttpResponse.printf(F("<div class=\"response\"><pre>%s</pre></div>"), cmdResponse);
+    HttpResponse.printf(F("<div class=\"response\"><pre>%s</pre></div>"), stringBuffer);
 
     writeHtmlFooter();
 
-    cmdResponse[0] = 0;
+    stringBuffer[0] = 0;
 
     WebServer.send(200, F("text/html"), HttpResponse);
 }
@@ -958,12 +1052,12 @@ void handleHttpCommandFormPost()
     TRACE(F("cmd: '%s'\nvalue: '%s'\n"), cmd.c_str(), value.c_str());
 
     if (cmd.length() != 2)
-        snprintf(cmdResponse, sizeof(cmdResponse), "Invalid command. Must be 2 characters.");
+        snprintf(stringBuffer, sizeof(stringBuffer), "Invalid command. Must be 2 characters.");
     else
     {
-        bool success = OTGW.sendCommand(cmd.c_str(), value.c_str(), cmdResponse, sizeof(cmdResponse));
+        bool success = OTGW.sendCommand(cmd.c_str(), value.c_str(), stringBuffer, sizeof(stringBuffer));
         if (!success)
-            snprintf(cmdResponse, sizeof(cmdResponse), "No valid response received from OTGW.");
+            snprintf(stringBuffer, sizeof(stringBuffer), "No valid response received from OTGW.");
     }
 
     handleHttpCommandFormRequest();
