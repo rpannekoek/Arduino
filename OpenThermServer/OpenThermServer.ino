@@ -11,6 +11,7 @@
 #include <WeatherAPI.h>
 #include "WiFiCredentials.private.h"
 
+//#define TRACE_TO_SERIAL
 #define ICON "/apple-touch-icon.png"
 #define WATCHDOG_INTERVAL_MS 1000
 #define OTGW_STARTUP_TIME 5
@@ -21,6 +22,7 @@
 #define OT_LOG_LENGTH 200
 #define KEEP_TSET_LOW_DURATION 10*60
 #define WEATHER_SERVICE_POLL_INTERVAL 15*60
+#define WEATHER_SERVICE_RESPONSE_TIMEOUT 10
 
 const char* _boilerLevelNames[5] = {"Off", "Low", "Medium", "High", "Thermostat"};
 
@@ -30,6 +32,7 @@ typedef enum
     Connecting,
     ConnectFailed,
     Connected,
+    TimeServerInitializing,
     TimeServerSyncing,
     TimeServerSyncFailed,
     Initialized
@@ -100,7 +103,7 @@ struct PersistentDataClass : PersistentDataBase
 PersistentDataClass PersistentData;
 OpenThermGateway OTGW(Serial, 14);
 ESP8266WebServer WebServer(80); // Default HTTP port
-WiFiNTP TimeServer("0.europe.pool.ntp.org", 24 * 3600); // Synchronize daily
+WiFiNTP TimeServer("fritz.box", 24 * 3600); // Synchronize daily
 WeatherAPI WeatherService(2000); // 2 sec request timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 WifiInitState wifiInitState;
@@ -120,6 +123,7 @@ time_t otLogTime = 0;
 time_t otgwInitializeTime = OTGW_STARTUP_TIME;
 time_t otgwTimeout = OTGW_TIMEOUT;
 time_t weatherServicePollTime = 0;
+time_t weatherServiceTimeout = 0;
 time_t lastWeatherUpdateTime = 0;
 
 int lastWeatherResult = 0;
@@ -185,9 +189,11 @@ void setup()
     Serial.begin(9600);
     Serial.setTimeout(1000);
     Serial.println("Boot"); // Flush garbage caused by ESP boot output.
-    //Tracer::traceTo(Serial);
 
+    #ifdef TRACE_TO_SERIAL
+    Tracer::traceTo(Serial);
     traceFreeHeap();
+    #endif
 
     // Read persistent data from EEPROM or initialize to defaults.
     if (!PersistentData.readFromEEPROM())
@@ -224,6 +230,10 @@ void setup()
     memset(otgwResponses, 0xFF, sizeof(otgwResponses));
 
     setWifiInitState(WifiInitState::Initializing);
+
+    String event = "Booted from ";
+    event += ESP.getResetReason();
+    logEvent(event);
 
     traceFreeHeap();
 
@@ -295,13 +305,35 @@ void loop()
             if (apiKey[0] != 0)
             {
                 OTGW.feedWatchdog();
-                lastWeatherResult = WeatherService.requestData(apiKey, PersistentData.WeatherLocation); 
-                if (lastWeatherResult == 200)
+                if (WeatherService.beginRequestData(apiKey, PersistentData.WeatherLocation))
+                    weatherServiceTimeout = currentTime + WEATHER_SERVICE_RESPONSE_TIMEOUT;
+                else
+                    TRACE(F("Failed sending request to weather service\n"));
+                return;
+            }
+        }
+
+        if (weatherServiceTimeout != 0)
+        {
+            if (currentTime >= weatherServiceTimeout)
+            {
+                TRACE(F("Timeout waiting for weather service response\n"));
+                lastWeatherResult = WEATHER_ERROR_TIMEOUT;
+                weatherServiceTimeout = 0;
+            }
+
+            int httpCode = WeatherService.endRequestData();
+            if (httpCode != 0)
+            {
+                weatherServiceTimeout = 0;
+                lastWeatherResult = httpCode;
+                if (httpCode == 200)
                 {
                     lastWeatherUpdateTime = currentTime;
                     updateTOutside = (WeatherService.temperature != getDecimal(getTOutside()));
                 }
-                return;
+                else
+                    TRACE(F("Weather service error: %d\n"), httpCode);
             }
         }
 
@@ -376,7 +408,11 @@ void handleWifiInitialization()
 
         case WifiInitState::Connected:
             WebServer.begin();
-            TRACE(F("Web Server started\n"));
+            logEvent(F("WiFi connected"));
+            setWifiInitState(WifiInitState::TimeServerInitializing);
+            break;
+
+        case WifiInitState::TimeServerInitializing:
             TRACE(F("Getting time from NTP server...\n"));
             OTGW.feedWatchdog(); // DNS lookup in beginGetServerTime may take a few seconds
             if (TimeServer.beginGetServerTime())
@@ -400,15 +436,15 @@ void handleWifiInitialization()
             {
                 currentTime = serverTime;
                 otgwTimeout = serverTime + OTGW_TIMEOUT;
-                logEvent(F("Initialized after boot"));
+                logEvent(F("Time synchronized"));
                 setWifiInitState(WifiInitState::Initialized);
             }
             break;
         
         case WifiInitState::TimeServerSyncFailed:
-            // Retry Time Server sync after 5 seconds
-            if (currentMillis >= (wifiInitStateChangeTime + 5000))
-                setWifiInitState(WifiInitState::TimeServerSyncing);
+            // Retry Time Server sync after 15 seconds
+            if (currentMillis >= (wifiInitStateChangeTime + 15000))
+                setWifiInitState(WifiInitState::TimeServerInitializing);
             else
                 blinkLED(3);
             break;
@@ -436,9 +472,6 @@ void initializeOpenThermGateway()
 
     bool success = setMaxTSet();
 
-    // TODO: Set LED functions based on Configuration?
-    // TODO: Set GPIO functions (outside temperature sensor)
-
     if (success)
         logEvent(F("OTGW initialized"));
 }
@@ -454,7 +487,6 @@ void resetOpenThermGateway()
 
     logEvent(F("OTGW reset"));
 }
-
 
 bool setMaxTSet()
 {
@@ -577,7 +609,10 @@ void logOpenThermValues(bool forceCreate)
     otLogEntryPtr->repeat = 0;
 
     if ((lastOTLogEntryPtr != NULL) && (lastOTLogEntryPtr->equals(otLogEntryPtr)) && !forceCreate)
+    {
         lastOTLogEntryPtr->repeat++;
+        delete otLogEntryPtr;
+    }
     else
     {
         openThermLog.add(otLogEntryPtr);
@@ -635,7 +670,10 @@ void fillHeap()
         logEvent(F("Test event to fill the event log"));
 
     for (int i = 0; i < OT_LOG_LENGTH; i++)
+    {
         logOpenThermValues(true);
+        logOpenThermValues(false);
+    }
 }
 
 
@@ -817,8 +855,6 @@ void handleHttpRootRequest()
         HttpResponse.printf(F("<tr><td>Weather update</td><td>%s</td></tr>\r\n"), timeString);
     }
     HttpResponse.printf(F("<tr><td>ESP Free Heap</td><td>%d</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><td>ESP Reset</td><td>%s</td></tr>\r\n"), ESP.getResetReason().c_str());
-    HttpResponse.printf(F("<tr><td>Init state</td><td>%d</td></tr>\r\n"), wifiInitState);
     HttpResponse.println(F("</table>"));
 
     HttpResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), eventLog.count());
