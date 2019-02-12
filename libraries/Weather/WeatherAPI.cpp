@@ -3,50 +3,81 @@
 #include <WiFiClient.h>
 #include <Tracer.h>
 
-char _buffer[96];
+#define WEATHER_SERVER_HOST "weerlive.nl"
 
 
 WeatherAPI::WeatherAPI(int timeout)
     : _timeout(timeout)
 {
+    _wifiClient.setTimeout(timeout);
 }
 
 
-int WeatherAPI::requestData(const char* apiKey, const char* location)
+bool WeatherAPI::beginRequestData(const char* apiKey, const char* location)
 {
-    Tracer tracer(F("WeatherAPI::requestData"));
+    Tracer tracer(F("WeatherAPI::beginRequestData"));
 
+    if (!_wifiClient.connect(WEATHER_SERVER_HOST, 80))
+    {
+        TRACE(F("Unable to connect to host %s\n"), WEATHER_SERVER_HOST);
+        return false;
+    }
+
+    char* httpRequest = _buffer;
     snprintf(
-        _buffer,
+        httpRequest,
         sizeof(_buffer),
-        "http://weerlive.nl/api/json-data-10min.php?key=%s&locatie=%s",
+        "GET /api/json-data-10min.php?key=%s&locatie=%s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
         apiKey,
-        location
+        location,
+        WEATHER_SERVER_HOST
         );
-    TRACE(F("URL: %s\n"), _buffer);
+    TRACE(httpRequest);
 
-    HTTPClient httpClient;
-    httpClient.setTimeout(_timeout);
-    if (!httpClient.begin(_buffer))
+    size_t httpRequestLength = strlen(httpRequest);
+    if (_wifiClient.write(httpRequest, httpRequestLength) != httpRequestLength)
     {
-        TRACE(F("Error parsing URL: %s\n"), _buffer);
-        return WEATHER_ERROR_URL;
+        _wifiClient.stop();
+        return false;
     }
 
-    int result = httpClient.GET();
-    TRACE(F("HTTPClient.GET() returned %d\n"), result);
-    if (result != HTTP_CODE_OK)
-    {
-        httpClient.end();
-        return result;
-    }
+    return true;
+}
 
-    WiFiClient wifiClient = httpClient.getStream();
 
+int WeatherAPI::endRequestData()
+{
+    if (!_wifiClient.available())
+        return 0;
+
+    Tracer tracer(F("WeatherAPI::endRequestData"));
+
+    // Read all HTTP headers and obtain HTTP code from first
+    int httpCode = 0;
     size_t bytesRead;
     do
     {
-        bytesRead = wifiClient.readBytesUntil(',',  _buffer, sizeof(_buffer));
+        bytesRead = _wifiClient.readBytesUntil('\n', _buffer, sizeof(_buffer) - 1);
+        _buffer[bytesRead] = 0;
+        TRACE(F("%s\n"), _buffer);
+
+        if (httpCode == 0)
+        {
+            if ((strlen(_buffer) < 10) || (sscanf(_buffer + 9, "%d", &httpCode) != 1))
+                httpCode = WEATHER_ERROR_HTTP_RESPONSE;
+            TRACE(F("HTTP code: %d\n"), httpCode);
+            if (httpCode != 200)
+            {
+                _wifiClient.stop();
+                return httpCode;
+            }
+        }
+    } while (bytesRead > 2);
+    
+    // Read HTTP body and find temperature
+    do
+    {
+        bytesRead = _wifiClient.readBytesUntil(',',  _buffer, sizeof(_buffer) - 1);
         _buffer[bytesRead] = 0;
         TRACE(F("%s\n"), _buffer);
 
@@ -59,7 +90,7 @@ int WeatherAPI::requestData(const char* apiKey, const char* location)
             else
             {
                 TRACE(F("Unable to parse temperature\n"));
-                result = WEATHER_ERROR_TEMPERATURE;
+                httpCode= WEATHER_ERROR_TEMPERATURE;
             }
             break;
         }
@@ -69,10 +100,31 @@ int WeatherAPI::requestData(const char* apiKey, const char* location)
     if (bytesRead == 0)
     {
         TRACE(F("Temperature not found\n"));
-        result = WEATHER_ERROR_NO_TEMPERATURE;
+        httpCode = WEATHER_ERROR_NO_TEMPERATURE;
     }
 
-    httpClient.end();
+    _wifiClient.stop();
 
+    return httpCode;
+}
+
+
+int WeatherAPI::requestData(const char* apiKey, const char* location)
+{
+    Tracer tracer(F("WeatherAPI::requestData"));
+
+    if (!beginRequestData(apiKey, location))
+        return WEATHER_ERROR_HTTP_REQUEST;
+
+    int result;
+    int waitTime = 0;
+    do
+    {
+        delay(100);
+        waitTime += 100;
+        result = endRequestData();
+    }
+    while ((result == 0) && (waitTime < _timeout));
+    
     return result;
 }
