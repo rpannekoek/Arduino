@@ -5,7 +5,7 @@ Log::Log(uint16_t size)
     : _size(size)
 {
     _entriesPtr = new void*[size];
-    _entriesPtr[0] = NULL;
+    memset(_entriesPtr, 0, sizeof(_entriesPtr));
     _start = 0;
     _end = 0;
     _count = 0;
@@ -62,6 +62,15 @@ void Log::add(void* entry)
 void* Log::getFirstEntry()
 {
     _iterator = _start;
+    return _entriesPtr[_iterator];
+}
+
+
+void* Log::getEntryFromEnd(uint16_t n)
+{
+    _iterator = _end - n - 1;
+    if (_iterator < 0)
+        _iterator += _size;
     return _entriesPtr[_iterator];
 }
 

@@ -16,6 +16,7 @@ class Log
         void clear();
         void add(void* entry);
         void* getFirstEntry();
+        void* getEntryFromEnd(uint16_t n);
         void* getNextEntry();
 
     protected:

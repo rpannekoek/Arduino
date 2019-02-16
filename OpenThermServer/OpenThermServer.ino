@@ -3,15 +3,15 @@
 #include <FS.h>
 #include <WiFiNTP.h>
 #include <Tracer.h>
-#include <PrintHex.h>
 #include <StringBuilder.h>
 #include <OTGW.h>
-#include <PersistentDataBase.h>
 #include <Log.h>
 #include <WeatherAPI.h>
+#include "PersistentData.h"
+#include "OpenThermLogEntry.h"
 #include "WiFiCredentials.private.h"
 
-//#define TRACE_TO_SERIAL
+
 #define ICON "/apple-touch-icon.png"
 #define WATCHDOG_INTERVAL_MS 1000
 #define OTGW_STARTUP_TIME 5
@@ -19,7 +19,7 @@
 #define HTTP_POLL_INTERVAL 60
 #define DATA_VALUE_NONE 0xFFFF
 #define EVENT_LOG_LENGTH 100
-#define OT_LOG_LENGTH 200
+#define OT_LOG_LENGTH 240
 #define KEEP_TSET_LOW_DURATION 10*60
 #define WEATHER_SERVICE_POLL_INTERVAL 15*60
 #define WEATHER_SERVICE_RESPONSE_TIMEOUT 10
@@ -47,63 +47,10 @@ typedef enum
     Thermostat
 } BoilerLevel;
 
-struct OpenThermLogEntry
-{
-    time_t time;
-    uint16_t thermostatTSet;
-    uint16_t thermostatMaxRelModulation;
-    uint16_t boilerStatus;
-    uint16_t boilerTSet;
-    uint16_t boilerTWater;
-    uint16_t tOutside;
-    uint8_t repeat;
-
-    bool equals(OpenThermLogEntry* otherPtr)
-    {
-        return (otherPtr->thermostatTSet == thermostatTSet) &&
-            (otherPtr->thermostatMaxRelModulation == thermostatMaxRelModulation) &&
-            (otherPtr->boilerStatus == boilerStatus) &&
-            (otherPtr->boilerTSet == boilerTSet) &&
-            (otherPtr->boilerTWater == boilerTWater) &&
-            (otherPtr->tOutside == tOutside);
-    }
-};
-
-struct PersistentDataClass : PersistentDataBase
-{
-    char HostName[20];
-    int8_t TimeZoneOffset; // hours
-    uint16_t OpenThermLogInterval; // seconds
-    char WeatherApiKey[16];
-    char WeatherLocation[16];
-
-    PersistentDataClass() 
-        : PersistentDataBase(sizeof(HostName) + sizeof(TimeZoneOffset) + sizeof(OpenThermLogInterval) + sizeof(WeatherApiKey) + sizeof(WeatherLocation)) {}
-
-    void initialize()
-    {
-        strcpy(HostName, "OpenThermGateway");
-        TimeZoneOffset = 1;
-        OpenThermLogInterval = 60;
-        WeatherApiKey[0] = 0;
-        WeatherLocation[0] = 0; 
-    }
-
-    void validate()
-    {
-        if (TimeZoneOffset < -12) TimeZoneOffset = -12;
-        if (TimeZoneOffset > 14) TimeZoneOffset = 14;
-        if (OpenThermLogInterval < 5) OpenThermLogInterval = 5;
-        if (OpenThermLogInterval > 900) OpenThermLogInterval = 900;
-        if (WeatherApiKey[0] == 0xFF) WeatherApiKey[0] = 0;
-        if (WeatherLocation[0] == 0xFF) WeatherLocation[0] = 0;
-    }
-};
-
-PersistentDataClass PersistentData;
 OpenThermGateway OTGW(Serial, 14);
 ESP8266WebServer WebServer(80); // Default HTTP port
-WiFiNTP TimeServer("fritz.box", 24 * 3600); // Synchronize daily
+WiFiNTP TimeServer(NTP_SERVER, 24 * 3600); // Synchronize daily
+WiFiFTPClient FTPClient(2000); // 2 sec timeout
 WeatherAPI WeatherService(2000); // 2 sec request timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 WifiInitState wifiInitState;
@@ -130,6 +77,9 @@ int lastWeatherResult = 0;
 bool updateTOutside = false;
 
 OpenThermLogEntry* lastOTLogEntryPtr = NULL;
+uint16_t otLogEntriesToSync = 0;
+time_t otLogSyncTime = 0;
+time_t lastOTLogSyncTime = 0;
 
 char stringBuffer[128];
 
@@ -190,19 +140,12 @@ void setup()
     Serial.setTimeout(1000);
     Serial.println("Boot"); // Flush garbage caused by ESP boot output.
 
-    #ifdef TRACE_TO_SERIAL
-    Tracer::traceTo(Serial);
+    #ifdef DEBUG_ESP_PORT
+    Tracer::traceTo(DEBUG_ESP_PORT);
     traceFreeHeap();
     #endif
 
-    // Read persistent data from EEPROM or initialize to defaults.
-    if (!PersistentData.readFromEEPROM())
-    {
-        TRACE(F("EEPROM not initialized; initializing with defaults.\n"));
-        PersistentData.initialize();
-    }
-    PersistentData.validate();
-    PersistentData.printData();
+    PersistentData.begin();
 
     SPIFFS.begin();
 
@@ -210,6 +153,7 @@ void setup()
     WebServer.on("/", handleHttpRootRequest);
     WebServer.on("/traffic", handleHttpOpenThermTrafficRequest);
     WebServer.on("/log", handleHttpOpenThermLogRequest);
+    WebServer.on("/log/sync", handleHttpOpenThermLogSyncRequest);
     WebServer.on("/log-csv", handleHttpOpenThermLogCsvRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
     WebServer.on("/events/clear", handleHttpEventLogClearRequest);
@@ -346,6 +290,17 @@ void loop()
             logOpenThermValues(false);
             traceFreeHeap();
         }
+
+        if (currentTime >= otLogSyncTime)
+        {
+            if (trySyncOpenThermLog())
+                otLogSyncTime = 0;
+            else
+            {
+                logEvent("Unable to sync OpenTherm Log with FTP server");
+                otLogSyncTime += 3600; // Retry in 1 hour
+            }
+        }
     }
     else
         handleWifiInitialization();
@@ -355,7 +310,6 @@ void loop()
 
     delay(10);
 }
-
 
 // WiFi initialization state machine
 void handleWifiInitialization()
@@ -610,7 +564,8 @@ void logOpenThermValues(bool forceCreate)
     otLogEntryPtr->tOutside = getTOutside();
     otLogEntryPtr->repeat = 0;
 
-    if ((lastOTLogEntryPtr != NULL) && (lastOTLogEntryPtr->equals(otLogEntryPtr)) && !forceCreate)
+    if ((lastOTLogEntryPtr != NULL) && (lastOTLogEntryPtr->equals(otLogEntryPtr)) && 
+        (lastOTLogEntryPtr->repeat != 255) && !forceCreate)
     {
         lastOTLogEntryPtr->repeat++;
         delete otLogEntryPtr;
@@ -619,9 +574,56 @@ void logOpenThermValues(bool forceCreate)
     {
         openThermLog.add(otLogEntryPtr);
         lastOTLogEntryPtr = otLogEntryPtr;
+        otLogEntriesToSync++;
     }
 
     TRACE(F("%d OpenTherm log entries.\n"), openThermLog.count());
+}
+
+
+bool trySyncOpenThermLog()
+{
+    Tracer tracer(F("trySyncOpenThermLog"));
+
+    if (!FTPClient.begin(FTP_SERVER, FTP_USERNAME, FTP_PASSWORD))
+        return false;
+
+    bool success = false;
+    if (otLogEntriesToSync == 0)
+        success = true;
+    else
+    {
+        TRACE(F("Appending %d OpenTherm log entries to log file on FTP server...\n", otLogEntriesToSync));
+        FTPclient.sendCommand("APPE OTGW.csv", false);
+
+        WiFiClient& dataClient = FTPClient.getDataClient();
+        if (dataClient.isConnected())
+        {
+            OpenThermLogEntry* otLogEntryPtr = openThermLog.getEntryFromEnd(otLogEntriesToSync - 1);
+            while (otLogEntryPtr != NULL)
+            {
+                time_t otLogEntryTime = otLogEntryPtr->time; 
+                writeCsvDataLine(otLogEntryPtr, otLogEntryTime, dataClient);
+                if (otLogEntryPtr->repeat > 0)
+                {
+                    // OpenTherm log entry repeats at least once.
+                    // Write an additional CSV data line for the end of the interval to prevent interpolation in the graphs. 
+                    otLogEntryTime += (PersistentData.OpenThermLogInterval * otLogEntryPtr->repeat);
+                    writeCsvDataLine(otLogEntryPtr, otLogEntryTime, HttpResponse);
+                }
+                otLogEntryPtr = openThermLog.getNextEntry();
+            }
+            dataClient.close();
+
+            otLogEntriesToSync = 0;
+            lastOTLogSyncTime = currentTime;
+            success = true;
+        }
+    }
+
+    FTPClient.end();
+
+    return success;
 }
 
 
@@ -849,6 +851,12 @@ void handleHttpRootRequest()
         HttpResponse.printf(F("<tr><td>Change in</td><td>%d s</td></tr>\r\n"), changeBoilerLevelTime - currentTime);
     }
     HttpResponse.printf(F("<tr><td>Override duration</td><td>%0.1f h</td></tr>\r\n"), float(totalOverrideDuration) / 3600);
+    HttpResponse.printf(F("<tr><td>Weather result</td><td>%d</td></tr>\r\n"), lastWeatherResult);
+    if (lastWeatherUpdateTime != 0)
+    {
+        formatTime(stringBuffer, sizeof(stringBuffer), "%H:%M", lastWeatherUpdateTime);
+        HttpResponse.printf(F("<tr><td>Weather update</td><td>%s</td></tr>\r\n"), stringBuffer);
+    }
     HttpResponse.println(F("</table>"));
 
     HttpResponse.println(F("<h2>OpenTherm Gateway status</h2>"));
@@ -856,14 +864,12 @@ void handleHttpRootRequest()
     for (int i = 0; i <= 4; i++)
         HttpResponse.printf(F("<tr><td>Error %02X</td><td>%d</td></tr>\r\n"), i, OTGW.errors[i]);
     HttpResponse.printf(F("<tr><td>OTGW Resets</td><td>%d</td></tr>\r\n"), OTGW.resets);
-    HttpResponse.printf(F("<tr><td>Weather result</td><td>%d</td></tr>\r\n"), lastWeatherResult);
-    if (lastWeatherUpdateTime != 0)
-    {
-        char timeString[8];
-        formatTime(timeString, sizeof(timeString), "%H:%M", lastWeatherUpdateTime);
-        HttpResponse.printf(F("<tr><td>Weather update</td><td>%s</td></tr>\r\n"), timeString);
-    }
     HttpResponse.printf(F("<tr><td>ESP Free Heap</td><td>%d</td></tr>\r\n"), ESP.getFreeHeap());
+    if (lastOTLogSyncTime != 0)
+    {
+        formatTime(stringBuffer, sizeof(stringBuffer), "%H:%M", lastOTLogSyncTime);
+        HttpResponse.printf(F("<tr><td>FTP Sync</td><td>%s</td></tr>\r\n"), stringBuffer);
+    }
     HttpResponse.println(F("</table>"));
 
     HttpResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), eventLog.count());
@@ -922,10 +928,14 @@ void handleHttpOpenThermLogRequest()
 
     writeHtmlHeader(F("OpenTherm log"), true, true);
     
-    HttpResponse.println(F("<p class=\"log-csv\"><a href=\"log-csv\">Get log in CSV format</a></p>"));
+    HttpResponse.println(F("<p class=\"log-csv\"><a href=\"/log-csv\">Get log in CSV format</a></p>"));
+    HttpResponse.printf(
+        F("<p class=\"log-sync\"><a href=\"/log/sync\">Sync %d log entries with FTP Server</a></p>"),
+        otLogEntriesToSync
+        );
 
     // If the OT log contains many entries, we render every other so the max HTTP response size is not exceeded.
-    bool skipEvenEntries = openThermLog.count() > 100;
+    bool skipEvenEntries = openThermLog.count() > (OT_LOG_LENGTH / 2);
 
     HttpResponse.println(F("<table>"));
     HttpResponse.println(F("<tr><th>Time</th><th>TSet(t)</th><th>Max mod %</th><th>TSet(b)</th><th>TWater</th><th>TOutside</th><th>Status</th></tr>"));
@@ -958,6 +968,32 @@ void handleHttpOpenThermLogRequest()
 }
 
 
+void handleHttpOpenThermLogSyncRequest()
+{
+    Tracer tracer(F("handleHttpOpenThermLogSyncRequest"));
+
+    writeHtmlHeader("FTP Sync", true, true);
+
+    HttpResponse.printf(
+        F("<p>Sending %d OpenTherm log entries to FTP server (%s) ...</p>\r\n"), 
+        otLogEntriesToSync,
+        FTP_SERVER
+        );
+
+    if (trySyncOpenThermLog())
+    {
+        HttpResponse.println("<p>Success!</p>");
+        otLogSyncTime = 0; // Cancel scheduled sync (if any)
+    }
+    else
+        HttpResponse.println("<p>Failed!</p>");
+ 
+    writeHtmlFooter();
+
+    WebServer.send(200, F("text/html"), HttpResponse);
+}
+
+
 void handleHttpOpenThermLogCsvRequest()
 {
     Tracer tracer(F("handleHttpOpenThermLogCsvRequest"));
@@ -975,13 +1011,13 @@ void handleHttpOpenThermLogCsvRequest()
     while (otLogEntryPtr != NULL)
     {
         time_t otLogEntryTime = otLogEntryPtr->time;
-        writeCsvDataLine(otLogEntryPtr, otLogEntryTime);
+        writeCsvDataLine(otLogEntryPtr, otLogEntryTime, HttpResponse);
         if (otLogEntryPtr->repeat > 0)
         {
             // OpenTherm log entry repeats at least once.
             // Write an additional CSV data line for the end of the interval to prevent interpolation in the graphs. 
             otLogEntryTime += (PersistentData.OpenThermLogInterval * otLogEntryPtr->repeat);
-            writeCsvDataLine(otLogEntryPtr, otLogEntryTime);
+            writeCsvDataLine(otLogEntryPtr, otLogEntryTime, HttpResponse);
         }
         
         otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getNextEntry());
@@ -991,7 +1027,7 @@ void handleHttpOpenThermLogCsvRequest()
 }
 
 
-void writeCsvDataLine(OpenThermLogEntry* otLogEntryPtr, time_t time)
+void writeCsvDataLine(OpenThermLogEntry* otLogEntryPtr, time_t time, Print& destination)
 {
     int statusCH = 0;
     int statusDHW = 0;
@@ -1004,7 +1040,7 @@ void writeCsvDataLine(OpenThermLogEntry* otLogEntryPtr, time_t time)
     char timeString[17]; // strlen("2019-02-02 12:30") + 1
     formatTime(timeString, sizeof(timeString), "%F %H:%M", time);
 
-    HttpResponse.printf(
+    destination.printf(
         F("\"%s\",%d,%d,%d,%d,%d,%d,%d\r\n"), 
         timeString, 
         getInteger(otLogEntryPtr->thermostatTSet),
