@@ -21,6 +21,7 @@ class WeatherAPI
         bool beginRequestData(const char* apiKey, const char* location);
         int endRequestData();
         int requestData(const char* apiKey, const char* location);
+        void close();
     
     protected:
         int _timeout;

@@ -68,7 +68,7 @@ int WeatherAPI::endRequestData()
             TRACE(F("HTTP code: %d\n"), httpCode);
             if (httpCode != 200)
             {
-                _wifiClient.stop();
+                close();
                 return httpCode;
             }
         }
@@ -103,7 +103,7 @@ int WeatherAPI::endRequestData()
         httpCode = WEATHER_ERROR_NO_TEMPERATURE;
     }
 
-    _wifiClient.stop();
+    close();
 
     return httpCode;
 }
@@ -127,4 +127,13 @@ int WeatherAPI::requestData(const char* apiKey, const char* location)
     while ((result == 0) && (waitTime < _timeout));
     
     return result;
+}
+
+
+void WeatherAPI::close()
+{
+    while (_wifiClient.available())
+        _wifiClient.read();
+    
+    _wifiClient.stop();
 }

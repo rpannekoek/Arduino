@@ -318,8 +318,10 @@ void loop()
             if (currentTime >= weatherServiceTimeout)
             {
                 TRACE(F("Timeout waiting for weather service response\n"));
+                WeatherService.close();
                 lastWeatherResult = WEATHER_ERROR_TIMEOUT;
                 weatherServiceTimeout = 0;
+                return;
             }
 
             int httpCode = WeatherService.endRequestData();
@@ -648,9 +650,9 @@ void handleSerialData()
             break;
 
         case OpenThermGatewayDirection::Unexpected:
-            if (otgwMessage.message.startsWith("fillHeap"))
+            if (otgwMessage.message.startsWith("test"))
             {
-                fillHeap();
+                test(otgwMessage.message);
                 break;
             }
 
@@ -662,17 +664,24 @@ void handleSerialData()
 }
 
 
-void fillHeap()
+void test(String message)
 {
-    Tracer tracer(F("fillHeap"));
+    Tracer tracer(F("test"));
 
-    for (int i = 0; i < EVENT_LOG_LENGTH; i++)
-        logEvent(F("Test event to fill the event log"));
-
-    for (int i = 0; i < OT_LOG_LENGTH; i++)
+    if (message.startsWith("testL"))
     {
-        logOpenThermValues(true);
-        logOpenThermValues(false);
+        for (int i = 0; i < EVENT_LOG_LENGTH; i++)
+            logEvent(F("Test event to fill the event log"));
+
+        for (int i = 0; i < OT_LOG_LENGTH; i++)
+        {
+            logOpenThermValues(true);
+            logOpenThermValues(false);
+        }
+    }
+    else if (message.startsWith("testW"))
+    {
+        weatherServicePollTime = currentTime;
     }
 }
 
