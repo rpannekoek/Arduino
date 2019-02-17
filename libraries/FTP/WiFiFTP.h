@@ -2,6 +2,7 @@
 #define WIFIFTP_H
 
 #include <c_types.h>
+#include <WiFiClient.h>
 
 #define FTP_DEFAULT_CONTROL_PORT 21
 #define FTP_DEFAULT_DATA_PORT 22
@@ -14,7 +15,7 @@ class WiFiFTPClient
         WiFiFTPClient(int timeout);
 
         bool begin(const char* host, const char* userName, const char* password, uint16_t port = FTP_DEFAULT_CONTROL_PORT);
-        bool end();
+        void end();
 
         int sendCommand(const char* cmd, bool awaitResponse = true);
         int readServerResponse();
@@ -30,6 +31,7 @@ class WiFiFTPClient
         WiFiClient _dataClient;
         char _responseBuffer[64];
         int _serverDataPort;
+        const char* _host;
 
         bool initialize(const char* userName, const char* password);
 };

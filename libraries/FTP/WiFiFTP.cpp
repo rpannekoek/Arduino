@@ -20,6 +20,7 @@ bool WiFiFTPClient::begin(const char* host, const char* userName, const char* pa
         TRACE(F("Cannot connect to FTP server '%s' at port %d\n"), host, port);
         return false;
     }
+    _host = host;
 
     bool success = initialize(userName, password);
     if (!success)
@@ -32,17 +33,17 @@ bool WiFiFTPClient::begin(const char* host, const char* userName, const char* pa
 }
 
 
-bool WiFiFTPClient::end()
+void WiFiFTPClient::end()
 {
     Tracer Tracer(F("WiFiFTPClient::end"));
 
     // TODO: read remaining data from control/data clients?
 
-    if (_dataClient.isConnected())
-        _dataClient.close();
+    if (_dataClient.connected())
+        _dataClient.stop();
 
-    if (_controlClient.isConnected())
-        _controlClient.close();
+    if (_controlClient.connected())
+        _controlClient.stop();
 }
 
 
@@ -52,12 +53,12 @@ bool WiFiFTPClient::initialize(const char* userName, const char* password)
 
     // Retrieve server welcome message
     int responseCode = readServerResponse();
-    bool success = (200 <= responseCode < 300);
+    bool success = (responseCode >= 200) && (responseCode < 300);
     if (!success)
         return false;
 
     char cmdBuffer[32];
-    int cmdBufferSize = sizeof(cmdBuffer));
+    int cmdBufferSize = sizeof(cmdBuffer);
     if (snprintf(cmdBuffer, cmdBufferSize, "USER %s", userName) >= cmdBufferSize)
         return false;
 
@@ -78,14 +79,20 @@ bool WiFiFTPClient::initialize(const char* userName, const char* password)
         return false;
     
     // Parse server data port
-    const char* params = strstr(_responseBuffer, "(");
-    if (params == NULL)
-        return false;
-    params++;
-    int h1, h2, h3, h4, p1, p2;
-    if (sscanf("%d,%d,%d,%d,%d,%d", params, &h1, &h2, &h3, &h4, &p1, &p2) != 6)
-        return false;
-    _serverDataPort = (p1 << 8) + p2;
+    int params[6];
+    strtok(_responseBuffer, "(");
+    for (int i = 0; i < 6; i++) 
+    {
+        const char* token = strtok(NULL, ",)");
+        if (token == NULL)
+        {
+            TRACE(F("Unable to parse PASV response\n"));
+            return false;
+        }
+        params[i] = atoi(token);
+    }   
+    _serverDataPort = (params[4] << 8) + params[5];
+    TRACE(F("Server data port: %d\n"), _serverDataPort);
 
     return true;
 }
@@ -106,7 +113,9 @@ int WiFiFTPClient::sendCommand(const char* cmd, bool awaitResponse)
 
 int WiFiFTPClient::readServerResponse()
 {
-    size_t bytesRead = _controlClient.readBytesUntil(`\n`, _responseBuffer, sizeof(_responseBuffer) - 1);
+    Tracer tracer(F("WiFiFTPClient::readServerResponse"));
+
+    size_t bytesRead = _controlClient.readBytesUntil('\n', _responseBuffer, sizeof(_responseBuffer) - 1);
     _responseBuffer[bytesRead] = 0;
     TRACE(F("Response: %s\n"), _responseBuffer);
 

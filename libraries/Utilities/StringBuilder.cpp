@@ -17,47 +17,10 @@ void StringBuilder::clear()
 }
 
 
-void StringBuilder::println(const char* str)
-{
-    if (_space == 0) return;
-    
-    strncpy(buffer + len, str, _space);
-    update_length(strlen(str));
-
-    strncpy(buffer + len, "\r\n", _space);
-    update_length(2);
-}
-
-
-void StringBuilder::println(const __FlashStringHelper* fstr)
-{
-    if (_space == 0) return;
-
-    PGM_P pstr = (PGM_P) fstr;
-    strncpy_P(buffer + len, pstr, _space);
-    update_length(strlen_P(pstr));
-
-    strncpy(buffer + len, "\r\n", _space);
-    update_length(2);
-}
-
-
-void StringBuilder::printf(const char* format, ...)
-{
-    if (_space == 0) return;
-
-    va_list args;
-    va_start(args, format);
-    size_t additional = vsnprintf(buffer + len, _space, format, args);
-    va_end(args);
-
-    update_length(additional);
-}
-
-
 void StringBuilder::printf(const __FlashStringHelper* fformat, ...)
 {
-    if (_space == 0) return;
+    if (_space == 0)
+        return;
 
     va_list args;
     va_start(args, fformat);
@@ -65,6 +28,29 @@ void StringBuilder::printf(const __FlashStringHelper* fformat, ...)
     va_end(args);
 
     update_length(additional);
+}
+
+
+size_t StringBuilder::write(uint8_t data)
+{
+    return write(&data, 1);
+}
+
+
+size_t StringBuilder::write(const uint8_t* dataPtr, size_t size)
+{
+    if (_space <= 1) 
+        return 0;
+ 
+    if (size >= _space)
+        size = (_space - 1);
+
+    memcpy(buffer + len, dataPtr, size);
+    buffer[len + size] = 0; 
+
+    update_length(size);
+
+    return size;
 }
 
 

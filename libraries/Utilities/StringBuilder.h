@@ -3,18 +3,20 @@
 
 #include <stdlib.h>
 #include <WString.h>
+#include <Print.h>
 
-class StringBuilder : public String
+class StringBuilder : public String, public Print
 {
   public:
     // Constructor
     StringBuilder(size_t size);
 
     void clear();
-    void println(const char* str);
-    void println(const __FlashStringHelper* fstr);
-    void printf(const char* format, ...);
     void printf(const __FlashStringHelper* fformat, ...);
+
+    // Overrides for virtual Print methods
+    virtual size_t write(uint8_t);
+    virtual size_t write(const uint8_t *buffer, size_t size);
 
   protected:
     size_t _space;

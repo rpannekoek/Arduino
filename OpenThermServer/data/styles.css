@@ -17,18 +17,13 @@ h2
 
 table
 {
-	border: thin solid black;
+    border: thin solid gray;
+    border-collapse: collapse;
 }
 
 td, th
 {
-	padding-left: 4px;
-	padding-right: 4px;
-	border: thin solid black;
-}
-
-.bar
-{
-	background-color: blue;
-    color: blue;
+	padding-left: 1em;
+	padding-right: 1em;
+	border: thin solid gray;
 }

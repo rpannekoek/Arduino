@@ -1,11 +1,12 @@
 #include "Log.h"
+#include <string.h>
 
 // Constructor
 Log::Log(uint16_t size)
     : _size(size)
 {
     _entriesPtr = new void*[size];
-    memset(_entriesPtr, 0, sizeof(_entriesPtr));
+    memset(_entriesPtr, 0, size * 4);
     _start = 0;
     _end = 0;
     _count = 0;
@@ -68,9 +69,13 @@ void* Log::getFirstEntry()
 
 void* Log::getEntryFromEnd(uint16_t n)
 {
-    _iterator = _end - n - 1;
-    if (_iterator < 0)
-        _iterator += _size;
+    n++; // _end is just beyond last entry
+
+    if (_end < n)
+        _iterator = _end + _size - n;
+    else
+        _iterator = _end - n;
+
     return _entriesPtr[_iterator];
 }
 
