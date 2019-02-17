@@ -442,10 +442,9 @@ bool setMaxTSet()
 {
     Tracer tracer(F("setMaxTSet"));
 
-    char maxTSet[8];
-    snprintf(maxTSet, sizeof(maxTSet), "%d", boilerTSet[BoilerLevel::High]);
+    snprintf(stringBuffer, sizeof(stringBuffer), "%d", boilerTSet[BoilerLevel::High]);
     
-    bool success = OTGW.sendCommand("SH", maxTSet); 
+    bool success = OTGW.sendCommand("SH", stringBuffer); 
     if (!success)
     {
         logEvent(F("Unable to set max CH water setpoint"));
@@ -460,10 +459,9 @@ bool setTOutside(float temperature)
 {
     Tracer tracer(F("setTOutside"));
 
-    char tOutside[8];
-    snprintf(tOutside, sizeof(tOutside), "%0.1f", temperature);
+    snprintf(stringBuffer, sizeof(stringBuffer), "%0.1f", temperature);
     
-    bool success = OTGW.sendCommand("OT", tOutside); 
+    bool success = OTGW.sendCommand("OT", stringBuffer); 
     if (!success)
     {
         logEvent(F("Unable to set outside temperature"));
@@ -496,9 +494,8 @@ bool setBoilerLevel(BoilerLevel level)
         success = OTGW.sendCommand("CH", "0");
     else
     {
-        char tSet[8];
-        sprintf(tSet, "%d", boilerTSet[level]);
-        success = OTGW.sendCommand("CS", tSet);
+        sprintf(stringBuffer, "%d", boilerTSet[level]);
+        success = OTGW.sendCommand("CS", stringBuffer);
     }
 
     if (!success)
@@ -594,7 +591,7 @@ bool trySyncOpenThermLog()
         WiFiClient& dataClient = FTPClient.getDataClient();
         if (dataClient.connected())
         {
-            OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getEntryFromEnd(otLogEntriesToSync - 1));
+            OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getEntryFromEnd(otLogEntriesToSync));
             writeCsvDataLines(otLogEntryPtr, dataClient);
             dataClient.stop();
 
@@ -652,9 +649,8 @@ void handleSerialData()
             }
 
         case OpenThermGatewayDirection::Error:
-            char event[32];
-            snprintf(event, sizeof(event), "OTGW: %s", otgwMessage.message.c_str());
-            logEvent(event);
+            snprintf(stringBuffer, sizeof(stringBuffer), "OTGW: %s", otgwMessage.message.c_str());
+            logEvent(stringBuffer);
     }
 }
 
@@ -932,15 +928,14 @@ void handleHttpOpenThermLogRequest()
 
     HttpResponse.println(F("<table>"));
     HttpResponse.println(F("<tr><th>Time</th><th>TSet(t)</th><th>Max mod %</th><th>TSet(b)</th><th>TWater</th><th>TOutside</th><th>Status</th></tr>"));
-    char timeString[8];
     OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getFirstEntry());
     while (otLogEntryPtr != NULL)
     {
-        formatTime(timeString, sizeof(timeString), "%H:%M", otLogEntryPtr->time);
+        formatTime(stringBuffer, sizeof(stringBuffer), "%H:%M", otLogEntryPtr->time);
 
         HttpResponse.printf(
             F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%s</td></tr>\r\n"),
-            timeString, 
+            stringBuffer, 
             getDecimal(otLogEntryPtr->thermostatTSet),
             getDecimal(otLogEntryPtr->thermostatMaxRelModulation),
             getDecimal(otLogEntryPtr->boilerTSet),
@@ -1036,12 +1031,11 @@ void writeCsvDataLine(OpenThermLogEntry* otLogEntryPtr, time_t time, Print& dest
         statusDHW = (otLogEntryPtr->boilerStatus & OpenThermStatus::SlaveDHWMode) ? 5 : 0;
     }
 
-    char timeString[17]; // strlen("2019-02-02 12:30") + 1
-    formatTime(timeString, sizeof(timeString), "%F %H:%M", time);
+    formatTime(stringBuffer, sizeof(stringBuffer), "%F %H:%M", time);
 
     destination.printf(
         "\"%s\",%d,%d,%d,%d,%d,%d,%d\r\n", 
-        timeString, 
+        stringBuffer, 
         getInteger(otLogEntryPtr->thermostatTSet),
         getInteger(otLogEntryPtr->thermostatMaxRelModulation),
         getInteger(otLogEntryPtr->boilerTSet),

@@ -69,7 +69,8 @@ void* Log::getFirstEntry()
 
 void* Log::getEntryFromEnd(uint16_t n)
 {
-    n++; // _end is just beyond last entry
+    if (n == 0)
+        return NULL;
 
     if (_end < n)
         _iterator = _end + _size - n;
