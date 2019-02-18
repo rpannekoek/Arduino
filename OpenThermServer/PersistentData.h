@@ -1,42 +1,34 @@
 #include <PersistentDataBase.h>
 
-struct PersistentDataClass : PersistentDataBase
+
+struct PersistentDataStruct : PersistentDataBase
 {
-    char HostName[20];
-    int8_t TimeZoneOffset; // hours
-    uint16_t OpenThermLogInterval; // seconds
-    char WeatherApiKey[16];
-    char WeatherLocation[16];
+    char hostName[20];
+    int8_t timeZoneOffset; // hours
+    uint16_t openThermLogInterval; // seconds
+    char weatherApiKey[16];
+    char weatherLocation[16];
 
-    PersistentDataClass() 
-        : PersistentDataBase(sizeof(HostName) + sizeof(TimeZoneOffset) + sizeof(OpenThermLogInterval) + sizeof(WeatherApiKey) + sizeof(WeatherLocation)) {}
+    PersistentDataStruct() : PersistentDataBase(sizeof(hostName) + sizeof(timeZoneOffset) + sizeof(openThermLogInterval) + sizeof(weatherApiKey) + sizeof(weatherLocation)) {}
 
-    void begin()
+    virtual void initialize()
     {
-        if (readFromEEPROM())
-        {
-            validate();
-            return;
-        }
-
-        TRACE(F("EEPROM not initialized; initializing with defaults.\n"));
-
-        strcpy(HostName, "OpenThermGateway");
-        TimeZoneOffset = 1;
-        OpenThermLogInterval = 60;
-        WeatherApiKey[0] = 0;
-        WeatherLocation[0] = 0; 
+        strcpy(hostName, "OpenThermGateway");
+        timeZoneOffset = 1;
+        openThermLogInterval = 60;
+        weatherApiKey[0] = 0;
+        weatherLocation[0] = 0; 
     }
 
-    void validate()
+    virtual void validate()
     {
-        if (TimeZoneOffset < -12) TimeZoneOffset = -12;
-        if (TimeZoneOffset > 14) TimeZoneOffset = 14;
-        if (OpenThermLogInterval < 5) OpenThermLogInterval = 5;
-        if (OpenThermLogInterval > 900) OpenThermLogInterval = 900;
-        if (WeatherApiKey[0] == 0xFF) WeatherApiKey[0] = 0;
-        if (WeatherLocation[0] == 0xFF) WeatherLocation[0] = 0;
+        if (timeZoneOffset < -12) timeZoneOffset = -12;
+        if (timeZoneOffset > 14) timeZoneOffset = 14;
+        if (openThermLogInterval < 5) openThermLogInterval = 5;
+        if (openThermLogInterval > 900) openThermLogInterval = 900;
+        if (weatherApiKey[0] == 0xFF) weatherApiKey[0] = 0;
+        if (weatherLocation[0] == 0xFF) weatherLocation[0] = 0;
     }
 };
 
-PersistentDataClass PersistentData;
+PersistentDataStruct PersistentData;

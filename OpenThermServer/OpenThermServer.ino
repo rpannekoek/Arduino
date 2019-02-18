@@ -28,7 +28,7 @@
 #define WEATHER_SERVICE_RESPONSE_TIMEOUT 10
 #define FTP_RETRY_INTERVAL 60*60
 
-const char* _boilerLevelNames[5] = {"Off", "Low", "Medium", "High", "Thermostat"};
+const char* BOILER_LEVEL_NAMES[5] = {"Off", "Low", "Medium", "High", "Thermostat"};
 
 typedef enum
 {
@@ -106,7 +106,7 @@ void setWifiInitState(WifiInitState newState)
 
 int formatTime(char* output, size_t output_size, const char* format, time_t time)
 {
-    time += PersistentData.TimeZoneOffset * 3600;
+    time += PersistentData.timeZoneOffset * 3600;
     return strftime(output, output_size, format, gmtime(&time));
 }
 
@@ -249,11 +249,11 @@ void loop()
         {
             weatherServicePollTime = currentTime + WEATHER_SERVICE_POLL_INTERVAL;
 
-            const char* apiKey = PersistentData.WeatherApiKey;
+            const char* apiKey = PersistentData.weatherApiKey;
             if (apiKey[0] != 0)
             {
                 OTGW.feedWatchdog();
-                if (WeatherService.beginRequestData(apiKey, PersistentData.WeatherLocation))
+                if (WeatherService.beginRequestData(apiKey, PersistentData.weatherLocation))
                     weatherServiceTimeout = currentTime + WEATHER_SERVICE_RESPONSE_TIMEOUT;
                 else
                     TRACE(F("Failed sending request to weather service\n"));
@@ -290,7 +290,7 @@ void loop()
         // Log OpenTherm values from Thermostat and Boiler
         if (currentTime >= otLogTime)
         {
-            otLogTime = currentTime + PersistentData.OpenThermLogInterval;
+            otLogTime = currentTime + PersistentData.openThermLogInterval;
             logOpenThermValues(false);
             traceFreeHeap();
         }
@@ -327,7 +327,7 @@ void handleWifiInitialization()
         case WifiInitState::Initializing:
             TRACE(F("Connecting to WiFi network '%s' ...\n"), WIFI_SSID);
             WiFi.mode(WIFI_STA);
-            WiFi.hostname(PersistentData.HostName);
+            WiFi.hostname(PersistentData.hostName);
             WiFi.setAutoReconnect(true);
             WiFi.disconnect();
             WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -780,7 +780,7 @@ void writeHtmlHeader(String title, bool includeHomePageLink, bool includeHeading
     HttpResponse.println(F("<html>"));
     
     HttpResponse.println(F("<head>"));
-    HttpResponse.printf(F("<title>%s - %s</title>\r\n"), PersistentData.HostName, title.c_str());
+    HttpResponse.printf(F("<title>%s - %s</title>\r\n"), PersistentData.hostName, title.c_str());
     HttpResponse.println(F("<link rel=\"stylesheet\" type=\"text/css\" href=\"/styles.css\">"));
     HttpResponse.printf(F("<link rel=\"icon\" sizes=\"196x196\" href=\"%s\">\r\n<link rel=\"apple-touch-icon-precomposed\" sizes=\"196x196\" href=\"%s\">\r\n"), ICON, ICON);
     HttpResponse.printf(F("<meta http-equiv=\"refresh\" content=\"%d\">\r\n") , HTTP_POLL_INTERVAL);
@@ -833,10 +833,10 @@ void handleHttpRootRequest()
 
     HttpResponse.println(F("<h1>Boiler override</h1>"));
     HttpResponse.println(F("<table>"));
-    HttpResponse.printf(F("<tr><td>Current level</td><td>%s</td></tr>\r\n"), _boilerLevelNames[currentBoilerLevel]);
+    HttpResponse.printf(F("<tr><td>Current level</td><td>%s</td></tr>\r\n"), BOILER_LEVEL_NAMES[currentBoilerLevel]);
     if (changeBoilerLevelTime != 0)
     {
-        HttpResponse.printf(F("<tr><td>Change to</td><td>%s</td></tr>\r\n"), _boilerLevelNames[changeBoilerLevel]);
+        HttpResponse.printf(F("<tr><td>Change to</td><td>%s</td></tr>\r\n"), BOILER_LEVEL_NAMES[changeBoilerLevel]);
         HttpResponse.printf(F("<tr><td>Change in</td><td>%d s</td></tr>\r\n"), changeBoilerLevelTime - currentTime);
     }
     HttpResponse.printf(F("<tr><td>Override duration</td><td>%0.1f h</td></tr>\r\n"), float(totalOverrideDuration) / 3600);
@@ -1012,7 +1012,7 @@ void writeCsvDataLines(OpenThermLogEntry* otLogEntryPtr, Print& destination)
         {
             // OpenTherm log entry repeats at least once.
             // Write an additional CSV data line for the end of the interval to prevent interpolation in the graphs. 
-            otLogEntryTime += (PersistentData.OpenThermLogInterval * otLogEntryPtr->repeat);
+            otLogEntryTime += (PersistentData.openThermLogInterval * otLogEntryPtr->repeat);
             writeCsvDataLine(otLogEntryPtr, otLogEntryTime, destination);
         }
         
@@ -1143,20 +1143,20 @@ void handleHttpConfigFormRequest()
     Tracer tracer(F("handleHttpConfigFormRequest"));
 
     char tzOffsetString[4];
-    sprintf(tzOffsetString, "%d", PersistentData.TimeZoneOffset);
+    sprintf(tzOffsetString, "%d", PersistentData.timeZoneOffset);
 
     char otLogIntervalString[4];
-    sprintf(otLogIntervalString, "%u", PersistentData.OpenThermLogInterval);
+    sprintf(otLogIntervalString, "%u", PersistentData.openThermLogInterval);
 
     writeHtmlHeader(F("Configuration"), true, true);
 
     HttpResponse.println(F("<form action=\"/config\" method=\"POST\">"));
     HttpResponse.println(F("<table>"));
-    addTextBoxRow(HttpResponse, F("hostName"), PersistentData.HostName, F("Host name"));
+    addTextBoxRow(HttpResponse, F("hostName"), PersistentData.hostName, F("Host name"));
     addTextBoxRow(HttpResponse, F("tzOffset"), tzOffsetString, F("Timezone offset"));
     addTextBoxRow(HttpResponse, F("otLogInterval"), otLogIntervalString, F("OT Log Interval"));
-    addTextBoxRow(HttpResponse, F("weatherApiKey"), PersistentData.WeatherApiKey, F("Weather API Key"));
-    addTextBoxRow(HttpResponse, F("weatherLocation"), PersistentData.WeatherLocation, F("Weather Location"));
+    addTextBoxRow(HttpResponse, F("weatherApiKey"), PersistentData.weatherApiKey, F("Weather API Key"));
+    addTextBoxRow(HttpResponse, F("weatherLocation"), PersistentData.weatherLocation, F("Weather Location"));
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
     HttpResponse.println(F("</form>"));
@@ -1164,8 +1164,8 @@ void handleHttpConfigFormRequest()
     HttpResponse.printf(
         F("<div>OpenTherm log length: minimal %d * %d s = %0.1f hours</div>"), 
         OT_LOG_LENGTH, 
-        PersistentData.OpenThermLogInterval,
-        float(OT_LOG_LENGTH * PersistentData.OpenThermLogInterval) / 3600
+        PersistentData.openThermLogInterval,
+        float(OT_LOG_LENGTH * PersistentData.openThermLogInterval) / 3600
         );
 
     writeHtmlFooter();
@@ -1178,20 +1178,15 @@ void handleHttpConfigFormPost()
 {
     Tracer tracer(F("handleHttpConfigFormPost"));
 
-    strcpy(PersistentData.HostName, WebServer.arg("hostName").c_str()); 
-    strcpy(PersistentData.WeatherApiKey, WebServer.arg("weatherApiKey").c_str()); 
-    strcpy(PersistentData.WeatherLocation, WebServer.arg("weatherLocation").c_str()); 
-
     String tzOffsetString = WebServer.arg("tzOffset");
     String otLogIntervalString = WebServer.arg("otLogInterval");
 
-    int tzOffset;
-    sscanf(tzOffsetString.c_str(), "%d", &tzOffset);
-    PersistentData.TimeZoneOffset = static_cast<int8_t>(tzOffset);
+    strcpy(PersistentData.hostName, WebServer.arg("hostName").c_str()); 
+    strcpy(PersistentData.weatherApiKey, WebServer.arg("weatherApiKey").c_str()); 
+    strcpy(PersistentData.weatherLocation, WebServer.arg("weatherLocation").c_str()); 
 
-    int otLogInterval;
-    sscanf(otLogIntervalString.c_str(), "%d", &otLogInterval);
-    PersistentData.OpenThermLogInterval = static_cast<uint16_t>(otLogInterval);
+    PersistentData.timeZoneOffset = static_cast<int8_t>(atoi(tzOffsetString.c_str()));
+    PersistentData.openThermLogInterval = static_cast<uint16_t>(atoi(otLogIntervalString.c_str()));
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();
