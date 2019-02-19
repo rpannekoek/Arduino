@@ -47,7 +47,7 @@ time_t WiFiNTP::endGetServerTime()
 
     unsigned long secondsSince1900 = readPacket();
 
-    _lastServerTime = static_cast<time_t>(secondsSince1900 - SEVENTY_YEARS); 
+    _lastServerTime = static_cast<time_t>(secondsSince1900 - SEVENTY_YEARS) + (timeZoneOffset * 3600); 
     _lastServerSync = millis() / 1000;
 
     _udp.stopAll();

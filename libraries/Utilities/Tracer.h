@@ -15,6 +15,7 @@ class Tracer
 
     static void traceTo(Print& dest);
     static void trace(String format, ...);
+    static void traceFreeHeap();
 
   private:
     String _name;

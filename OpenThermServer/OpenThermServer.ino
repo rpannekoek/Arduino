@@ -1,6 +1,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <FS.h>
+#include <WiFiStateMachine.h>
 #include <WiFiNTP.h>
 #include <WiFiFTP.h>
 #include <Tracer.h>
@@ -32,18 +33,6 @@ const char* BOILER_LEVEL_NAMES[5] = {"Off", "Low", "Medium", "High", "Thermostat
 
 typedef enum
 {
-    Initializing,
-    Connecting,
-    ConnectFailed,
-    Connected,
-    TimeServerInitializing,
-    TimeServerSyncing,
-    TimeServerSyncFailed,
-    Initialized
-} WifiInitState;
-
-typedef enum
-{
     Off,
     Low,
     Medium,
@@ -51,17 +40,16 @@ typedef enum
     Thermostat
 } BoilerLevel;
 
+
 OpenThermGateway OTGW(Serial, 14);
 ESP8266WebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer(NTP_SERVER, 24 * 3600); // Synchronize daily
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 WeatherAPI WeatherService(2000); // 2 sec request timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
-WifiInitState wifiInitState;
-uint32_t wifiInitStateChangeTime;
-
-Log eventLog(EVENT_LOG_LENGTH);
-Log openThermLog(OT_LOG_LENGTH);
+Log EventLog(EVENT_LOG_LENGTH);
+Log OpenThermLog(OT_LOG_LENGTH);
+WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
 uint16_t thermostatRequests[256]; // Thermostat request data values indexed by data ID
 uint16_t boilerResponses[256]; // Boiler response data values indexed by data ID.
@@ -96,40 +84,15 @@ time_t boilerOverrideStartTime = 0;
 uint32_t totalOverrideDuration = 0;
 
 
-void setWifiInitState(WifiInitState newState)
-{
-    wifiInitState = newState;
-    wifiInitStateChangeTime = millis();
-    TRACE(F("WifiInitState: %d @ %d ms\n"), wifiInitState, wifiInitStateChangeTime);
-}
-
-
 int formatTime(char* output, size_t output_size, const char* format, time_t time)
 {
-    time += PersistentData.timeZoneOffset * 3600;
     return strftime(output, output_size, format, gmtime(&time));
 }
 
 
 void logEvent(String msg)
 {
-    Tracer tracer(F("logEvent"), msg.c_str());
-
-    size_t timestamp_size = 23; // strlen("2019-01-30 12:23:34 : ") + 1;
-
-    char* event = new char[timestamp_size + msg.length()];
-    formatTime(event, timestamp_size, "%F %H:%M:%S : ", currentTime);
-    strcat(event, msg.c_str());
-
-    eventLog.add(event);
-
-    TRACE(F("%d event log entries\n"), eventLog.count());
-}
-
-
-void traceFreeHeap()
-{
-    TRACE(F("Free heap: %d\n"), ESP.getFreeHeap());
+    WiFiSM.logEvent(msg);
 }
 
 
@@ -146,10 +109,11 @@ void setup()
 
     #ifdef DEBUG_ESP_PORT
     Tracer::traceTo(DEBUG_ESP_PORT);
-    traceFreeHeap();
+    Tracer::traceFreeHeap();
     #endif
 
     PersistentData.begin();
+    TimeServer.timeZoneOffset = PersistentData.timeZoneOffset;
 
     SPIFFS.begin();
 
@@ -177,13 +141,16 @@ void setup()
     memset(otgwRequests, 0xFF, sizeof(otgwRequests));
     memset(otgwResponses, 0xFF, sizeof(otgwResponses));
 
-    setWifiInitState(WifiInitState::Initializing);
+    WiFiSM.on(WiFiState::TimeServerInitializing, onTimeServerInit);
+    WiFiSM.on(WiFiState::TimeServerSynced, onTimeServerSynced);
+    WiFiSM.on(WiFiState::Initialized, onWiFiInitialized);
+    WiFiSM.begin(WIFI_SSID, WIFI_PASSWORD, PersistentData.hostName);
 
     String event = "Booted from ";
     event += ESP.getResetReason();
     logEvent(event);
 
-    traceFreeHeap();
+    Tracer::traceFreeHeap();
 
     // Turn built-in LED off
     digitalWrite(LED_BUILTIN, 1);
@@ -193,10 +160,7 @@ void setup()
 // Called repeatedly
 void loop() 
 {
-    if (wifiInitState == WifiInitState::Initialized)
-        currentTime =  TimeServer.getCurrentTime();
-    else
-        currentTime = millis() / 1000;
+    currentTime = WiFiSM.getCurrentTime();
 
     if (millis() >= watchdogFeedTime)
     {
@@ -241,178 +205,99 @@ void loop()
         setTOutside(WeatherService.temperature);
         return;
     }
-    
-    if (wifiInitState == WifiInitState::Initialized)
-    {
-        // Get outside temperature from Weather Service
-        if (currentTime >= weatherServicePollTime)
-        {
-            weatherServicePollTime = currentTime + WEATHER_SERVICE_POLL_INTERVAL;
 
-            const char* apiKey = PersistentData.weatherApiKey;
-            if (apiKey[0] != 0)
-            {
-                OTGW.feedWatchdog();
-                if (WeatherService.beginRequestData(apiKey, PersistentData.weatherLocation))
-                    weatherServiceTimeout = currentTime + WEATHER_SERVICE_RESPONSE_TIMEOUT;
-                else
-                    TRACE(F("Failed sending request to weather service\n"));
-                return;
-            }
-        }
-
-        if (weatherServiceTimeout != 0)
-        {
-            if (currentTime >= weatherServiceTimeout)
-            {
-                TRACE(F("Timeout waiting for weather service response\n"));
-                WeatherService.close();
-                lastWeatherResult = WEATHER_ERROR_TIMEOUT;
-                weatherServiceTimeout = 0;
-                return;
-            }
-
-            int httpCode = WeatherService.endRequestData();
-            if (httpCode != 0)
-            {
-                weatherServiceTimeout = 0;
-                lastWeatherResult = httpCode;
-                if (httpCode == 200)
-                {
-                    lastWeatherUpdateTime = currentTime;
-                    updateTOutside = (WeatherService.temperature != getDecimal(getTOutside()));
-                }
-                else
-                    TRACE(F("Weather service error: %d\n"), httpCode);
-            }
-        }
-
-        // Log OpenTherm values from Thermostat and Boiler
-        if (currentTime >= otLogTime)
-        {
-            otLogTime = currentTime + PersistentData.openThermLogInterval;
-            logOpenThermValues(false);
-            traceFreeHeap();
-        }
-
-        if ((otLogSyncTime != 0) && (currentTime >= otLogSyncTime))
-        {
-            if (trySyncOpenThermLog())
-                otLogSyncTime = 0;
-            else
-            {
-                logEvent("Unable to sync OpenTherm Log with FTP server");
-                otLogSyncTime += FTP_RETRY_INTERVAL;
-            }
-        }
-    }
-    else
-        handleWifiInitialization();
-
-    if (wifiInitState > WifiInitState::Connected)
-        WebServer.handleClient();
+    // Let WiFi State Machine handle initialization and web requests
+    // This also calls the onXXX methods below
+    WiFiSM.run();
 
     delay(10);
 }
 
-// WiFi initialization state machine
-void handleWifiInitialization()
+
+void onTimeServerInit()
 {
-    uint32_t currentMillis = millis();
-    uint8_t wifiStatus = WiFi.status();
-    time_t serverTime;
-
-    switch (wifiInitState)
-    {
-        case WifiInitState::Initializing:
-            TRACE(F("Connecting to WiFi network '%s' ...\n"), WIFI_SSID);
-            WiFi.mode(WIFI_STA);
-            WiFi.hostname(PersistentData.hostName);
-            WiFi.setAutoReconnect(true);
-            WiFi.disconnect();
-            WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-            setWifiInitState(WifiInitState::Connecting);
-            break;
-
-        case WifiInitState::Connecting:
-            if (wifiStatus == WL_CONNECTED)
-            {
-                TRACE(F("WiFi connected. IP address: %s\n"), WiFi.localIP().toString().c_str());
-                setWifiInitState(WifiInitState::Connected);
-            }
-            else if (currentMillis >= (wifiInitStateChangeTime + 15000))
-            {
-                TRACE(F("Timeout connecting WiFi\n"));
-                setWifiInitState(WifiInitState::ConnectFailed);
-            }
-            break;
-
-        case WifiInitState::ConnectFailed:
-            // Retry WiFi initialization after 60 seconds
-            if (currentMillis >= (wifiInitStateChangeTime + 60000))
-                setWifiInitState(WifiInitState::Initializing);
-            else
-                blinkLED(2);
-            break;
-
-        case WifiInitState::Connected:
-            delay(100);
-            WebServer.begin();
-            logEvent(F("WiFi connected"));
-            setWifiInitState(WifiInitState::TimeServerInitializing);
-            break;
-
-        case WifiInitState::TimeServerInitializing:
-            TRACE(F("Getting time from NTP server...\n"));
-            OTGW.feedWatchdog(); // DNS lookup in beginGetServerTime may take a few seconds
-            if (TimeServer.beginGetServerTime())
-                setWifiInitState(WifiInitState::TimeServerSyncing);
-            else
-                setWifiInitState(WifiInitState::TimeServerSyncFailed);
-            break;
-
-        case WifiInitState::TimeServerSyncing:
-            serverTime = TimeServer.endGetServerTime(); 
-            if (serverTime == 0)
-            {
-                // Timeout after 5 seconds
-                if (currentMillis >= (wifiInitStateChangeTime + 5000))
-                {
-                    TRACE(F("Timeout waiting for NTP server response\n"));
-                    setWifiInitState(WifiInitState::TimeServerSyncFailed);
-                }
-            }
-            else
-            {
-                currentTime = serverTime;
-                otgwTimeout = serverTime + OTGW_TIMEOUT;
-                logEvent(F("Time synchronized"));
-                setWifiInitState(WifiInitState::Initialized);
-            }
-            break;
-        
-        case WifiInitState::TimeServerSyncFailed:
-            // Retry Time Server sync after 15 seconds
-            if (currentMillis >= (wifiInitStateChangeTime + 15000))
-                setWifiInitState(WifiInitState::TimeServerInitializing);
-            else
-                blinkLED(3);
-            break;
-
-        case WifiInitState::Initialized:
-            // Nothing to do (shouldn't get here in the first place)
-            break;
-    }
+    // Time server initialization (DNS lookup) make take a few seconds
+    // Feed OTGW watchdog just before to prevent getting bitten
+    OTGW.feedWatchdog();
 }
 
 
-void blinkLED(int freq)
+void onTimeServerSynced()
 {
-    int interval = 500 / freq;
-    digitalWrite(LED_BUILTIN, 0);
-    delay(interval);
-    digitalWrite(LED_BUILTIN, 1);
-    delay(interval);
+    // After time server sync all times jump ahead from 1-1-1970
+    time_t timeJump = WiFiSM.getCurrentTime() - currentTime;
+    otgwTimeout += timeJump;
+    boilerOverrideStartTime += timeJump;
+    if (otgwInitializeTime != 0) 
+        otgwInitializeTime += timeJump;
+    if (changeBoilerLevelTime != 0) 
+        changeBoilerLevelTime += timeJump;
+}
+
+
+void onWiFiInitialized()
+{
+    // Get outside temperature from Weather Service
+    if (currentTime >= weatherServicePollTime)
+    {
+        weatherServicePollTime = currentTime + WEATHER_SERVICE_POLL_INTERVAL;
+
+        const char* apiKey = PersistentData.weatherApiKey;
+        if (apiKey[0] != 0)
+        {
+            OTGW.feedWatchdog();
+            if (WeatherService.beginRequestData(apiKey, PersistentData.weatherLocation))
+                weatherServiceTimeout = currentTime + WEATHER_SERVICE_RESPONSE_TIMEOUT;
+            else
+                TRACE(F("Failed sending request to weather service\n"));
+            return;
+        }
+    }
+
+    if (weatherServiceTimeout != 0)
+    {
+        if (currentTime >= weatherServiceTimeout)
+        {
+            TRACE(F("Timeout waiting for weather service response\n"));
+            WeatherService.close();
+            lastWeatherResult = WEATHER_ERROR_TIMEOUT;
+            weatherServiceTimeout = 0;
+            return;
+        }
+
+        int httpCode = WeatherService.endRequestData();
+        if (httpCode != 0)
+        {
+            weatherServiceTimeout = 0;
+            lastWeatherResult = httpCode;
+            if (httpCode == 200)
+            {
+                lastWeatherUpdateTime = currentTime;
+                updateTOutside = (WeatherService.temperature != getDecimal(getTOutside()));
+            }
+            else
+                TRACE(F("Weather service error: %d\n"), httpCode);
+        }
+    }
+
+    // Log OpenTherm values from Thermostat and Boiler
+    if (currentTime >= otLogTime)
+    {
+        otLogTime = currentTime + PersistentData.openThermLogInterval;
+        logOpenThermValues(false);
+        Tracer::traceFreeHeap();
+    }
+
+    if ((otLogSyncTime != 0) && (currentTime >= otLogSyncTime))
+    {
+        if (trySyncOpenThermLog())
+            otLogSyncTime = 0;
+        else
+        {
+            logEvent("Unable to sync OpenTherm Log with FTP server");
+            otLogSyncTime += FTP_RETRY_INTERVAL;
+        }
+    }
 }
 
 
@@ -437,6 +322,7 @@ void resetOpenThermGateway()
 
     logEvent(F("OTGW reset"));
 }
+
 
 bool setMaxTSet()
 {
@@ -563,13 +449,13 @@ void logOpenThermValues(bool forceCreate)
     }
     else
     {
-        openThermLog.add(otLogEntryPtr);
+        OpenThermLog.add(otLogEntryPtr);
         lastOTLogEntryPtr = otLogEntryPtr;
         if (++otLogEntriesToSync == (OT_LOG_LENGTH / 2))
             otLogSyncTime = currentTime;
     }
 
-    TRACE(F("%d OpenTherm log entries.\n"), openThermLog.count());
+    TRACE(F("%d OpenTherm log entries.\n"), OpenThermLog.count());
 }
 
 
@@ -591,7 +477,7 @@ bool trySyncOpenThermLog()
         WiFiClient& dataClient = FTPClient.getDataClient();
         if (dataClient.connected())
         {
-            OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getEntryFromEnd(otLogEntriesToSync));
+            OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(OpenThermLog.getEntryFromEnd(otLogEntriesToSync));
             writeCsvDataLines(otLogEntryPtr, dataClient);
             dataClient.stop();
 
@@ -861,8 +747,8 @@ void handleHttpRootRequest()
     }
     HttpResponse.println(F("</table>"));
 
-    HttpResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), eventLog.count());
-    HttpResponse.printf(F("<p class=\"log\"><a href=\"/log\">%d OpenTherm log entries.</a></p>\r\n"), openThermLog.count());
+    HttpResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), EventLog.count());
+    HttpResponse.printf(F("<p class=\"log\"><a href=\"/log\">%d OpenTherm log entries.</a></p>\r\n"), OpenThermLog.count());
     HttpResponse.println(F("<p class=\"cmd\"><a href=\"/cmd\">Send command to OpenTherm Gateway</a></p>"));
 
     writeHtmlFooter();
@@ -924,11 +810,11 @@ void handleHttpOpenThermLogRequest()
         );
 
     // If the OT log contains many entries, we render every other so the max HTTP response size is not exceeded.
-    bool skipEvenEntries = openThermLog.count() > (OT_LOG_LENGTH / 2);
+    bool skipEvenEntries = OpenThermLog.count() > (OT_LOG_LENGTH / 2);
 
     HttpResponse.println(F("<table>"));
     HttpResponse.println(F("<tr><th>Time</th><th>TSet(t)</th><th>Max mod %</th><th>TSet(b)</th><th>TWater</th><th>TOutside</th><th>Status</th></tr>"));
-    OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getFirstEntry());
+    OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(OpenThermLog.getFirstEntry());
     while (otLogEntryPtr != NULL)
     {
         formatTime(stringBuffer, sizeof(stringBuffer), "%H:%M", otLogEntryPtr->time);
@@ -944,9 +830,9 @@ void handleHttpOpenThermLogRequest()
             OTGW.getSlaveStatus(otLogEntryPtr->boilerStatus)
             );
 
-        otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getNextEntry());
+        otLogEntryPtr = static_cast<OpenThermLogEntry*>(OpenThermLog.getNextEntry());
         if (skipEvenEntries && (otLogEntryPtr != NULL))
-            otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getNextEntry());
+            otLogEntryPtr = static_cast<OpenThermLogEntry*>(OpenThermLog.getNextEntry());
     }
     HttpResponse.println(F("</table>"));
 
@@ -995,7 +881,7 @@ void handleHttpOpenThermLogCsvRequest()
     HttpResponse.clear();
     HttpResponse.println(F("\"Time\",\"TSet(t)\",\"Max Modulation %\",\"TSet(b)\",\"TWater\",\"TOutside\",\"CH\",\"DHW\""));
 
-    OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getFirstEntry());
+    OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(OpenThermLog.getFirstEntry());
     writeCsvDataLines(otLogEntryPtr, HttpResponse);
 
     WebServer.send(200, F("text/plain"), HttpResponse);
@@ -1016,7 +902,7 @@ void writeCsvDataLines(OpenThermLogEntry* otLogEntryPtr, Print& destination)
             writeCsvDataLine(otLogEntryPtr, otLogEntryTime, destination);
         }
         
-        otLogEntryPtr = static_cast<OpenThermLogEntry*>(openThermLog.getNextEntry());
+        otLogEntryPtr = static_cast<OpenThermLogEntry*>(OpenThermLog.getNextEntry());
     }
 }
 
@@ -1053,11 +939,11 @@ void handleHttpEventLogRequest()
 
     writeHtmlHeader(F("Event log"), true, true);
 
-    char* event = static_cast<char*>(eventLog.getFirstEntry());
+    char* event = static_cast<char*>(EventLog.getFirstEntry());
     while (event != NULL)
     {
         HttpResponse.printf(F("<div>%s</div>\r\n"), event);
-        event = static_cast<char*>(eventLog.getNextEntry());
+        event = static_cast<char*>(EventLog.getNextEntry());
     }
 
     HttpResponse.println(F("<p><a href=\"/events/clear\">Clear event log</a></p>"));
@@ -1072,7 +958,7 @@ void handleHttpEventLogClearRequest()
 {
     Tracer tracer(F("handleHttpEventLogClearRequest"));
 
-    eventLog.clear();
+    EventLog.clear();
     logEvent(F("Event log cleared."));
 
     handleHttpEventLogRequest();

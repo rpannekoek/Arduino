@@ -25,6 +25,13 @@ void Tracer::trace(String format, ...)
 }
 
 
+void Tracer::traceFreeHeap()
+{
+    trace(F("Free heap: %d\n"), ESP.getFreeHeap());
+}
+
+
+
 //Constructor
 Tracer::Tracer(String name, const char* arg)
 {

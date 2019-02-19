@@ -7,6 +7,9 @@
 class WiFiNTP
 {
   public:
+    int8_t timeZoneOffset = 0;
+
+    // Constructor
     WiFiNTP(const char* timeServerPool, int serverSyncInterval);
 
     bool beginGetServerTime();
