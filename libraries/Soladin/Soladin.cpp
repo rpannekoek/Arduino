@@ -2,8 +2,11 @@
 #include <Arduino.h>
 #include <Tracer.h>
 #include <PrintHex.h>
+#include <PrintFlags.h>
 
-#define DEBUG_BAUDRATE 74880
+
+const char* FLAG_NAMES[12] = {"Vpv+", "Vpv-", "!Vac", "Vac+", "Vac-", "Fac+", "Fac-", "T+", "HW-ERR", "Start", "Pmax", "Imax"};
+
 
 struct SoladinProbeResponse
 {
@@ -38,116 +41,111 @@ struct SoladinDeviceStatsResponse
 // Constructor
 SoladinComm::SoladinComm()
 {
-  // The Serial port (UART0) is used to communicate with the computer (USB/Serial) and with Soladin (RS422).
-  // The USB/Serial adapter uses standard UART pins GPIO1 (TX) and GPIO3 (RX).
-  // For communication with Soladin, the UART is swapped to use GPIO15 (TX) and GPIO13 (RX).
-  // We initialize GPIO1 and GPIO15 to be an output in high state so TX is in determinate state when the UART is swapped.
-  pinMode(1, OUTPUT);
-  pinMode(3, INPUT);
-  pinMode(13, INPUT);
-  pinMode(15, OUTPUT);
-  digitalWrite(1, 1);
-  digitalWrite(15, 1);
+    // The Serial port (UART0) is used to communicate with the computer (USB/Serial) and with Soladin (RS422).
+    // The USB/Serial adapter uses standard UART pins GPIO1 (TX) and GPIO3 (RX).
+    // For communication with Soladin, the UART is swapped to use GPIO15 (TX) and GPIO13 (RX).
+    // We initialize GPIO1 and GPIO15 to be an output in high state so TX is in determinate state when the UART is swapped.
+    pinMode(1, OUTPUT);
+    pinMode(3, INPUT);
+    pinMode(13, INPUT);
+    pinMode(15, OUTPUT);
+    digitalWrite(1, 1);
+    digitalWrite(15, 1);
 }
 
 
 void SoladinComm::resetGpio(bool swap)
 {
-  if (swap)
-  {
-    pinMode(1, OUTPUT);
-    digitalWrite(1, 1);
-  }
-  else
-  {
-    pinMode(15, OUTPUT);
-    digitalWrite(15, 1);
-  }
+    if (swap)
+    {
+        pinMode(1, OUTPUT);
+        digitalWrite(1, 1);
+    }
+    else
+    {
+        pinMode(15, OUTPUT);
+        digitalWrite(15, 1);
+    }
 }
 
 
 bool SoladinComm::probe()
 {
-  SoladinProbeResponse response;
-  return query((byte*) _cmdProbe, (byte*) &response, 9);
+    Tracer tracer(F("SoladinComm::probe"));
+
+    SoladinProbeResponse response;
+    return query((byte*) _cmdProbe, (byte*) &response, 9);
 }
 
 
 bool SoladinComm::getDeviceStats()
 {
-  SoladinDeviceStatsResponse response;
-  if (!query((byte*) _cmdDeviceStats, (byte*) &response, 31))
-    return false;
-  
-  PvVoltage = float(response.pvVoltage) / 10;
-  PvCurrent = float(response.pvCurrent) / 100;
-  GridFrequency = float(response.gridFrequency) / 100;
-  GridVoltage = response.gridVoltage;
-  GridPower = response.gridPower;
-  word gridEnergy = word(response.gridEnergy[1], response.gridEnergy[0]);
-  gridEnergy += static_cast<word>(response.gridEnergy[2]) << 16;
-  GridEnergy = float(gridEnergy) / 100;
-  Temperature = response.temperature;
+    Tracer tracer(F("SoladinComm::getDeviceStats"));
 
-  Flags = "";
-  int bitValue = 1;
-  for (int i = 0; i < 12; i++)
-  {
-    if (response.flags & bitValue)
-    {
-      Flags += _flags[i];
-      Flags += " ";
-    }
-    bitValue = bitValue << 1;
-  }
+    SoladinDeviceStatsResponse response;
+    if (!query((byte*) _cmdDeviceStats, (byte*) &response, 31))
+        return false;
+    
+    pvVoltage = float(response.pvVoltage) / 10;
+    pvCurrent = float(response.pvCurrent) / 100;
+    gridFrequency = float(response.gridFrequency) / 100;
+    gridVoltage = response.gridVoltage;
+    gridPower = response.gridPower;
+    word nrg = word(response.gridEnergy[1], response.gridEnergy[0]);
+    nrg += static_cast<word>(response.gridEnergy[2]) << 16;
+    gridEnergy = float(nrg) / 100;
+    temperature = response.temperature;
 
-  Serial.printf("Flags: 0x%04X -> ", response.flags);
-  Serial.println(Flags);
-  Serial.printf("PV Voltage: %f V\n", PvVoltage);
-  Serial.printf("PV Current: %f A\n", PvCurrent);
-  Serial.printf("Grid Frequency: %f Hz\n", GridFrequency);
-  Serial.printf("Grid Voltage: %d V\n", GridVoltage);
-  Serial.printf("Grid Power: %d W\n", GridPower);
-  Serial.printf("Grid Energy: %f kWh\n", GridEnergy);
-  Serial.printf("Temperature: %d degrees\n", Temperature);
+    flags = printFlags(response.flags, FLAG_NAMES, 12, " ");
 
-  return true;
+    TRACE(F("Flags: 0x%04X -> %s\n"), response.flags, flags.c_str());
+    TRACE(F("PV Voltage: %f V\n"), pvVoltage);
+    TRACE(F("PV Current: %f A\n"), pvCurrent);
+    TRACE(F("Grid Frequency: %f Hz\n"), gridFrequency);
+    TRACE(F("Grid Voltage: %d V\n"), gridVoltage);
+    TRACE(F("Grid Power: %d W\n"), gridPower);
+    TRACE(F("Grid Energy: %f kWh\n"), gridEnergy);
+    TRACE(F("Temperature: %d degrees\n"), temperature);
+
+    return true;
 }
 
 
 bool SoladinComm::query(byte* cmd, byte* response, int responseSize)
 {
-  Tracer tracer("SoladinComm::query");
+    Tracer tracer(F("SoladinComm::query"));
 
-  printHex(cmd, 9);
-  Serial.printf("Response size: %d\n", responseSize);
+    printHex(cmd, 9);
+    TRACE(F("Response size: %d\n"), responseSize);
 
-  // Switch Serial to Soladin
-  Serial.flush();
-  delay(50);
-  Serial.begin(9600); // Soladin uses 9600 8N1
-  Serial.swap(); // Use GPIO13 (RX) and GPIO15 (TX)
-  resetGpio(true);
+    Serial.flush();
+    delay(50);
+    int originalBaudRate = Serial.baudRate();
 
-  // Get rid of garbage in input
-  Serial.setTimeout(10);
-  int garbageRead = Serial.readBytes(response, responseSize);  
+    // Switch Serial to Soladin
+    Serial.begin(9600); // Soladin uses 9600 8N1
+    Serial.swap(); // Use GPIO13 (RX) and GPIO15 (TX)
+    resetGpio(true);
 
-  // Write command to Soladin
-  Serial.write(cmd, 9);
+    // Get rid of garbage in input
+    Serial.setTimeout(10);
+    int garbageRead = Serial.readBytes(response, responseSize);  
 
-  // Await response from Soladin
-  Serial.setTimeout(1000);
-  int bytesRead = Serial.readBytes(response, responseSize);  
-  bool result = (bytesRead == responseSize);
+    // Write command to Soladin
+    Serial.write(cmd, 9);
 
-  // Switch Serial back for debug output
-  Serial.flush();
-  Serial.begin(DEBUG_BAUDRATE);
-  resetGpio(false);
+    // Await response from Soladin
+    Serial.setTimeout(1000);
+    int bytesRead = Serial.readBytes(response, responseSize);  
+    bool result = (bytesRead == responseSize);
 
-  printHex(response, bytesRead);
-  Serial.printf("%d bytes read\n%d bytes garbage\n", bytesRead, garbageRead);
+    // Switch Serial back for debug output
+    Serial.flush();
+    Serial.begin(originalBaudRate);
+    resetGpio(false);
 
-  return result;
+    printHex(response, bytesRead);
+    TRACE(F("%d bytes read\n%d bytes garbage\n"), bytesRead, garbageRead);
+
+    return result;
 }
