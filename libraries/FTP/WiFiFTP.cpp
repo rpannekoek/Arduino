@@ -11,9 +11,11 @@ WiFiFTPClient::WiFiFTPClient(int timeout)
 }
 
 
-bool WiFiFTPClient::begin(const char* host, const char* userName, const char* password, uint16_t port)
+bool WiFiFTPClient::begin(const char* host, const char* userName, const char* password, uint16_t port, Print* printTo)
 {
     Tracer Tracer(F("WiFiFTPClient::begin"), host);
+
+    _printPtr = printTo;
 
     if (!_controlClient.connect(host, port))
     {
@@ -43,7 +45,12 @@ void WiFiFTPClient::end()
         _dataClient.stop();
 
     if (_controlClient.connected())
+    {
+        sendCommand("QUIT");
         _controlClient.stop();
+    }
+
+    _printPtr = NULL;
 }
 
 
@@ -102,6 +109,9 @@ int WiFiFTPClient::sendCommand(const char* cmd, bool awaitResponse)
 {
     Tracer Tracer(F("WiFiFTPClient::sendCommand"), cmd);
 
+    if (_printPtr != NULL)
+        _printPtr->println(cmd);
+
     _controlClient.println(cmd);
 
     if (!awaitResponse)
@@ -118,6 +128,9 @@ int WiFiFTPClient::readServerResponse()
     size_t bytesRead = _controlClient.readBytesUntil('\n', _responseBuffer, sizeof(_responseBuffer) - 1);
     _responseBuffer[bytesRead] = 0;
     TRACE(F("Response: %s\n"), _responseBuffer);
+
+    if (_printPtr != NULL)
+        _printPtr->println(_responseBuffer);
 
     if (bytesRead < 3)
         return FTP_ERROR_TIMEOUT;
@@ -139,4 +152,22 @@ WiFiClient& WiFiFTPClient::getDataClient()
         TRACE(F("Unable to connect to server data port %d\n"), _serverDataPort);
 
     return _dataClient;
+}
+
+
+WiFiClient& WiFiFTPClient::append(const char* filename)
+{
+    Tracer tracer(F("WiFiFTPClient::append"), filename);
+
+    snprintf(_cmdBuffer, sizeof(_cmdBuffer), "APPE %s", filename);
+    sendCommand(_cmdBuffer, false);
+
+    WiFiClient& dataClient = getDataClient();
+    if (dataClient.connected())
+    {
+        if (readServerResponse() != 150)
+            dataClient.stop();
+    }
+
+    return dataClient;
 }

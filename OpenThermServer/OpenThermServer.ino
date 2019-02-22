@@ -51,12 +51,14 @@ Log EventLog(EVENT_LOG_LENGTH);
 Log OpenThermLog(OT_LOG_LENGTH);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
-uint16_t thermostatRequests[256]; // Thermostat request data values indexed by data ID
-uint16_t boilerResponses[256]; // Boiler response data values indexed by data ID.
-uint16_t otgwRequests[256]; // OTGW request data values (thermostat overrides) indexed by data ID.
-uint16_t otgwResponses[256]; // OTGW response data values (boiler overrides) indexed by data ID.
+// OpenTherm data values indexed by data ID
+uint16_t thermostatRequests[256];
+uint16_t boilerResponses[256];
+uint16_t otgwRequests[256];
+uint16_t otgwResponses[256];
 
 uint32_t watchdogFeedTime = 0;
+time_t initTime = 0;
 time_t currentTime = 0;
 time_t otLogTime = 0;
 time_t otgwInitializeTime = OTGW_STARTUP_TIME;
@@ -225,13 +227,17 @@ void onTimeServerInit()
 void onTimeServerSynced()
 {
     // After time server sync all times jump ahead from 1-1-1970
-    time_t timeJump = WiFiSM.getCurrentTime() - currentTime;
+    initTime = WiFiSM.getCurrentTime();
+    time_t timeJump = initTime - currentTime;
+    currentTime = initTime;
     otgwTimeout += timeJump;
     boilerOverrideStartTime += timeJump;
     if (otgwInitializeTime != 0) 
         otgwInitializeTime += timeJump;
     if (changeBoilerLevelTime != 0) 
         changeBoilerLevelTime += timeJump;
+    if (boilerOverrideStartTime != 0)
+        boilerOverrideStartTime += timeJump;
 }
 
 
@@ -290,7 +296,7 @@ void onWiFiInitialized()
 
     if ((otLogSyncTime != 0) && (currentTime >= otLogSyncTime))
     {
-        if (trySyncOpenThermLog())
+        if (trySyncOpenThermLog(NULL))
             otLogSyncTime = 0;
         else
         {
@@ -459,32 +465,29 @@ void logOpenThermValues(bool forceCreate)
 }
 
 
-bool trySyncOpenThermLog()
+bool trySyncOpenThermLog(Print* printTo)
 {
     Tracer tracer(F("trySyncOpenThermLog"));
 
-    if (!FTPClient.begin(FTP_SERVER, FTP_USERNAME, FTP_PASSWORD))
+    if (!FTPClient.begin(FTP_SERVER, FTP_USERNAME, FTP_PASSWORD, FTP_DEFAULT_CONTROL_PORT, printTo))
+    {
+        FTPClient.end();
         return false;
+    }
 
     bool success = false;
     if (otLogEntriesToSync == 0)
         success = true;
     else
     {
-        TRACE(F("Appending %d OpenTherm log entries to log file on FTP server...\n"), otLogEntriesToSync);
-        FTPClient.sendCommand("APPE OTGW.csv", false);
-
-        WiFiClient& dataClient = FTPClient.getDataClient();
+        WiFiClient& dataClient = FTPClient.append("OTGW.csv");
         if (dataClient.connected())
         {
             OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(OpenThermLog.getEntryFromEnd(otLogEntriesToSync));
             writeCsvDataLines(otLogEntryPtr, dataClient);
             dataClient.stop();
 
-            int responseCode = FTPClient.readServerResponse();
-            if (responseCode == 150)
-                responseCode = FTPClient.readServerResponse();
-            if (responseCode == 226)
+            if (FTPClient.readServerResponse() == 226)
             {
                 TRACE(F("Successfully appended log entries.\n"));
                 otLogEntriesToSync = 0;
@@ -496,7 +499,6 @@ bool trySyncOpenThermLog()
         }
     }
 
-    FTPClient.sendCommand("QUIT");
     FTPClient.end();
 
     return success;
@@ -691,6 +693,13 @@ void handleHttpRootRequest()
 {
     Tracer tracer(F("handleHttpRootRequest"));
     
+    uint16_t burnerHours = boilerResponses[OpenThermDataId::BoilerBurnerHours];
+    float startsPerHour;
+    if ((burnerHours == DATA_VALUE_NONE) || (burnerHours == 0))
+        startsPerHour = 0.0;
+    else
+        startsPerHour = float(boilerResponses[OpenThermDataId::BoilerBurnerStarts]) / burnerHours; 
+
     writeHtmlHeader(F("Home"), false, false);
 
     HttpResponse.println(F("<h1>Last OpenTherm values</h1>"));
@@ -711,8 +720,9 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><td>TOutside</td><td>%0.1f</td></tr>\r\n"), getDecimal(getTOutside()));
     HttpResponse.printf(F("<tr><td>Fault flags</td><td>%s</td></tr>\r\n"), OTGW.getFaultFlags(boilerResponses[OpenThermDataId::SlaveFault]));
     HttpResponse.printf(F("<tr><td>Burner starts</td><td>%d</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerBurnerStarts]);
-    HttpResponse.printf(F("<tr><td>Burner hours</td><td>%d</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerBurnerHours]);
-    HttpResponse.printf(F("<tr><td>DHW hours</td><td>%d</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerDHWBurnerHours]);
+    HttpResponse.printf(F("<tr><td>CH burner on</td><td>%d h</td></tr>\r\n"), burnerHours);
+    HttpResponse.printf(F("<tr><td>DHW burner on</td><td>%d h</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerDHWBurnerHours]);
+    HttpResponse.printf(F("<tr><td>Starts/hour</td><td>%0.1f</td></tr>\r\n"), startsPerHour);
     HttpResponse.println(F("</table>"));
 
     HttpResponse.println(F("<p class=\"traffic\"><a href=\"/traffic\">View all OpenTherm traffic</a></p>"));
@@ -737,9 +747,10 @@ void handleHttpRootRequest()
     HttpResponse.println(F("<h1>OpenTherm Gateway status</h1>"));
     HttpResponse.println(F("<table>"));
     for (int i = 0; i <= 4; i++)
-        HttpResponse.printf(F("<tr><td>Error %02X</td><td>%d</td></tr>\r\n"), i, OTGW.errors[i]);
-    HttpResponse.printf(F("<tr><td>OTGW Resets</td><td>%d</td></tr>\r\n"), OTGW.resets);
-    HttpResponse.printf(F("<tr><td>ESP Free Heap</td><td>%d</td></tr>\r\n"), ESP.getFreeHeap());
+        HttpResponse.printf(F("<tr><td>Error %02X</td><td>%u</td></tr>\r\n"), i, OTGW.errors[i]);
+    HttpResponse.printf(F("<tr><td>OTGW Resets</td><td>%u</td></tr>\r\n"), OTGW.resets);
+    HttpResponse.printf(F("<tr><td>ESP Free Heap</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
+    HttpResponse.printf(F("<tr><td>ESP Uptime</td><td>%0.1f days</td></tr>\r\n"), float(currentTime - initTime) / 86400);
     if (lastOTLogSyncTime != 0)
     {
         formatTime(stringBuffer, sizeof(stringBuffer), "%H:%M", lastOTLogSyncTime);
@@ -854,7 +865,11 @@ void handleHttpOpenThermLogSyncRequest()
         FTP_SERVER
         );
 
-    if (trySyncOpenThermLog())
+    HttpResponse.println("<div><pre>");
+    bool success = trySyncOpenThermLog(&HttpResponse); 
+    HttpResponse.println("</pre></div>");
+
+    if (success)
     {
         HttpResponse.println("<p>Success!</p>");
         otLogSyncTime = 0; // Cancel scheduled sync (if any)
@@ -1076,6 +1091,8 @@ void handleHttpConfigFormPost()
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();
+
+    TimeServer.timeZoneOffset = PersistentData.timeZoneOffset; 
 
     handleHttpConfigFormRequest();
 }
