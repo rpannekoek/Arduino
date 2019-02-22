@@ -130,7 +130,7 @@ int WiFiFTPClient::readServerResponse()
     TRACE(F("Response: %s\n"), _responseBuffer);
 
     if (_printPtr != NULL)
-        _printPtr->println(_responseBuffer);
+        _printPtr->print(_responseBuffer);
 
     if (bytesRead < 3)
         return FTP_ERROR_TIMEOUT;

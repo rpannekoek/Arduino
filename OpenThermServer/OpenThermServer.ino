@@ -75,8 +75,6 @@ uint16_t otLogEntriesToSync = 0;
 time_t otLogSyncTime = 0;
 time_t lastOTLogSyncTime = 0;
 
-char stringBuffer[128];
-
 int boilerTSet[5] = {0, 40, 50, 60, 0}; // TODO: configurable
 
 BoilerLevel currentBoilerLevel = BoilerLevel::Thermostat;
@@ -85,10 +83,14 @@ time_t changeBoilerLevelTime = 0;
 time_t boilerOverrideStartTime = 0;
 uint32_t totalOverrideDuration = 0;
 
+char stringBuffer[128];
+char timeString[32];
 
-int formatTime(char* output, size_t output_size, const char* format, time_t time)
+
+const char* formatTime(const char* format, time_t time)
 {
-    return strftime(output, output_size, format, gmtime(&time));
+    strftime(timeString, sizeof(timeString), format, gmtime(&time));
+    return timeString;
 }
 
 
@@ -147,10 +149,6 @@ void setup()
     WiFiSM.on(WiFiState::TimeServerSynced, onTimeServerSynced);
     WiFiSM.on(WiFiState::Initialized, onWiFiInitialized);
     WiFiSM.begin(WIFI_SSID, WIFI_PASSWORD, PersistentData.hostName);
-
-    String event = "Booted from ";
-    event += ESP.getResetReason();
-    logEvent(event);
 
     Tracer::traceFreeHeap();
 
@@ -229,8 +227,9 @@ void onTimeServerSynced()
     // After time server sync all times jump ahead from 1-1-1970
     initTime = WiFiSM.getCurrentTime();
     time_t timeJump = initTime - currentTime;
+    TRACE(F("Time jump: %u\n"), timeJump);
     currentTime = initTime;
-    otgwTimeout += timeJump;
+    otgwTimeout = currentTime + OTGW_TIMEOUT;
     boilerOverrideStartTime += timeJump;
     if (otgwInitializeTime != 0) 
         otgwInitializeTime += timeJump;
@@ -297,10 +296,13 @@ void onWiFiInitialized()
     if ((otLogSyncTime != 0) && (currentTime >= otLogSyncTime))
     {
         if (trySyncOpenThermLog(NULL))
+        {
+            logEvent(F("FTP synced"));
             otLogSyncTime = 0;
+        }
         else
         {
-            logEvent("Unable to sync OpenTherm Log with FTP server");
+            logEvent(F("FTP sync failed"));
             otLogSyncTime += FTP_RETRY_INTERVAL;
         }
     }
@@ -550,12 +552,18 @@ void test(String message)
     if (message.startsWith("testL"))
     {
         for (int i = 0; i < EVENT_LOG_LENGTH; i++)
+        {
             logEvent(F("Test event to fill the event log"));
+            yield();
+            OTGW.feedWatchdog();
+        }
 
         for (int i = 0; i < OT_LOG_LENGTH; i++)
         {
             logOpenThermValues(true);
             logOpenThermValues(false);
+            yield();
+            OTGW.feedWatchdog();
         }
     }
     else if (message.startsWith("testW"))
@@ -738,10 +746,7 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><td>Override duration</td><td>%0.1f h</td></tr>\r\n"), float(totalOverrideDuration) / 3600);
     HttpResponse.printf(F("<tr><td>Weather result</td><td>%d</td></tr>\r\n"), lastWeatherResult);
     if (lastWeatherUpdateTime != 0)
-    {
-        formatTime(stringBuffer, sizeof(stringBuffer), "%H:%M", lastWeatherUpdateTime);
-        HttpResponse.printf(F("<tr><td>Weather update</td><td>%s</td></tr>\r\n"), stringBuffer);
-    }
+        HttpResponse.printf(F("<tr><td>Weather update</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastWeatherUpdateTime));
     HttpResponse.println(F("</table>"));
 
     HttpResponse.println(F("<h1>OpenTherm Gateway status</h1>"));
@@ -752,10 +757,7 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><td>ESP Free Heap</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.printf(F("<tr><td>ESP Uptime</td><td>%0.1f days</td></tr>\r\n"), float(currentTime - initTime) / 86400);
     if (lastOTLogSyncTime != 0)
-    {
-        formatTime(stringBuffer, sizeof(stringBuffer), "%H:%M", lastOTLogSyncTime);
-        HttpResponse.printf(F("<tr><td>FTP Sync</td><td>%s</td></tr>\r\n"), stringBuffer);
-    }
+        HttpResponse.printf(F("<tr><td>FTP Sync</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastOTLogSyncTime));
     HttpResponse.println(F("</table>"));
 
     HttpResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), EventLog.count());
@@ -828,11 +830,9 @@ void handleHttpOpenThermLogRequest()
     OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(OpenThermLog.getFirstEntry());
     while (otLogEntryPtr != NULL)
     {
-        formatTime(stringBuffer, sizeof(stringBuffer), "%H:%M", otLogEntryPtr->time);
-
         HttpResponse.printf(
             F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%s</td></tr>\r\n"),
-            stringBuffer, 
+            formatTime("%H:%M", otLogEntryPtr->time), 
             getDecimal(otLogEntryPtr->thermostatTSet),
             getDecimal(otLogEntryPtr->thermostatMaxRelModulation),
             getDecimal(otLogEntryPtr->boilerTSet),
@@ -932,11 +932,9 @@ void writeCsvDataLine(OpenThermLogEntry* otLogEntryPtr, time_t time, Print& dest
         statusDHW = (otLogEntryPtr->boilerStatus & OpenThermStatus::SlaveDHWMode) ? 5 : 0;
     }
 
-    formatTime(stringBuffer, sizeof(stringBuffer), "%F %H:%M", time);
-
     destination.printf(
         "\"%s\",%d,%d,%d,%d,%d,%d,%d\r\n", 
-        stringBuffer, 
+        formatTime("%F %H:%M", time), 
         getInteger(otLogEntryPtr->thermostatTSet),
         getInteger(otLogEntryPtr->thermostatMaxRelModulation),
         getInteger(otLogEntryPtr->boilerTSet),
