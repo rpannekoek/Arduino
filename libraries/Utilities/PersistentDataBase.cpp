@@ -4,7 +4,6 @@
 #include <EEPROM.h>
 
 #define INITIALIZED_MAGIC 0xCAFEBABE
-#define DATA_OFFSET sizeof(_magic) + 4
 
 // Constructor
 PersistentDataBase::PersistentDataBase(size_t dataSize)
@@ -40,19 +39,20 @@ void PersistentDataBase::writeToEEPROM()
 {
     Tracer tracer(F("PersistentDataBase::writeToEEPROM"));
 
-    TRACE(F("Writing %d + %d bytes to EEPROM...\n"), _dataSize, sizeof(_magic));
+    uint32_t magic = INITIALIZED_MAGIC;
+
+    TRACE(F("Writing %u + %u bytes to EEPROM...\n"), _dataSize, sizeof(magic));
     printData();
  
     // Write magic
-    _magic = INITIALIZED_MAGIC;
-    byte* bytePtr = (byte*) &_magic;
-    for (size_t i = 0; i < sizeof(_magic); i++)
+    byte* bytePtr = (byte*) &magic;
+    for (size_t i = 0; i < sizeof(magic); i++)
         EEPROM.write(i, *bytePtr++);
 
     // Write actual data
-    bytePtr = ((byte*) this) + DATA_OFFSET ;
+    bytePtr = ((byte*) &_dataSize) + sizeof(_dataSize);
     for (size_t i = 0; i < _dataSize; i++)
-        EEPROM.write(i + sizeof(_magic), *bytePtr++);
+        EEPROM.write(i + sizeof(magic), *bytePtr++);
     EEPROM.commit();
 }
 
@@ -61,20 +61,22 @@ bool PersistentDataBase::readFromEEPROM()
 {
     Tracer tracer(F("PersistentDataBase::readFromEEPROM"));
 
-    TRACE(F("Reading %d + %d bytes from EEPROM...\n"), _dataSize, sizeof(_magic)); 
+    uint32_t magic;
+    TRACE(F("Reading %u + %u bytes from EEPROM...\n"), _dataSize, sizeof(magic)); 
 
     // Read magic
-    byte* bytePtr = (byte*) &_magic;
-    for (size_t i = 0; i < sizeof(_magic); i++)
+    byte* bytePtr = (byte*) &magic;
+    for (size_t i = 0; i < sizeof(magic); i++)
         *bytePtr++ = EEPROM.read(i);
 
-    if (_magic != INITIALIZED_MAGIC)
+    TRACE(F("Magic: %08X\n"), magic);
+    if (magic != INITIALIZED_MAGIC)
         return false;
 
     // Read actual data
-    bytePtr = ((byte*) this) + DATA_OFFSET ;
+    bytePtr = ((byte*) &_dataSize) + sizeof(_dataSize);
     for (size_t i = 0; i < _dataSize; i++)
-        *bytePtr++ = EEPROM.read(i + sizeof(_magic));
+        *bytePtr++ = EEPROM.read(i + sizeof(magic));
 
     printData();
 
@@ -84,7 +86,6 @@ bool PersistentDataBase::readFromEEPROM()
 
 void PersistentDataBase::printData()
 {
-    TRACE(F("Magic: 0x%08X\n"), _magic);
-    byte* dataPtr = ((byte*) this) + DATA_OFFSET;
+    byte* dataPtr = ((byte*) &_dataSize) + sizeof(_dataSize);
     printHex(dataPtr, _dataSize);
 }

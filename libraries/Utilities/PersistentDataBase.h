@@ -19,7 +19,6 @@ struct PersistentDataBase
 
     private:
         size_t _dataSize;
-        uint32_t _magic;
 };
 
 #endif
