@@ -25,6 +25,10 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName)
     _ssid = ssid;
     _password = password;
     _hostName = hostName;
+
+    String event = "Booted from ";
+    event += ESP.getResetReason();
+    logEvent(event);
     
     setState(WiFiState::Initializing);
 }

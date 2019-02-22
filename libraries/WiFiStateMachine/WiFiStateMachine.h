@@ -50,7 +50,7 @@ class WiFiStateMachine
         WiFiNTP& _timeServer;
         ESP8266WebServer& _webServer;
         Log& _eventLog;
-        void (*_handlers[8])(void); // function pointers indexed by state
+        void (*_handlers[10])(void); // function pointers indexed by state
 
         void setState(WiFiState newState);
         void blinkLED(int freq);
