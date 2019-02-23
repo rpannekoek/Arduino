@@ -5,7 +5,7 @@
 
 
 // Constructor
-WiFiStateMachine::WiFiStateMachine(WiFiNTP& timeServer, ESP8266WebServer& webServer, Log& eventLog)
+WiFiStateMachine::WiFiStateMachine(WiFiNTP& timeServer, ESP8266WebServer& webServer, Log<const char>& eventLog)
     : _timeServer(timeServer), _webServer(webServer), _eventLog(eventLog)
 {
     memset(_handlers, 0, sizeof(_handlers));

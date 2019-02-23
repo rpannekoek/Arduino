@@ -26,7 +26,7 @@ class WiFiStateMachine
 {
     public:
         // Constructor
-        WiFiStateMachine(WiFiNTP& timeServer, ESP8266WebServer& webServer, Log& eventLog);
+        WiFiStateMachine(WiFiNTP& timeServer, ESP8266WebServer& webServer, Log<const char>& eventLog);
 
         void on(WiFiState state, void (*handler)(void));
  
@@ -49,7 +49,7 @@ class WiFiStateMachine
         String _hostName;
         WiFiNTP& _timeServer;
         ESP8266WebServer& _webServer;
-        Log& _eventLog;
+        Log<const char>& _eventLog;
         void (*_handlers[10])(void); // function pointers indexed by state
 
         void setState(WiFiState newState);

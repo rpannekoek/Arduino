@@ -37,13 +37,13 @@ ESP8266WebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer(NTP_SERVER, 24 * 3600); // Synchronize daily
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
-Log EventLog(MAX_EVENT_LOG_SIZE);
+Log<const char> EventLog(MAX_EVENT_LOG_SIZE);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
-Log EnergyPerHourLog(15);
-Log EnergyPerDayLog(7);
-Log EnergyPerWeekLog(10);
-Log EnergyPerMonthLog(12);
+Log<EnergyLogEntry> EnergyPerHourLog(15);
+Log<EnergyLogEntry> EnergyPerDayLog(7);
+Log<EnergyLogEntry> EnergyPerWeekLog(10);
+Log<EnergyLogEntry> EnergyPerMonthLog(12);
 
 EnergyLogEntry* energyPerHourLogEntryPtr = NULL;
 EnergyLogEntry* energyPerDayLogEntryPtr = NULL;
@@ -74,17 +74,6 @@ const char* formatTime(const char* format, time_t time)
 void logEvent(String msg)
 {
     WiFiSM.logEvent(msg);
-}
-
-
-void initializeHour()
-{
-    Tracer tracer(F("initializeHour"));
-    
-    EnergyLogEntry* energyPerHourLogEntryPtr = new EnergyLogEntry();
-    energyPerHourLogEntryPtr->time = currentTime;
-
-    EnergyPerHourLog.add(energyPerHourLogEntryPtr);
 }
 
 
@@ -186,6 +175,17 @@ void onWiFiInitialized()
 }
 
 
+void initializeHour()
+{
+    Tracer tracer(F("initializeHour"));
+    
+    energyPerHourLogEntryPtr = new EnergyLogEntry();
+    energyPerHourLogEntryPtr->time = currentTime;
+
+    EnergyPerHourLog.add(energyPerHourLogEntryPtr);
+}
+
+
 void initializeDay()
 {
     Tracer tracer(F("initializeDay"));
@@ -196,7 +196,7 @@ void initializeDay()
     EnergyPerHourLog.clear();
     initializeHour();
 
-    EnergyLogEntry* energyPerDayLogEntryPtr = new EnergyLogEntry();
+    energyPerDayLogEntryPtr = new EnergyLogEntry();
     energyPerDayLogEntryPtr->time = currentTime;
 
     EnergyPerDayLog.add(energyPerDayLogEntryPtr);
@@ -207,7 +207,7 @@ void initializeWeek()
 {
     Tracer tracer(F("initializeWeek"));
 
-    EnergyLogEntry* energyPerWeekLogEntryPtr = new EnergyLogEntry();
+    energyPerWeekLogEntryPtr = new EnergyLogEntry();
     energyPerWeekLogEntryPtr->time = currentTime;
 
     EnergyPerWeekLog.add(energyPerWeekLogEntryPtr);
@@ -218,7 +218,7 @@ void initializeMonth()
 {
     Tracer tracer(F("initializeMonth"));
 
-    EnergyLogEntry* energyPerMonthLogEntryPtr = new EnergyLogEntry();
+    energyPerMonthLogEntryPtr = new EnergyLogEntry();
     energyPerMonthLogEntryPtr->time = currentTime;
 
     EnergyPerMonthLog.add(energyPerMonthLogEntryPtr);
@@ -244,7 +244,7 @@ bool trySyncFTP(Print* printTo)
     {
         if (EnergyPerHourLog.count() > 1)
         {
-            EnergyLogEntry* energyLogEntryPtr = static_cast<EnergyLogEntry*>(EnergyPerDayLog.getEntryFromEnd(2));
+            EnergyLogEntry* energyLogEntryPtr = EnergyPerDayLog.getEntryFromEnd(2);
             if (energyLogEntryPtr != NULL)
             {
                 dataClient.printf(
@@ -485,12 +485,12 @@ void writeGraphRow(String label, float value, float maxValue, String unitOfMeasu
 }
 
 
-void writeEnergyLogTable(String title, Log& energyLog, const char* labelFormat, float maxValue, String unitOfMeasure)
+void writeEnergyLogTable(String title, Log<EnergyLogEntry>& energyLog, const char* labelFormat, float maxValue, String unitOfMeasure)
 {
     HttpResponse.printf(F("<h1>%s</h1>"), title.c_str());
     HttpResponse.println(F("<table class=\"nrg\">"));
 
-    EnergyLogEntry* energyLogEntryPtr = static_cast<EnergyLogEntry*>(energyLog.getFirstEntry());
+    EnergyLogEntry* energyLogEntryPtr = energyLog.getFirstEntry();
     while (energyLogEntryPtr != NULL)
     {
         writeGraphRow(
@@ -498,7 +498,7 @@ void writeEnergyLogTable(String title, Log& energyLog, const char* labelFormat, 
             energyLogEntryPtr->energy,
             maxValue, unitOfMeasure
             );
-        energyLogEntryPtr = static_cast<EnergyLogEntry*>(energyLog.getNextEntry());
+        energyLogEntryPtr = energyLog.getNextEntry();
     }
 
     HttpResponse.println(F("</table>"));
@@ -511,11 +511,11 @@ void handleHttpEventLogRequest()
 
     writeHtmlHeader(F("Event log"), true, true);
 
-    char* event = static_cast<char*>(EventLog.getFirstEntry());
+    const char* event = EventLog.getFirstEntry();
     while (event != NULL)
     {
         HttpResponse.printf(F("<div>%s</div>\r\n"), event);
-        event = static_cast<char*>(EventLog.getNextEntry());
+        event = EventLog.getNextEntry();
     }
 
     HttpResponse.println(F("<p><a href=\"/events/clear\">Clear event log</a></p>"));

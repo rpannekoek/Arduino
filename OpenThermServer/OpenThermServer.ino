@@ -47,8 +47,8 @@ WiFiNTP TimeServer(NTP_SERVER, 24 * 3600); // Synchronize daily
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 WeatherAPI WeatherService(2000); // 2 sec request timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
-Log EventLog(EVENT_LOG_LENGTH);
-Log OpenThermLog(OT_LOG_LENGTH);
+Log<const char> EventLog(EVENT_LOG_LENGTH);
+Log<OpenThermLogEntry> OpenThermLog(OT_LOG_LENGTH);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
 // OpenTherm data values indexed by data ID
@@ -485,7 +485,7 @@ bool trySyncOpenThermLog(Print* printTo)
         WiFiClient& dataClient = FTPClient.append("OTGW.csv");
         if (dataClient.connected())
         {
-            OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(OpenThermLog.getEntryFromEnd(otLogEntriesToSync));
+            OpenThermLogEntry* otLogEntryPtr = OpenThermLog.getEntryFromEnd(otLogEntriesToSync);
             writeCsvDataLines(otLogEntryPtr, dataClient);
             dataClient.stop();
 
@@ -827,7 +827,7 @@ void handleHttpOpenThermLogRequest()
 
     HttpResponse.println(F("<table>"));
     HttpResponse.println(F("<tr><th>Time</th><th>TSet(t)</th><th>Max mod %</th><th>TSet(b)</th><th>TWater</th><th>TOutside</th><th>Status</th></tr>"));
-    OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(OpenThermLog.getFirstEntry());
+    OpenThermLogEntry* otLogEntryPtr = OpenThermLog.getFirstEntry();
     while (otLogEntryPtr != NULL)
     {
         HttpResponse.printf(
@@ -841,9 +841,9 @@ void handleHttpOpenThermLogRequest()
             OTGW.getSlaveStatus(otLogEntryPtr->boilerStatus)
             );
 
-        otLogEntryPtr = static_cast<OpenThermLogEntry*>(OpenThermLog.getNextEntry());
+        otLogEntryPtr = OpenThermLog.getNextEntry();
         if (skipEvenEntries && (otLogEntryPtr != NULL))
-            otLogEntryPtr = static_cast<OpenThermLogEntry*>(OpenThermLog.getNextEntry());
+            otLogEntryPtr = OpenThermLog.getNextEntry();
     }
     HttpResponse.println(F("</table>"));
 
@@ -896,7 +896,7 @@ void handleHttpOpenThermLogCsvRequest()
     HttpResponse.clear();
     HttpResponse.println(F("\"Time\",\"TSet(t)\",\"Max Modulation %\",\"TSet(b)\",\"TWater\",\"TOutside\",\"CH\",\"DHW\""));
 
-    OpenThermLogEntry* otLogEntryPtr = static_cast<OpenThermLogEntry*>(OpenThermLog.getFirstEntry());
+    OpenThermLogEntry* otLogEntryPtr = OpenThermLog.getFirstEntry();
     writeCsvDataLines(otLogEntryPtr, HttpResponse);
 
     WebServer.send(200, F("text/plain"), HttpResponse);
@@ -917,7 +917,7 @@ void writeCsvDataLines(OpenThermLogEntry* otLogEntryPtr, Print& destination)
             writeCsvDataLine(otLogEntryPtr, otLogEntryTime, destination);
         }
         
-        otLogEntryPtr = static_cast<OpenThermLogEntry*>(OpenThermLog.getNextEntry());
+        otLogEntryPtr = OpenThermLog.getNextEntry();
     }
 }
 
@@ -952,11 +952,11 @@ void handleHttpEventLogRequest()
 
     writeHtmlHeader(F("Event log"), true, true);
 
-    char* event = static_cast<char*>(EventLog.getFirstEntry());
+    const char* event = EventLog.getFirstEntry();
     while (event != NULL)
     {
         HttpResponse.printf(F("<div>%s</div>\r\n"), event);
-        event = static_cast<char*>(EventLog.getNextEntry());
+        event = EventLog.getNextEntry();
     }
 
     HttpResponse.println(F("<p><a href=\"/events/clear\">Clear event log</a></p>"));

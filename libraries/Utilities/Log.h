@@ -3,21 +3,92 @@
 
 #include <c_types.h>
 
+template <class T>
 class Log
 {
     public:
         // Constructor 
-        Log(uint16_t size);
+        Log(uint16_t size)
+            : _size(size)
+        {
+            _entriesPtr = new T*[size];
+            memset(_entriesPtr, 0, size * 4);
+            _start = 0;
+            _end = 0;
+            _count = 0;
+            _iterator = 0;
+        }
 
         // Destructor 
-        ~Log();
+        ~Log()
+        {
+            clear();
+            delete[] _entriesPtr;
+        }
 
-        uint16_t count();
-        void clear();
-        void add(void* entry);
-        void* getFirstEntry();
-        void* getEntryFromEnd(uint16_t n);
-        void* getNextEntry();
+        uint16_t count()
+        {
+            return _count;
+        }
+
+        void clear()
+        {
+            for (int i = _start; i < _end; i = (i + 1) % _size)
+            {
+                T* entry = _entriesPtr[i]; 
+                delete entry;
+                _entriesPtr[i] = NULL;
+            }
+
+            _start = 0;
+            _end = 0;
+            _count = 0;
+            _iterator = 0;
+        }
+
+        void add(T* entry)
+        {
+            if ((_end == _start) && (_entriesPtr[_end] != NULL))
+            {
+                // Log is full; drop oldest entry.
+                delete _entriesPtr[_start];
+                _start = (_start + 1) % _size;
+            }
+            else
+                _count++;
+                
+            _entriesPtr[_end] = entry;
+
+            _end = (_end + 1) % _size;
+        }
+
+        T* getFirstEntry()
+        {
+            _iterator = _start;
+            return _entriesPtr[_iterator];
+        }
+
+        T* getEntryFromEnd(uint16_t n)
+        {
+            if (n == 0)
+                return NULL;
+
+            if (_end < n)
+                _iterator = _end + _size - n;
+            else
+                _iterator = _end - n;
+
+            return _entriesPtr[_iterator];
+        }
+
+        T* getNextEntry()
+        {
+            _iterator = (_iterator + 1) % _size;
+            if (_iterator == _end)
+                return NULL;
+            else 
+                return _entriesPtr[_iterator];
+        }
 
     protected:
         uint16_t _size;
@@ -25,7 +96,6 @@ class Log
         uint16_t _end;
         uint16_t _count;
         uint16_t _iterator; 
-        void** _entriesPtr;
+        T** _entriesPtr;
 };
-
 #endif
