@@ -462,6 +462,8 @@ void logOpenThermValues(bool forceCreate)
         lastOTLogEntryPtr = otLogEntryPtr;
         if (++otLogEntriesToSync == PersistentData.ftpSyncInterval)
             otLogSyncTime = currentTime;
+        if (otLogEntriesToSync > OT_LOG_LENGTH)
+            otLogEntriesToSync = OT_LOG_LENGTH;
     }
 
     TRACE(F("%d OpenTherm log entries.\n"), OpenThermLog.count());
