@@ -29,6 +29,7 @@ struct EnergyLogEntry
 {
     time_t time;
     float energy = 0.0;
+    uint16_t maxPower = 0;
 };
 
 
@@ -40,9 +41,9 @@ StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 Log<const char> EventLog(MAX_EVENT_LOG_SIZE);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
-Log<EnergyLogEntry> EnergyPerHourLog(15);
+Log<EnergyLogEntry> EnergyPerHourLog(16);
 Log<EnergyLogEntry> EnergyPerDayLog(7);
-Log<EnergyLogEntry> EnergyPerWeekLog(10);
+Log<EnergyLogEntry> EnergyPerWeekLog(12);
 Log<EnergyLogEntry> EnergyPerMonthLog(12);
 
 EnergyLogEntry* energyPerHourLogEntryPtr = NULL;
@@ -61,11 +62,10 @@ time_t lastFTPSyncTime = 0;
 float lastGridEnergy = 0;
 int maxPower = 0;
 
-char timeString[32];
-
 
 const char* formatTime(const char* format, time_t time)
 {
+    static char timeString[32];
     strftime(timeString, sizeof(timeString), format, gmtime(&time));
     return timeString;
 }
@@ -143,6 +143,8 @@ void onTimeServerSynced()
     initTime = currentTime;
     pollSoladinTime = currentTime;
 
+    TRACE(F("initTime: %s\n"), formatTime("%F %H:%M", initTime));
+
     initializeDay();
     initializeWeek();
     initializeMonth();
@@ -161,7 +163,7 @@ void onWiFiInitialized()
 
     if ((syncFTPTime != 0) && (currentTime >= syncFTPTime))
     {
-        if (trySyncFTP(NULL))
+        if (trySyncFTP())
         {
             logEvent("FTP synced");
             syncFTPTime = 0;
@@ -225,14 +227,14 @@ void initializeMonth()
 }
 
 
-bool trySyncFTP(Print* printTo)
+bool trySyncFTP()
 {
     Tracer tracer(F("trySyncFTP"));
 
     char filename[32];
     snprintf(filename, sizeof(filename), "%s.csv", PersistentData.hostName);
 
-    if (!FTPClient.begin(FTP_SERVER, FTP_USERNAME, FTP_PASSWORD, FTP_DEFAULT_CONTROL_PORT, printTo))
+    if (!FTPClient.begin(FTP_SERVER, FTP_USERNAME, FTP_PASSWORD))
     {
         FTPClient.end();
         return false;
@@ -305,11 +307,7 @@ void pollSoladin()
 
     soladinLastOnTime = currentTime;
 
-    if (Soladin.gridPower > maxPower)
-    {
-        maxPower = Soladin.gridPower;
-        maxPowerTime = currentTime;
-    }
+    updateMaxPower();
 
     float gridEnergyDelta = (lastGridEnergy == 0)  ? 0 : (Soladin.gridEnergy - lastGridEnergy); // kWh
     lastGridEnergy = Soladin.gridEnergy;
@@ -327,9 +325,62 @@ void pollSoladin()
 }
 
 
+void updateMaxPower()
+{
+    uint16_t currentPower = Soladin.gridPower; 
+
+    if (currentPower > maxPower)
+    {
+        maxPower = Soladin.gridPower;
+        maxPowerTime = currentTime;
+    }
+
+    if (currentPower > energyPerHourLogEntryPtr->maxPower)
+        energyPerHourLogEntryPtr->maxPower = currentPower;
+
+    if (currentPower > energyPerDayLogEntryPtr->maxPower)
+        energyPerDayLogEntryPtr->maxPower = currentPower;
+
+    if (currentPower > energyPerWeekLogEntryPtr->maxPower)
+        energyPerWeekLogEntryPtr->maxPower = currentPower;
+
+    if (currentPower > energyPerMonthLogEntryPtr->maxPower)
+        energyPerMonthLogEntryPtr->maxPower = currentPower;
+}
+
+
 void webTest()
 {
     Tracer tracer(F("webTest"));
+
+    // Create some test data
+    for (int i = 0; i < 16; i++)
+    {
+        energyPerHourLogEntryPtr->energy = i;
+        energyPerHourLogEntryPtr->maxPower = i;
+        initializeHour();
+    }
+
+    for (int i = 0; i < 7; i++)
+    {
+        energyPerDayLogEntryPtr->energy = i;
+        energyPerDayLogEntryPtr->maxPower = i;
+        initializeDay();
+    }
+
+    for (int i = 0; i < 12; i++)
+    {
+        energyPerWeekLogEntryPtr->energy = i;
+        energyPerWeekLogEntryPtr->maxPower = i;
+        initializeWeek();
+    }
+
+    for (int i = 0; i < 12; i++)
+    {
+        energyPerMonthLogEntryPtr->energy = i;
+        energyPerMonthLogEntryPtr->maxPower = i;
+        initializeMonth();
+    }
 
     // Simulate multiple incoming root requests
     for (int i = 0; i < 100; i++)
@@ -362,7 +413,7 @@ void handleSerialRequest()
     else if (cmd == 'w')
         webTest();
     else if (cmd == 'f')
-        trySyncFTP(NULL);
+        trySyncFTP();
 }
 
 
@@ -454,10 +505,10 @@ void handleHttpRootRequest()
 
     HttpResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), EventLog.count());
 
-    writeEnergyLogTable(F("Energy per hour"), EnergyPerHourLog, "%H:%M", 500, "Wh");
-    writeEnergyLogTable(F("Energy per day"), EnergyPerDayLog, "%a", 5, "kWh");
-    writeEnergyLogTable(F("Energy per week"), EnergyPerWeekLog, "%d %b", 35, "kWh");
-    writeEnergyLogTable(F("Energy per month"), EnergyPerMonthLog, "%b", 150, "kWh");
+    writeEnergyLogTable(F("Energy per hour"), EnergyPerHourLog, "%H:%M", "Wh");
+    writeEnergyLogTable(F("Energy per day"), EnergyPerDayLog, "%a", "kWh");
+    writeEnergyLogTable(F("Energy per week"), EnergyPerWeekLog, "%d %b", "kWh");
+    writeEnergyLogTable(F("Energy per month"), EnergyPerMonthLog, "%b", "kWh");
 
     writeHtmlFooter();
 
@@ -465,38 +516,54 @@ void handleHttpRootRequest()
 }
 
 
-void writeGraphRow(String label, float value, float maxValue, String unitOfMeasure)
+void writeGraphRow(EnergyLogEntry* energyLogEntryPtr, const char* labelFormat, const char* unitOfMeasure, float maxValue)
 {
-    int barLength = std::round((value / maxValue) * MAX_BAR_LENGTH);
-    if (barLength > MAX_BAR_LENGTH)
-        barLength = MAX_BAR_LENGTH;
+    int barLength = 0;
+    if (maxValue != 0)
+    {
+        barLength = std::round((energyLogEntryPtr->energy / maxValue) * MAX_BAR_LENGTH);
+        if (barLength > MAX_BAR_LENGTH)
+            barLength = MAX_BAR_LENGTH;
+    }
 
     char bar[MAX_BAR_LENGTH + 1];
     memset(bar, 'o', barLength);
     bar[barLength] = 0;  
 
     HttpResponse.printf(
-        F("<tr><td>%s</td><td>%0.2f %s</td><td><span class=\"bar\">%s</span></td></tr>\r\n"), 
-        label.c_str(),
-        value,
-        unitOfMeasure.c_str(),
-        bar
+        F("<tr><td>%s</td><td>%0.2f %s</td><td><span class=\"bar\">%s</span></td><td>Pmax = %u W</td></tr>\r\n"), 
+        formatTime(labelFormat, energyLogEntryPtr->time),
+        energyLogEntryPtr->energy,
+        unitOfMeasure,
+        bar,
+        energyLogEntryPtr->maxPower
         );
 }
 
 
-void writeEnergyLogTable(String title, Log<EnergyLogEntry>& energyLog, const char* labelFormat, float maxValue, String unitOfMeasure)
+void writeEnergyLogTable(String title, Log<EnergyLogEntry>& energyLog, const char* labelFormat, const char* unitOfMeasure)
 {
-    HttpResponse.printf(F("<h1>%s</h1>"), title.c_str());
-    HttpResponse.println(F("<table class=\"nrg\">"));
-
+    // Auto-ranging: determine max value from the log entries
+    float maxValue = 0;
     EnergyLogEntry* energyLogEntryPtr = energyLog.getFirstEntry();
     while (energyLogEntryPtr != NULL)
     {
+        if (energyLogEntryPtr->energy > maxValue)
+            maxValue  = energyLogEntryPtr->energy;
+        energyLogEntryPtr = energyLog.getNextEntry();
+    }
+
+    HttpResponse.printf(F("<h1>%s</h1>"), title.c_str());
+    HttpResponse.println(F("<table class=\"nrg\">"));
+
+    energyLogEntryPtr = energyLog.getFirstEntry();
+    while (energyLogEntryPtr != NULL)
+    {
         writeGraphRow(
-            formatTime(labelFormat, energyLogEntryPtr->time),
-            energyLogEntryPtr->energy,
-            maxValue, unitOfMeasure
+            energyLogEntryPtr,
+            labelFormat,
+            unitOfMeasure,
+            maxValue
             );
         energyLogEntryPtr = energyLog.getNextEntry();
     }
