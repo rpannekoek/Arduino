@@ -139,7 +139,7 @@ void loop()
 
 void onTimeServerSynced()
 {
-    currentTime = WiFiSM.getCurrentTime();
+    currentTime = TimeServer.getCurrentTime();
     initTime = currentTime;
     pollSoladinTime = currentTime;
 

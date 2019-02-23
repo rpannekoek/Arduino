@@ -4,9 +4,10 @@
 struct PersistentDataStruct : PersistentDataBase
 {
     char hostName[20];
-    int8_t timeZoneOffset; // hours
+    int16_t timeZoneOffset; // hours
 
-    PersistentDataStruct() : PersistentDataBase(sizeof(hostName) + sizeof(timeZoneOffset)) {}
+    PersistentDataStruct() 
+        : PersistentDataBase(sizeof(hostName) + sizeof(timeZoneOffset)) {}
 
     virtual void initialize()
     {
