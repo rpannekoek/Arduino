@@ -8,6 +8,7 @@ struct PersistentDataStruct : PersistentDataBase
     uint16_t openThermLogInterval; // seconds
     char weatherApiKey[16];
     char weatherLocation[16];
+    uint8_t ftpSyncInterval; // number of log entries
 
     PersistentDataStruct() : PersistentDataBase(sizeof(hostName) + sizeof(timeZoneOffset) + sizeof(openThermLogInterval) + sizeof(weatherApiKey) + sizeof(weatherLocation)) {}
 
@@ -18,6 +19,7 @@ struct PersistentDataStruct : PersistentDataBase
         openThermLogInterval = 60;
         weatherApiKey[0] = 0;
         weatherLocation[0] = 0; 
+        ftpSyncInterval = 0; // FTP sync disabled
     }
 
     virtual void validate()

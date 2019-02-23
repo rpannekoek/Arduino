@@ -459,7 +459,7 @@ void logOpenThermValues(bool forceCreate)
     {
         OpenThermLog.add(otLogEntryPtr);
         lastOTLogEntryPtr = otLogEntryPtr;
-        if (++otLogEntriesToSync == (OT_LOG_LENGTH / 2))
+        if (++otLogEntriesToSync == PersistentData.ftpSyncInterval)
             otLogSyncTime = currentTime;
     }
 
@@ -1047,6 +1047,9 @@ void handleHttpConfigFormRequest()
     char otLogIntervalString[4];
     sprintf(otLogIntervalString, "%u", PersistentData.openThermLogInterval);
 
+    char ftpSyncIntervalString[4];
+    sprintf(ftpSyncIntervalString, "%u", PersistentData.ftpSyncInterval);
+
     writeHtmlHeader(F("Configuration"), true, true);
 
     HttpResponse.println(F("<form action=\"/config\" method=\"POST\">"));
@@ -1054,6 +1057,7 @@ void handleHttpConfigFormRequest()
     addTextBoxRow(HttpResponse, F("hostName"), PersistentData.hostName, F("Host name"));
     addTextBoxRow(HttpResponse, F("tzOffset"), tzOffsetString, F("Timezone offset"));
     addTextBoxRow(HttpResponse, F("otLogInterval"), otLogIntervalString, F("OT Log Interval"));
+    addTextBoxRow(HttpResponse, F("ftpSyncInterval"), ftpSyncIntervalString, F("FTP Sync Interval"));
     addTextBoxRow(HttpResponse, F("weatherApiKey"), PersistentData.weatherApiKey, F("Weather API Key"));
     addTextBoxRow(HttpResponse, F("weatherLocation"), PersistentData.weatherLocation, F("Weather Location"));
     HttpResponse.println(F("</table>"));
@@ -1066,6 +1070,16 @@ void handleHttpConfigFormRequest()
         PersistentData.openThermLogInterval,
         float(OT_LOG_LENGTH * PersistentData.openThermLogInterval) / 3600
         );
+
+    if (PersistentData.ftpSyncInterval == 0)
+        HttpResponse.println(F("<div>FTP Sync disabled.</div>"));    
+    else
+        HttpResponse.printf(
+            F("<div>FTP Sync interval: minimal %d * %d s = %0.1f hours</div>"), 
+            PersistentData.ftpSyncInterval, 
+            PersistentData.openThermLogInterval,
+            float(PersistentData.ftpSyncInterval * PersistentData.openThermLogInterval) / 3600
+            );
 
     writeHtmlFooter();
 
