@@ -4,13 +4,14 @@
 struct PersistentDataStruct : PersistentDataBase
 {
     char hostName[20];
-    int8_t timeZoneOffset; // hours
+    int16_t timeZoneOffset; // hours
     uint16_t openThermLogInterval; // seconds
     char weatherApiKey[16];
     char weatherLocation[16];
-    uint8_t ftpSyncInterval; // number of log entries
+    uint16_t ftpSyncInterval; // number of log entries
 
-    PersistentDataStruct() : PersistentDataBase(sizeof(hostName) + sizeof(timeZoneOffset) + sizeof(openThermLogInterval) + sizeof(weatherApiKey) + sizeof(weatherLocation)) {}
+    PersistentDataStruct() 
+        : PersistentDataBase(sizeof(hostName) + sizeof(timeZoneOffset) + sizeof(openThermLogInterval) + sizeof(weatherApiKey) + sizeof(weatherLocation) + sizeof(ftpSyncInterval)) {}
 
     virtual void initialize()
     {

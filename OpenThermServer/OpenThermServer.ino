@@ -179,6 +179,7 @@ void loop()
 
     if (currentTime >= otgwTimeout)
     {
+        TRACE(F("currentTime=%u; otgwTimeout=%u\n"), currentTime, otgwTimeout);
         logEvent(F("OTGW Timeout"));
         resetOpenThermGateway();
         return;
@@ -225,11 +226,11 @@ void onTimeServerInit()
 void onTimeServerSynced()
 {
     // After time server sync all times jump ahead from 1-1-1970
-    initTime = WiFiSM.getCurrentTime();
+    initTime = TimeServer.getCurrentTime();
     time_t timeJump = initTime - currentTime;
-    TRACE(F("Time jump: %u\n"), timeJump);
+    TRACE(F("initTime=%u; currentTime=%u; timeJump=%u\n"), initTime, currentTime, timeJump);
     currentTime = initTime;
-    otgwTimeout = currentTime + OTGW_TIMEOUT;
+    otgwTimeout += timeJump;
     boilerOverrideStartTime += timeJump;
     if (otgwInitializeTime != 0) 
         otgwInitializeTime += timeJump;
@@ -701,12 +702,12 @@ void handleHttpRootRequest()
 {
     Tracer tracer(F("handleHttpRootRequest"));
     
-    uint16_t burnerHours = boilerResponses[OpenThermDataId::BoilerBurnerHours];
-    float startsPerHour;
-    if ((burnerHours == DATA_VALUE_NONE) || (burnerHours == 0))
-        startsPerHour = 0.0;
+    uint16_t burnerStarts = boilerResponses[OpenThermDataId::BoilerBurnerStarts];
+    float avgBurnerOnTime;
+    if ((burnerStarts == DATA_VALUE_NONE) || (burnerStarts == 0))
+        avgBurnerOnTime = 0.0;
     else
-        startsPerHour = float(boilerResponses[OpenThermDataId::BoilerBurnerStarts]) / burnerHours; 
+        avgBurnerOnTime =  float(boilerResponses[OpenThermDataId::BoilerBurnerHours] * 60)  / boilerResponses[OpenThermDataId::BoilerBurnerStarts]; 
 
     writeHtmlHeader(F("Home"), false, false);
 
@@ -727,10 +728,10 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><td>TWater</td><td>%0.1f</td></tr>\r\n"), getDecimal(boilerResponses[OpenThermDataId::TBoiler]));
     HttpResponse.printf(F("<tr><td>TOutside</td><td>%0.1f</td></tr>\r\n"), getDecimal(getTOutside()));
     HttpResponse.printf(F("<tr><td>Fault flags</td><td>%s</td></tr>\r\n"), OTGW.getFaultFlags(boilerResponses[OpenThermDataId::SlaveFault]));
-    HttpResponse.printf(F("<tr><td>Burner starts</td><td>%d</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerBurnerStarts]);
-    HttpResponse.printf(F("<tr><td>CH burner on</td><td>%d h</td></tr>\r\n"), burnerHours);
-    HttpResponse.printf(F("<tr><td>DHW burner on</td><td>%d h</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerDHWBurnerHours]);
-    HttpResponse.printf(F("<tr><td>Starts/hour</td><td>%0.1f</td></tr>\r\n"), startsPerHour);
+    HttpResponse.printf(F("<tr><td>Burner starts</td><td>%d</td></tr>\r\n"), burnerStarts);
+    HttpResponse.printf(F("<tr><td>Burner on</td><td>%d h</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerBurnerHours]);
+    HttpResponse.printf(F("<tr><td>Burner on DHW</td><td>%d h</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerDHWBurnerHours]);
+    HttpResponse.printf(F("<tr><td>Avg burner on</td><td>%0.1f min</td></tr>\r\n"), avgBurnerOnTime);
     HttpResponse.println(F("</table>"));
 
     HttpResponse.println(F("<p class=\"traffic\"><a href=\"/traffic\">View all OpenTherm traffic</a></p>"));
@@ -1093,13 +1094,15 @@ void handleHttpConfigFormPost()
 
     String tzOffsetString = WebServer.arg("tzOffset");
     String otLogIntervalString = WebServer.arg("otLogInterval");
+    String ftpSyncIntervalString = WebServer.arg("ftpSyncInterval");
 
     strcpy(PersistentData.hostName, WebServer.arg("hostName").c_str()); 
     strcpy(PersistentData.weatherApiKey, WebServer.arg("weatherApiKey").c_str()); 
     strcpy(PersistentData.weatherLocation, WebServer.arg("weatherLocation").c_str()); 
 
-    PersistentData.timeZoneOffset = static_cast<int8_t>(atoi(tzOffsetString.c_str()));
+    PersistentData.timeZoneOffset = static_cast<int16_t>(atoi(tzOffsetString.c_str()));
     PersistentData.openThermLogInterval = static_cast<uint16_t>(atoi(otLogIntervalString.c_str()));
+    PersistentData.ftpSyncInterval = static_cast<uint16_t>(atoi(ftpSyncIntervalString.c_str()));
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();

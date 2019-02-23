@@ -36,7 +36,7 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName)
 
 time_t WiFiStateMachine::getCurrentTime()
 {
-    if (_state >= WiFiState::TimeServerSynced)
+    if (_state == WiFiState::Initialized)
         return _timeServer.getCurrentTime();
     else
         return millis() / 1000;
@@ -51,7 +51,7 @@ void WiFiStateMachine::logEvent(String msg)
 
     char* event = new char[timestamp_size + msg.length()];
 
-    if (_state >= WiFiState::TimeServerSynced)
+    if (_state == WiFiState::Initialized)
     {
         time_t currentTime = _timeServer.getCurrentTime();
         strftime(event, timestamp_size, "%F %H:%M:%S : ", gmtime(&currentTime));
