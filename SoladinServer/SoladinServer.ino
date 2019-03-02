@@ -28,8 +28,9 @@ const float POLLS_PER_HOUR = 3600 / POLL_INTERVAL;
 struct EnergyLogEntry
 {
     time_t time;
-    float energy = 0.0;
-    uint16_t maxPower = 0;
+    float onDuration = 0; // hours
+    uint16_t maxPower = 0; // Watts
+    float energy = 0.0; // Wh or kWh
 };
 
 
@@ -250,8 +251,10 @@ bool trySyncFTP()
             if (energyLogEntryPtr != NULL)
             {
                 dataClient.printf(
-                    "\"%s\",%0.2f\r\n",
+                    "\"%s\",%0.1f,%u,%0.2f\r\n",
                     formatTime("%F", energyLogEntryPtr->time),
+                    energyPerDayLogEntryPtr->onDuration,
+                    energyPerDayLogEntryPtr->maxPower,
                     energyPerDayLogEntryPtr->energy
                     );
             }
@@ -318,7 +321,13 @@ void pollSoladin()
     energyPerWeekLogEntryPtr->energy += gridEnergyDelta; 
     energyPerMonthLogEntryPtr->energy += gridEnergyDelta; 
 
-    TRACE(F("energyPerHour = %f\n"), energyPerHourLogEntryPtr->energy);
+    if (Soladin.gridPower >= 1.0)
+    {
+        energyPerHourLogEntryPtr->onDuration += POLLS_PER_HOUR;
+        energyPerDayLogEntryPtr->onDuration += POLLS_PER_HOUR;
+        energyPerWeekLogEntryPtr->onDuration += POLLS_PER_HOUR;
+        energyPerMonthLogEntryPtr->onDuration += POLLS_PER_HOUR;
+    }
 
     if (Soladin.flags.length() > 0)
         logEvent(Soladin.flags);
@@ -357,6 +366,7 @@ void webTest()
     for (int i = 0; i < 16; i++)
     {
         energyPerHourLogEntryPtr->energy = i;
+        energyPerHourLogEntryPtr->onDuration = i;
         energyPerHourLogEntryPtr->maxPower = i;
         initializeHour();
     }
@@ -364,6 +374,7 @@ void webTest()
     for (int i = 0; i < 7; i++)
     {
         energyPerDayLogEntryPtr->energy = i;
+        energyPerHourLogEntryPtr->onDuration = i;
         energyPerDayLogEntryPtr->maxPower = i;
         initializeDay();
     }
@@ -371,6 +382,7 @@ void webTest()
     for (int i = 0; i < 12; i++)
     {
         energyPerWeekLogEntryPtr->energy = i;
+        energyPerHourLogEntryPtr->onDuration = i;
         energyPerWeekLogEntryPtr->maxPower = i;
         initializeWeek();
     }
@@ -378,6 +390,7 @@ void webTest()
     for (int i = 0; i < 12; i++)
     {
         energyPerMonthLogEntryPtr->energy = i;
+        energyPerHourLogEntryPtr->onDuration = i;
         energyPerMonthLogEntryPtr->maxPower = i;
         initializeMonth();
     }
@@ -531,12 +544,13 @@ void writeGraphRow(EnergyLogEntry* energyLogEntryPtr, const char* labelFormat, c
     bar[barLength] = 0;  
 
     HttpResponse.printf(
-        F("<tr><td>%s</td><td>%0.2f %s</td><td><span class=\"bar\">%s</span></td><td>Pmax = %u W</td></tr>\r\n"), 
+        F("<tr><td>%s</td><td>%0.1f h</td><td>%d W max</td><td>%0.2f %s</td><td><span class=\"bar\">%s</span></td></tr>\r\n"), 
         formatTime(labelFormat, energyLogEntryPtr->time),
+        energyLogEntryPtr->onDuration,
+        energyLogEntryPtr->maxPower,
         energyLogEntryPtr->energy,
         unitOfMeasure,
-        bar,
-        energyLogEntryPtr->maxPower
+        bar
         );
 }
 
