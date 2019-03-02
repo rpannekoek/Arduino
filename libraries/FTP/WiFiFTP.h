@@ -32,8 +32,8 @@ class WiFiFTPClient
     private:
         WiFiClient _controlClient;
         WiFiClient _dataClient;
-        char _responseBuffer[64];
-        char _cmdBuffer[64];
+        char _responseBuffer[128];
+        char _cmdBuffer[128];
         int _serverDataPort;
         const char* _host;
         Print* _printPtr;
