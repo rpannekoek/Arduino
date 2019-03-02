@@ -1,7 +1,7 @@
 #include "Tracer.h"
 #include <Arduino.h>
 
-Print* _traceToPtr = NULL;
+Print* _traceToPtr = nullptr;
 char _traceMsg[128];
 
 
@@ -13,7 +13,7 @@ void Tracer::traceTo(Print& dest)
 
 void Tracer::trace(String format, ...)
 {
-    if (_traceToPtr == NULL)
+    if (_traceToPtr == nullptr)
         return;
 
     va_list args;
@@ -36,7 +36,7 @@ void Tracer::traceFreeHeap()
 Tracer::Tracer(String name, const char* arg)
 {
     _name = name;
-    if (arg == NULL)
+    if (arg == nullptr)
         trace(F("%s() entry\n"), _name.c_str());
     else
         trace(F("%s(\"%s\") entry\n"), _name.c_str(), arg);

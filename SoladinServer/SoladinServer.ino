@@ -47,10 +47,10 @@ Log<EnergyLogEntry> EnergyPerDayLog(7);
 Log<EnergyLogEntry> EnergyPerWeekLog(12);
 Log<EnergyLogEntry> EnergyPerMonthLog(12);
 
-EnergyLogEntry* energyPerHourLogEntryPtr = NULL;
-EnergyLogEntry* energyPerDayLogEntryPtr = NULL;
-EnergyLogEntry* energyPerWeekLogEntryPtr = NULL;
-EnergyLogEntry* energyPerMonthLogEntryPtr = NULL;
+EnergyLogEntry* energyPerHourLogEntryPtr = nullptr;
+EnergyLogEntry* energyPerDayLogEntryPtr = nullptr;
+EnergyLogEntry* energyPerWeekLogEntryPtr = nullptr;
+EnergyLogEntry* energyPerMonthLogEntryPtr = nullptr;
 
 bool soladinIsOn = false;
 time_t initTime = 0;
@@ -248,7 +248,7 @@ bool trySyncFTP()
         if (EnergyPerHourLog.count() > 1)
         {
             EnergyLogEntry* energyLogEntryPtr = EnergyPerDayLog.getEntryFromEnd(2);
-            if (energyLogEntryPtr != NULL)
+            if (energyLogEntryPtr != nullptr)
             {
                 dataClient.printf(
                     "\"%s\",%0.1f,%u,%0.2f\r\n",
@@ -560,7 +560,7 @@ void writeEnergyLogTable(String title, Log<EnergyLogEntry>& energyLog, const cha
     // Auto-ranging: determine max value from the log entries
     float maxValue = 0;
     EnergyLogEntry* energyLogEntryPtr = energyLog.getFirstEntry();
-    while (energyLogEntryPtr != NULL)
+    while (energyLogEntryPtr != nullptr)
     {
         if (energyLogEntryPtr->energy > maxValue)
             maxValue  = energyLogEntryPtr->energy;
@@ -571,7 +571,7 @@ void writeEnergyLogTable(String title, Log<EnergyLogEntry>& energyLog, const cha
     HttpResponse.println(F("<table class=\"nrg\">"));
 
     energyLogEntryPtr = energyLog.getFirstEntry();
-    while (energyLogEntryPtr != NULL)
+    while (energyLogEntryPtr != nullptr)
     {
         writeGraphRow(
             energyLogEntryPtr,
@@ -593,7 +593,7 @@ void handleHttpEventLogRequest()
     writeHtmlHeader(F("Event log"), true, true);
 
     const char* event = EventLog.getFirstEntry();
-    while (event != NULL)
+    while (event != nullptr)
     {
         HttpResponse.printf(F("<div>%s</div>\r\n"), event);
         event = EventLog.getNextEntry();

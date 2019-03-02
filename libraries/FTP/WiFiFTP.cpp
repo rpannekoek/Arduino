@@ -50,7 +50,7 @@ void WiFiFTPClient::end()
         _controlClient.stop();
     }
 
-    _printPtr = NULL;
+    _printPtr = nullptr;
 }
 
 
@@ -90,8 +90,8 @@ bool WiFiFTPClient::initialize(const char* userName, const char* password)
     strtok(_responseBuffer, "(");
     for (int i = 0; i < 6; i++) 
     {
-        const char* token = strtok(NULL, ",)");
-        if (token == NULL)
+        const char* token = strtok(nullptr, ",)");
+        if (token == nullptr)
         {
             TRACE(F("Unable to parse PASV response\n"));
             return false;
@@ -109,7 +109,7 @@ int WiFiFTPClient::sendCommand(const char* cmd, bool awaitResponse)
 {
     Tracer Tracer(F("WiFiFTPClient::sendCommand"), cmd);
 
-    if (_printPtr != NULL)
+    if (_printPtr != nullptr)
         _printPtr->println(cmd);
 
     _controlClient.println(cmd);
@@ -129,7 +129,7 @@ int WiFiFTPClient::readServerResponse()
     _responseBuffer[bytesRead] = 0;
     TRACE(F("Response: %s\n"), _responseBuffer);
 
-    if (_printPtr != NULL)
+    if (_printPtr != nullptr)
         _printPtr->print(_responseBuffer);
 
     if (bytesRead < 3)

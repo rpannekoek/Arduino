@@ -37,7 +37,7 @@ class Log
             {
                 T* entry = _entriesPtr[i]; 
                 delete entry;
-                _entriesPtr[i] = NULL;
+                _entriesPtr[i] = nullptr;
             }
 
             _start = 0;
@@ -48,7 +48,7 @@ class Log
 
         void add(T* entry)
         {
-            if ((_end == _start) && (_entriesPtr[_end] != NULL))
+            if ((_end == _start) && (_entriesPtr[_end] != nullptr))
             {
                 // Log is full; drop oldest entry.
                 delete _entriesPtr[_start];
@@ -71,7 +71,7 @@ class Log
         T* getEntryFromEnd(uint16_t n)
         {
             if (n == 0)
-                return NULL;
+                return nullptr;
 
             if (_end < n)
                 _iterator = _end + _size - n;
@@ -85,7 +85,7 @@ class Log
         {
             _iterator = (_iterator + 1) % _size;
             if (_iterator == _end)
-                return NULL;
+                return nullptr;
             else 
                 return _entriesPtr[_iterator];
         }

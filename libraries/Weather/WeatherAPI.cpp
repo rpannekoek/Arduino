@@ -82,7 +82,7 @@ int WeatherAPI::endRequestData()
         TRACE(F("%s\n"), _buffer);
 
         const char* temp = strstr(_buffer, "\"temp\":");
-        if (temp != NULL)
+        if (temp != nullptr)
         {
             temp += 9; // "temp": "
             if (sscanf(temp, "%f", &temperature) == 1)

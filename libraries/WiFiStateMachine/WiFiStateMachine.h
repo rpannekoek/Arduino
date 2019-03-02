@@ -7,7 +7,7 @@
 #include <Log.h>
 
 
-typedef enum
+enum struct WiFiState
 {
     Booting = 0,
     Initializing = 1,
@@ -19,7 +19,7 @@ typedef enum
     TimeServerSyncFailed = 7,
     TimeServerSynced = 8,
     Initialized = 9
-} WiFiState;
+};
 
 
 class WiFiStateMachine

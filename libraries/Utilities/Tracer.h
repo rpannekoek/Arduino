@@ -10,7 +10,7 @@
 class Tracer
 {
   public:
-    Tracer(String name, const char* arg = NULL);
+    Tracer(String name, const char* arg = nullptr);
     ~Tracer();
 
     static void traceTo(Print& dest);

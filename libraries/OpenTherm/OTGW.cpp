@@ -135,7 +135,7 @@ bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* res
     }
 
     char* otgwResponse = response;
-    if (response == NULL)
+    if (response == nullptr)
     {
         bufferSize = BUFFER_SIZE;
         otgwResponse = new char[bufferSize];
@@ -166,7 +166,7 @@ bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* res
 
     } while (!responseReceived && (retries++ < 1));
 
-    if (response == NULL)
+    if (response == nullptr)
         delete otgwResponse;
 
     return responseReceived;

@@ -31,14 +31,14 @@
 
 const char* BOILER_LEVEL_NAMES[5] = {"Off", "Low", "Medium", "High", "Thermostat"};
 
-typedef enum
+enum BoilerLevel // Unscoped enum so it can be used as array index without casting
 {
     Off,
     Low,
     Medium,
     High,
     Thermostat
-} BoilerLevel;
+};
 
 
 OpenThermGateway OTGW(Serial, 14);
@@ -70,7 +70,7 @@ time_t lastWeatherUpdateTime = 0;
 int lastWeatherResult = 0;
 bool updateTOutside = false;
 
-OpenThermLogEntry* lastOTLogEntryPtr = NULL;
+OpenThermLogEntry* lastOTLogEntryPtr = nullptr;
 uint16_t otLogEntriesToSync = 0;
 time_t otLogSyncTime = 0;
 time_t lastOTLogSyncTime = 0;
@@ -296,7 +296,7 @@ void onWiFiInitialized()
 
     if ((otLogSyncTime != 0) && (currentTime >= otLogSyncTime))
     {
-        if (trySyncOpenThermLog(NULL))
+        if (trySyncOpenThermLog(nullptr))
         {
             logEvent(F("FTP synced"));
             otLogSyncTime = 0;
@@ -450,7 +450,7 @@ void logOpenThermValues(bool forceCreate)
     otLogEntryPtr->tOutside = getTOutside();
     otLogEntryPtr->repeat = 0;
 
-    if ((lastOTLogEntryPtr != NULL) && (lastOTLogEntryPtr->equals(otLogEntryPtr)) && 
+    if ((lastOTLogEntryPtr != nullptr) && (lastOTLogEntryPtr->equals(otLogEntryPtr)) && 
         (lastOTLogEntryPtr->repeat != 255) && !forceCreate)
     {
         lastOTLogEntryPtr->repeat++;
@@ -831,7 +831,7 @@ void handleHttpOpenThermLogRequest()
     HttpResponse.println(F("<table>"));
     HttpResponse.println(F("<tr><th>Time</th><th>TSet(t)</th><th>Max mod %</th><th>TSet(b)</th><th>TWater</th><th>TOutside</th><th>Status</th></tr>"));
     OpenThermLogEntry* otLogEntryPtr = OpenThermLog.getFirstEntry();
-    while (otLogEntryPtr != NULL)
+    while (otLogEntryPtr != nullptr)
     {
         HttpResponse.printf(
             F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%s</td></tr>\r\n"),
@@ -845,7 +845,7 @@ void handleHttpOpenThermLogRequest()
             );
 
         otLogEntryPtr = OpenThermLog.getNextEntry();
-        if (skipEvenEntries && (otLogEntryPtr != NULL))
+        if (skipEvenEntries && (otLogEntryPtr != nullptr))
             otLogEntryPtr = OpenThermLog.getNextEntry();
     }
     HttpResponse.println(F("</table>"));
@@ -908,7 +908,7 @@ void handleHttpOpenThermLogCsvRequest()
 
 void writeCsvDataLines(OpenThermLogEntry* otLogEntryPtr, Print& destination)
 {
-    while (otLogEntryPtr != NULL)
+    while (otLogEntryPtr != nullptr)
     {
         time_t otLogEntryTime = otLogEntryPtr->time;
         writeCsvDataLine(otLogEntryPtr, otLogEntryTime, destination);
@@ -956,7 +956,7 @@ void handleHttpEventLogRequest()
     writeHtmlHeader(F("Event log"), true, true);
 
     const char* event = EventLog.getFirstEntry();
-    while (event != NULL)
+    while (event != nullptr)
     {
         HttpResponse.printf(F("<div>%s</div>\r\n"), event);
         event = EventLog.getNextEntry();

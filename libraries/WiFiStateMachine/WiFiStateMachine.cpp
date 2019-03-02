@@ -14,7 +14,7 @@ WiFiStateMachine::WiFiStateMachine(WiFiNTP& timeServer, ESP8266WebServer& webSer
 
 void WiFiStateMachine::on(WiFiState state, void (*handler)(void))
 {
-    _handlers[state] = handler;
+    _handlers[static_cast<int>(_state)] = handler;
 }
 
 
@@ -82,8 +82,9 @@ void WiFiStateMachine::run()
     String event;
 
     // First trigger custom handler (if any)
-    if (_handlers[_state] != NULL)
-        _handlers[_state]();
+    int state = static_cast<int>(_state);
+    if (_handlers[state] != nullptr)
+        _handlers[state]();
 
     switch (_state)
     {

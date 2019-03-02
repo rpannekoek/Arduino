@@ -15,7 +15,7 @@ class WiFiFTPClient
     public:
         WiFiFTPClient(int timeout);
 
-        bool begin(const char* host, const char* userName, const char* password, uint16_t port = FTP_DEFAULT_CONTROL_PORT, Print* printTo = NULL);
+        bool begin(const char* host, const char* userName, const char* password, uint16_t port = FTP_DEFAULT_CONTROL_PORT, Print* printTo = nullptr);
         void end();
 
         int sendCommand(const char* cmd, bool awaitResponse = true);

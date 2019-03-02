@@ -6,7 +6,7 @@
 #include <Stream.h>
 
 
-typedef enum 
+enum struct OpenThermMsgType
 {
     ReadData = 0,
     WriteData = 1,
@@ -15,10 +15,10 @@ typedef enum
     WriteAck = 5,
     DataInvalid = 6,
     UnknownDataId = 7
-} OpenThermMsgType;
+};
 
 
-typedef enum
+enum OpenThermDataId // Unscoped enum so it can be used as array index without casting
 {
     Status = 0,
     TSet = 1,
@@ -32,20 +32,20 @@ typedef enum
     BoilerBurnerStarts = 116,
     BoilerBurnerHours = 120,
     BoilerDHWBurnerHours = 123
-} OpenThermDataId;
+};
 
 
-typedef enum 
+enum OpenThermStatus // Bitflags
 {
     SlaveCHMode = 0x2,
     SlaveDHWMode = 0x4,
     SlaveFlame = 0x8,
     MasterCHEnable = 0x100,
     MasterDHWEnable = 0x200,
-} OpenThermStatus;
+} ;
 
 
-typedef enum
+enum struct OpenThermGatewayDirection
 {
     FromThermostat,
     FromBoiler,
@@ -53,7 +53,7 @@ typedef enum
     ToBoiler,
     Error,
     Unexpected
-} OpenThermGatewayDirection;
+};
 
 
 struct OpenThermGatewayMessage
@@ -77,7 +77,7 @@ class OpenThermGateway
         void reset();
         void feedWatchdog();
         OpenThermGatewayMessage readMessage();
-        bool sendCommand(const char* cmd, const char* value, char* response = NULL, size_t bufferSize = 2);
+        bool sendCommand(const char* cmd, const char* value, char* response = nullptr, size_t bufferSize = 2);
 
         static const char* getMasterStatus(uint16_t dataValue);
         static const char* getSlaveStatus(uint16_t dataValue);
