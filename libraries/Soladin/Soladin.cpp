@@ -91,8 +91,8 @@ bool SoladinComm::getDeviceStats()
     gridFrequency = float(response.gridFrequency) / 100;
     gridVoltage = response.gridVoltage;
     gridPower = response.gridPower;
-    word nrg = word(response.gridEnergy[1], response.gridEnergy[0]);
-    nrg += static_cast<word>(response.gridEnergy[2]) << 16;
+    uint32_t nrg = word(response.gridEnergy[1], response.gridEnergy[0]);
+    nrg += response.gridEnergy[2] << 16;
     gridEnergy = float(nrg) / 100;
     temperature = response.temperature;
 
@@ -118,12 +118,12 @@ bool SoladinComm::query(byte* cmd, byte* response, int responseSize)
     printHex(cmd, 9);
     TRACE(F("Response size: %d\n"), responseSize);
 
-    Serial.flush();
-    delay(50);
     int originalBaudRate = Serial.baudRate();
 
     // Switch Serial to Soladin
     Serial.begin(9600); // Soladin uses 9600 8N1
+    Serial.flush();
+    delay(50);
     Serial.swap(); // Use GPIO13 (RX) and GPIO15 (TX)
     resetGpio(true);
 
