@@ -36,6 +36,16 @@ class WiFiStateMachine
         void logEvent(String msg);
         time_t getCurrentTime();
 
+        time_t getInitTime()
+        {
+            return _initTime;
+        }
+
+        uint32_t getUptime()
+        {
+            return getCurrentTime() - _initTime;
+        }
+
         WiFiState getState()
         {
             return _state;
@@ -44,6 +54,7 @@ class WiFiStateMachine
     protected:
         WiFiState _state = WiFiState::Booting;
         uint32_t _stateChangeTime = 0;
+        time_t _initTime = 0;
         String _ssid;
         String _password;
         String _hostName;

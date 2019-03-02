@@ -78,7 +78,6 @@ void WiFiStateMachine::setState(WiFiState newState)
 void WiFiStateMachine::run()
 {
     uint32_t currentMillis = millis();
-    time_t serverTime;
     String event;
 
     // First trigger custom handler (if any)
@@ -132,8 +131,8 @@ void WiFiStateMachine::run()
             break;
 
         case WiFiState::TimeServerSyncing:
-            serverTime = _timeServer.endGetServerTime(); 
-            if (serverTime == 0)
+            _initTime = _timeServer.endGetServerTime(); 
+            if (_initTime == 0)
             {
                 // Timeout after 5 seconds
                 if (currentMillis >= (_stateChangeTime + 5000))

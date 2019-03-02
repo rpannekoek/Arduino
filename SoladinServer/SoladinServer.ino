@@ -53,7 +53,6 @@ EnergyLogEntry* energyPerWeekLogEntryPtr = nullptr;
 EnergyLogEntry* energyPerMonthLogEntryPtr = nullptr;
 
 bool soladinIsOn = false;
-time_t initTime = 0;
 time_t currentTime = 0;
 time_t pollSoladinTime = 0;
 time_t soladinLastOnTime = 0;
@@ -141,10 +140,7 @@ void loop()
 void onTimeServerSynced()
 {
     currentTime = TimeServer.getCurrentTime();
-    initTime = currentTime;
     pollSoladinTime = currentTime;
-
-    TRACE(F("initTime: %s\n"), formatTime("%F %H:%M", initTime));
 
     initializeDay();
     initializeWeek();
@@ -511,7 +507,7 @@ void handleHttpRootRequest()
     HttpResponse.println(F("<h1>Soladin server status</h1>"));
     HttpResponse.println(F("<table class=\"devstats\">"));
     HttpResponse.printf(F("<tr><td>Free Heap</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><td>Uptime</td><td>%0.1f days</td></tr>\r\n"), float(currentTime - initTime) / 86400);
+    HttpResponse.printf(F("<tr><td>Uptime</td><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
     if (lastFTPSyncTime != 0)
         HttpResponse.printf(F("<tr><td>FTP Sync</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastFTPSyncTime));
     HttpResponse.println(F("</table>"));

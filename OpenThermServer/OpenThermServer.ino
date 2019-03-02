@@ -58,7 +58,6 @@ uint16_t otgwRequests[256];
 uint16_t otgwResponses[256];
 
 uint32_t watchdogFeedTime = 0;
-time_t initTime = 0;
 time_t currentTime = 0;
 time_t otLogTime = 0;
 time_t otgwInitializeTime = OTGW_STARTUP_TIME;
@@ -226,10 +225,7 @@ void onTimeServerInit()
 void onTimeServerSynced()
 {
     // After time server sync all times jump ahead from 1-1-1970
-    initTime = TimeServer.getCurrentTime();
-    time_t timeJump = initTime - currentTime;
-    TRACE(F("initTime=%u; currentTime=%u; timeJump=%u\n"), initTime, currentTime, timeJump);
-    currentTime = initTime;
+    time_t timeJump = TimeServer.getCurrentTime() - currentTime;
     otgwTimeout += timeJump;
     boilerOverrideStartTime += timeJump;
     if (otgwInitializeTime != 0) 
@@ -758,7 +754,7 @@ void handleHttpRootRequest()
         HttpResponse.printf(F("<tr><td>Error %02X</td><td>%u</td></tr>\r\n"), i, OTGW.errors[i]);
     HttpResponse.printf(F("<tr><td>OTGW Resets</td><td>%u</td></tr>\r\n"), OTGW.resets);
     HttpResponse.printf(F("<tr><td>ESP Free Heap</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><td>ESP Uptime</td><td>%0.1f days</td></tr>\r\n"), float(currentTime - initTime) / 86400);
+    HttpResponse.printf(F("<tr><td>ESP Uptime</td><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
     if (lastOTLogSyncTime != 0)
         HttpResponse.printf(F("<tr><td>FTP Sync</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastOTLogSyncTime));
     HttpResponse.println(F("</table>"));
