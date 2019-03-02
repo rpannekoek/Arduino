@@ -14,7 +14,7 @@ WiFiStateMachine::WiFiStateMachine(WiFiNTP& timeServer, ESP8266WebServer& webSer
 
 void WiFiStateMachine::on(WiFiState state, void (*handler)(void))
 {
-    _handlers[static_cast<int>(_state)] = handler;
+    _handlers[static_cast<int>(state)] = handler;
 }
 
 
