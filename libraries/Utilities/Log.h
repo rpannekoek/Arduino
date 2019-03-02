@@ -44,6 +44,8 @@ class Log
             _end = 0;
             _count = 0;
             _iterator = 0;
+
+            memset(_entriesPtr, 0, _size * 4);
         }
 
         void add(T* entry)
@@ -70,9 +72,9 @@ class Log
 
         T* getEntryFromEnd(uint16_t n)
         {
-            if (n == 0)
+            if ((n == 0) || (n > _count))
                 return nullptr;
-
+            
             if (_end < n)
                 _iterator = _end + _size - n;
             else
