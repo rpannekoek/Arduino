@@ -9,6 +9,7 @@
 #define FTP_DEFAULT_DATA_PORT 22
 #define FTP_ERROR_TIMEOUT -1
 #define FTP_ERROR_BAD_RESPONSE -2
+#define FTP_ERROR_COMMAND_TOO_LONG -3
 
 class WiFiFTPClient
 {
@@ -18,8 +19,8 @@ class WiFiFTPClient
         bool begin(const char* host, const char* userName, const char* password, uint16_t port = FTP_DEFAULT_CONTROL_PORT, Print* printTo = nullptr);
         void end();
 
-        int sendCommand(const char* cmd, bool awaitResponse = true);
-        int readServerResponse();
+        int sendCommand(const char* cmd, const char* arg = nullptr, bool awaitResponse = true);
+        int readServerResponse(char* responseBuffer = nullptr, size_t responseBufferSize = 0);
         WiFiClient& getDataClient();
         
         WiFiClient& append(const char* filename);

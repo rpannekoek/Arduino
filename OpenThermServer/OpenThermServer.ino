@@ -294,12 +294,14 @@ void onWiFiInitialized()
     {
         if (trySyncOpenThermLog(nullptr))
         {
-            logEvent(F("FTP synced"));
+            logEvent(F("FTP synchronized"));
             otLogSyncTime = 0;
         }
         else
         {
-            logEvent(F("FTP sync failed"));
+            String event = F("FTP sync failed: ");
+            event += FTPClient.getLastResponse();
+            logEvent(event);
             otLogSyncTime += FTP_RETRY_INTERVAL;
         }
     }

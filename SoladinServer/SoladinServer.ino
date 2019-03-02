@@ -163,12 +163,14 @@ void onWiFiInitialized()
     {
         if (trySyncFTP(nullptr))
         {
-            logEvent("FTP synced");
+            logEvent(F("FTP synchronized"));
             syncFTPTime = 0;
         }
         else
         {
-            logEvent("FTP sync failed");
+            String event = F("FTP sync failed: ");
+            event += FTPClient.getLastResponse();
+            logEvent(event);
             syncFTPTime += FTP_RETRY_INTERVAL;
         }
     }
@@ -247,9 +249,9 @@ bool trySyncFTP(Print* printTo)
                 dataClient.printf(
                     "\"%s\",%0.1f,%u,%0.2f\r\n",
                     formatTime("%F", energyLogEntryPtr->time),
-                    energyPerDayLogEntryPtr->onDuration,
-                    energyPerDayLogEntryPtr->maxPower,
-                    energyPerDayLogEntryPtr->energy
+                    energyLogEntryPtr->onDuration,
+                    energyLogEntryPtr->maxPower,
+                    energyLogEntryPtr->energy
                     );
             }
         }
@@ -389,10 +391,6 @@ void webTest()
         handleHttpRootRequest();
         yield();
     }
-
-    EnergyLogEntry* testLogEntryPtr1 = EnergyPerDayLog.getEntryFromEnd(1);
-    EnergyLogEntry* testLogEntryPtr2 = EnergyPerDayLog.getEntryFromEnd(2);
-    TRACE(F("%u ; %u\n"), testLogEntryPtr1->maxPower, testLogEntryPtr2->maxPower);
 }
 
 
@@ -418,7 +416,10 @@ void handleSerialRequest()
     else if (cmd == 'w')
         webTest();
     else if (cmd == 'f')
+    {
         trySyncFTP(nullptr);
+        TRACE(F("FTPClient.getLastResponse(): %s\n"), FTPClient.getLastResponse());
+    }
 }
 
 
@@ -524,8 +525,7 @@ void writeGraphRow(EnergyLogEntry* energyLogEntryPtr, const char* labelFormat, c
     if (maxValue != 0)
     {
         barLength = std::round((energyLogEntryPtr->energy / maxValue) * MAX_BAR_LENGTH);
-        if (barLength > MAX_BAR_LENGTH)
-            barLength = MAX_BAR_LENGTH;
+        barLength = std::min(barLength, MAX_BAR_LENGTH);
     }
 
     char bar[MAX_BAR_LENGTH + 1];
