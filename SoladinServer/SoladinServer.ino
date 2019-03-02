@@ -24,6 +24,7 @@
 #define FTP_RETRY_INTERVAL 3600
 
 const float POLLS_PER_HOUR = 3600 / POLL_INTERVAL;
+const float HOURS_PER_POLL = float(POLL_INTERVAL) / 3600;
 
 struct EnergyLogEntry
 {
@@ -56,11 +57,9 @@ bool soladinIsOn = false;
 time_t currentTime = 0;
 time_t pollSoladinTime = 0;
 time_t soladinLastOnTime = 0;
-time_t maxPowerTime = 0;
 time_t syncFTPTime = 0;
 time_t lastFTPSyncTime = 0;
 float lastGridEnergy = 0;
-int maxPower = 0;
 
 
 const char* formatTime(const char* format, time_t time)
@@ -99,6 +98,7 @@ void setup()
 
     const char* cacheControl = "max-age=86400, public";
     WebServer.on("/", handleHttpRootRequest);
+    WebServer.on("/sync", handleHttpSyncFTPRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
     WebServer.on("/events/clear", handleHttpEventLogClearRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
@@ -141,6 +141,7 @@ void onTimeServerSynced()
 {
     currentTime = TimeServer.getCurrentTime();
     pollSoladinTime = currentTime;
+    soladinLastOnTime = currentTime; // Prevent immediate new day
 
     initializeDay();
     initializeWeek();
@@ -160,7 +161,7 @@ void onWiFiInitialized()
 
     if ((syncFTPTime != 0) && (currentTime >= syncFTPTime))
     {
-        if (trySyncFTP())
+        if (trySyncFTP(nullptr))
         {
             logEvent("FTP synced");
             syncFTPTime = 0;
@@ -189,9 +190,6 @@ void initializeDay()
 {
     Tracer tracer(F("initializeDay"));
     
-    maxPower = 0;
-    maxPowerTime = 0;
-
     EnergyPerHourLog.clear();
     initializeHour();
 
@@ -224,14 +222,14 @@ void initializeMonth()
 }
 
 
-bool trySyncFTP()
+bool trySyncFTP(Print* printTo)
 {
     Tracer tracer(F("trySyncFTP"));
 
     char filename[32];
     snprintf(filename, sizeof(filename), "%s.csv", PersistentData.hostName);
 
-    if (!FTPClient.begin(FTP_SERVER, FTP_USERNAME, FTP_PASSWORD))
+    if (!FTPClient.begin(FTP_SERVER, FTP_USERNAME, FTP_PASSWORD, FTP_DEFAULT_CONTROL_PORT, printTo))
     {
         FTPClient.end();
         return false;
@@ -241,7 +239,7 @@ bool trySyncFTP()
     WiFiClient& dataClient = FTPClient.append(filename);
     if (dataClient.connected())
     {
-        if (EnergyPerHourLog.count() > 1)
+        if (EnergyPerDayLog.count() > 1)
         {
             EnergyLogEntry* energyLogEntryPtr = EnergyPerDayLog.getEntryFromEnd(2);
             if (energyLogEntryPtr != nullptr)
@@ -310,7 +308,7 @@ void pollSoladin()
 
     float gridEnergyDelta = (lastGridEnergy == 0)  ? 0 : (Soladin.gridEnergy - lastGridEnergy); // kWh
     lastGridEnergy = Soladin.gridEnergy;
-    TRACE(F("gridEnergyDelta = %f kWh"), gridEnergyDelta);
+    TRACE(F("gridEnergyDelta = %f kWh\n"), gridEnergyDelta);
     
     energyPerHourLogEntryPtr->energy += float(Soladin.gridPower) / POLLS_PER_HOUR; // This has higher resolution than gridEnergyDelta
     energyPerDayLogEntryPtr->energy += gridEnergyDelta;
@@ -319,10 +317,10 @@ void pollSoladin()
 
     if (Soladin.gridPower >= 1.0)
     {
-        energyPerHourLogEntryPtr->onDuration += POLLS_PER_HOUR;
-        energyPerDayLogEntryPtr->onDuration += POLLS_PER_HOUR;
-        energyPerWeekLogEntryPtr->onDuration += POLLS_PER_HOUR;
-        energyPerMonthLogEntryPtr->onDuration += POLLS_PER_HOUR;
+        energyPerHourLogEntryPtr->onDuration += HOURS_PER_POLL;
+        energyPerDayLogEntryPtr->onDuration += HOURS_PER_POLL;
+        energyPerWeekLogEntryPtr->onDuration += HOURS_PER_POLL;
+        energyPerMonthLogEntryPtr->onDuration += HOURS_PER_POLL;
     }
 
     if (Soladin.flags.length() > 0)
@@ -333,12 +331,6 @@ void pollSoladin()
 void updateMaxPower()
 {
     uint16_t currentPower = Soladin.gridPower; 
-
-    if (currentPower > maxPower)
-    {
-        maxPower = Soladin.gridPower;
-        maxPowerTime = currentTime;
-    }
 
     if (currentPower > energyPerHourLogEntryPtr->maxPower)
         energyPerHourLogEntryPtr->maxPower = currentPower;
@@ -359,36 +351,36 @@ void webTest()
     Tracer tracer(F("webTest"));
 
     // Create some test data
+    for (int i = 0; i < 7; i++)
+    {
+        initializeDay();
+        energyPerDayLogEntryPtr->energy = i;
+        energyPerDayLogEntryPtr->onDuration = i;
+        energyPerDayLogEntryPtr->maxPower = i;
+    }
+
     for (int i = 0; i < 16; i++)
     {
+        initializeHour();
         energyPerHourLogEntryPtr->energy = i;
         energyPerHourLogEntryPtr->onDuration = i;
         energyPerHourLogEntryPtr->maxPower = i;
-        initializeHour();
-    }
-
-    for (int i = 0; i < 7; i++)
-    {
-        energyPerDayLogEntryPtr->energy = i;
-        energyPerHourLogEntryPtr->onDuration = i;
-        energyPerDayLogEntryPtr->maxPower = i;
-        initializeDay();
     }
 
     for (int i = 0; i < 12; i++)
     {
-        energyPerWeekLogEntryPtr->energy = i;
-        energyPerHourLogEntryPtr->onDuration = i;
-        energyPerWeekLogEntryPtr->maxPower = i;
         initializeWeek();
+        energyPerWeekLogEntryPtr->energy = i;
+        energyPerWeekLogEntryPtr->onDuration = i;
+        energyPerWeekLogEntryPtr->maxPower = i;
     }
 
     for (int i = 0; i < 12; i++)
     {
-        energyPerMonthLogEntryPtr->energy = i;
-        energyPerHourLogEntryPtr->onDuration = i;
-        energyPerMonthLogEntryPtr->maxPower = i;
         initializeMonth();
+        energyPerMonthLogEntryPtr->energy = i;
+        energyPerMonthLogEntryPtr->onDuration = i;
+        energyPerMonthLogEntryPtr->maxPower = i;
     }
 
     // Simulate multiple incoming root requests
@@ -397,6 +389,10 @@ void webTest()
         handleHttpRootRequest();
         yield();
     }
+
+    EnergyLogEntry* testLogEntryPtr1 = EnergyPerDayLog.getEntryFromEnd(1);
+    EnergyLogEntry* testLogEntryPtr2 = EnergyPerDayLog.getEntryFromEnd(2);
+    TRACE(F("%u ; %u\n"), testLogEntryPtr1->maxPower, testLogEntryPtr2->maxPower);
 }
 
 
@@ -422,7 +418,7 @@ void handleSerialRequest()
     else if (cmd == 'w')
         webTest();
     else if (cmd == 'f')
-        trySyncFTP();
+        trySyncFTP(nullptr);
 }
 
 
@@ -453,7 +449,7 @@ void writeHtmlFooter()
 }
 
 
-void writeHtmlRow(String label, float value, String unitOfMeasure, const char* valueFormat = "%d")
+void writeHtmlRow(String label, float value, String unitOfMeasure, const char* valueFormat = "%0.0f")
 {
     char valueString[16];
     snprintf(valueString, sizeof(valueString), valueFormat, value);
@@ -499,9 +495,6 @@ void handleHttpRootRequest()
     writeHtmlRow(F("Temperature"), Soladin.temperature, "C");
     if (pvPower > 0)
         writeHtmlRow(F("Efficiency"), float(Soladin.gridPower) / pvPower * 100, "%", "%0.0f");
-    writeHtmlRow(F("Max Grid Power"), maxPower, "W");
-    if (maxPowerTime > 0)
-        HttpResponse.printf(F("<tr><td>Max Power Time</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", maxPowerTime));
     HttpResponse.println(F("</table>"));
 
     HttpResponse.println(F("<h1>Soladin server status</h1>"));
@@ -579,6 +572,29 @@ void writeEnergyLogTable(String title, Log<EnergyLogEntry>& energyLog, const cha
     }
 
     HttpResponse.println(F("</table>"));
+}
+
+
+void handleHttpSyncFTPRequest()
+{
+    Tracer tracer(F("handleHttpSyncFTPRequest"));
+
+    writeHtmlHeader("FTP Sync", true, true);
+
+    HttpResponse.println("<div><pre>");
+    bool success = trySyncFTP(&HttpResponse); 
+    HttpResponse.println("</pre></div>");
+
+    if (success)
+    {
+        HttpResponse.println("<p>Success!</p>");
+    }
+    else
+        HttpResponse.println("<p>Failed!</p>");
+ 
+    writeHtmlFooter();
+
+    WebServer.send(200, F("text/html"), HttpResponse);
 }
 
 
