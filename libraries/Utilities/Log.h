@@ -33,9 +33,11 @@ class Log
 
         void clear()
         {
-            for (int i = _start; i < _end; i = (i + 1) % _size)
+            for (int i = 0; i < _size; i++)
             {
-                T* entry = _entriesPtr[i]; 
+                T* entry = _entriesPtr[i];
+                if (entry == nullptr)
+                    break;
                 delete entry;
                 _entriesPtr[i] = nullptr;
             }
@@ -44,8 +46,6 @@ class Log
             _end = 0;
             _count = 0;
             _iterator = 0;
-
-            memset(_entriesPtr, 0, _size * 4);
         }
 
         void add(T* entry)
