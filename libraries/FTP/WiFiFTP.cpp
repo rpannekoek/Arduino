@@ -19,7 +19,7 @@ bool WiFiFTPClient::begin(const char* host, const char* userName, const char* pa
 
     if (!_controlClient.connect(host, port))
     {
-        snprintf(_responseBuffer, sizeof(_responseBuffer), "Cannot connect to FTP server '%s' at port %u", host, port);
+        snprintf(_responseBuffer, sizeof(_responseBuffer), "Cannot connect to '%s' port %u", host, port);
         TRACE(F("%s\n"), _responseBuffer);
         return false;
     }
@@ -165,7 +165,7 @@ WiFiClient& WiFiFTPClient::getDataClient()
 
     if (!_dataClient.connect(_host, _serverDataPort))
     {
-        snprintf(_responseBuffer, sizeof(_responseBuffer), "Unable to connect to FTP server data port %d", _serverDataPort);
+        snprintf(_responseBuffer, sizeof(_responseBuffer), "Cannot connect to data port %d", _serverDataPort);
         TRACE(F("%s\n"), _responseBuffer);
     }
 
