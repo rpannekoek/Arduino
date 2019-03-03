@@ -306,45 +306,29 @@ void pollSoladin()
 
     soladinLastOnTime = currentTime;
 
-    updateMaxPower();
-
     float gridEnergyDelta = (lastGridEnergy == 0)  ? 0 : (Soladin.gridEnergy - lastGridEnergy); // kWh
     lastGridEnergy = Soladin.gridEnergy;
     TRACE(F("gridEnergyDelta = %f kWh\n"), gridEnergyDelta);
     
-    energyPerHourLogEntryPtr->energy += float(Soladin.gridPower) / POLLS_PER_HOUR; // This has higher resolution than gridEnergyDelta
-    energyPerDayLogEntryPtr->energy += gridEnergyDelta;
-    energyPerWeekLogEntryPtr->energy += gridEnergyDelta; 
-    energyPerMonthLogEntryPtr->energy += gridEnergyDelta; 
-
-    if (Soladin.gridPower >= 1.0)
-    {
-        energyPerHourLogEntryPtr->onDuration += HOURS_PER_POLL;
-        energyPerDayLogEntryPtr->onDuration += HOURS_PER_POLL;
-        energyPerWeekLogEntryPtr->onDuration += HOURS_PER_POLL;
-        energyPerMonthLogEntryPtr->onDuration += HOURS_PER_POLL;
-    }
+    updateEnergyLog(energyPerHourLogEntryPtr, float(Soladin.gridPower) / POLLS_PER_HOUR); // This has higher resolution than gridEnergyDelta
+    updateEnergyLog(energyPerDayLogEntryPtr, gridEnergyDelta);
+    updateEnergyLog(energyPerWeekLogEntryPtr, gridEnergyDelta);
+    updateEnergyLog(energyPerMonthLogEntryPtr, gridEnergyDelta);
 
     if (Soladin.flags.length() > 0)
         logEvent(Soladin.flags);
 }
 
 
-void updateMaxPower()
+void updateEnergyLog(EnergyLogEntry* energyLogEntryPtr, float energyDelta)
 {
-    uint16_t currentPower = Soladin.gridPower; 
+    if (Soladin.gridPower > 0)
+        energyLogEntryPtr->onDuration += HOURS_PER_POLL;
 
-    if (currentPower > energyPerHourLogEntryPtr->maxPower)
-        energyPerHourLogEntryPtr->maxPower = currentPower;
+    if (Soladin.gridPower > energyLogEntryPtr->maxPower)
+        energyLogEntryPtr->maxPower = Soladin.gridPower;
 
-    if (currentPower > energyPerDayLogEntryPtr->maxPower)
-        energyPerDayLogEntryPtr->maxPower = currentPower;
-
-    if (currentPower > energyPerWeekLogEntryPtr->maxPower)
-        energyPerWeekLogEntryPtr->maxPower = currentPower;
-
-    if (currentPower > energyPerMonthLogEntryPtr->maxPower)
-        energyPerMonthLogEntryPtr->maxPower = currentPower;
+    energyLogEntryPtr->energy += energyDelta; 
 }
 
 
