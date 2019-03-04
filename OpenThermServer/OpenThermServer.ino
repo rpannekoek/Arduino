@@ -1,6 +1,7 @@
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
-#include <FS.h>
+#include <math.h>
+#include <ESPWiFi.h>
+#include <ESPWebServer.h>
+#include <ESPFileSystem.h>
 #include <WiFiStateMachine.h>
 #include <WiFiNTP.h>
 #include <WiFiFTP.h>
@@ -42,7 +43,7 @@ enum BoilerLevel // Unscoped enum so it can be used as array index without casti
 
 
 OpenThermGateway OTGW(Serial, 14);
-ESP8266WebServer WebServer(80); // Default HTTP port
+WebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer(NTP_SERVER, 24 * 3600); // Synchronize daily
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 WeatherAPI WeatherService(2000); // 2 sec request timeout
@@ -415,7 +416,7 @@ int8_t getInteger(uint16_t dataValue)
     if (dataValue == DATA_VALUE_NONE)
         return 0;
     else
-        return static_cast<int8_t>(std::round(OTGW.getDecimal(dataValue)));
+        return static_cast<int8_t>(round(OTGW.getDecimal(dataValue)));
 }
 
 

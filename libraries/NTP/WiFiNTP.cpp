@@ -1,5 +1,5 @@
 #include <WiFiNTP.h>
-#include <ESP8266WiFi.h>
+#include <ESPWiFi.h>
 #include <Arduino.h>
 #include <Tracer.h>
 
@@ -50,7 +50,7 @@ time_t WiFiNTP::endGetServerTime()
     _lastServerTime = static_cast<time_t>(secondsSince1900 - SEVENTY_YEARS) + (timeZoneOffset * 3600); 
     _lastServerSync = millis() / 1000;
 
-    _udp.stopAll();
+    _udp.stop();
 
     return _lastServerTime;
 }

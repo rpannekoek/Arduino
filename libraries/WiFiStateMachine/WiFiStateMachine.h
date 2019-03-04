@@ -1,8 +1,8 @@
 #ifndef WIFI_STATE_MACHINE_H
 #define WIFI_STATE_MACHINE_H
 
-#include <c_types.h>
-#include <ESP8266WebServer.h>
+#include <stdint.h>
+#include <ESPWebServer.h>
 #include <WiFiNTP.h>
 #include <Log.h>
 
@@ -26,7 +26,7 @@ class WiFiStateMachine
 {
     public:
         // Constructor
-        WiFiStateMachine(WiFiNTP& timeServer, ESP8266WebServer& webServer, Log<const char>& eventLog);
+        WiFiStateMachine(WiFiNTP& timeServer, WebServer& webServer, Log<const char>& eventLog);
 
         void on(WiFiState state, void (*handler)(void));
  
@@ -59,12 +59,13 @@ class WiFiStateMachine
         String _password;
         String _hostName;
         WiFiNTP& _timeServer;
-        ESP8266WebServer& _webServer;
+        WebServer& _webServer;
         Log<const char>& _eventLog;
         void (*_handlers[10])(void); // function pointers indexed by state
 
         void setState(WiFiState newState);
         void blinkLED(int freq);
+        String getResetReason();
 };
 
 #endif

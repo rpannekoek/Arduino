@@ -1,11 +1,15 @@
 #include "WiFiStateMachine.h"
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
+#include <ESPWiFi.h>
 #include <Tracer.h>
+
+#ifdef ESP32
+#include <rom/rtc.h>
+#endif
 
 
 // Constructor
-WiFiStateMachine::WiFiStateMachine(WiFiNTP& timeServer, ESP8266WebServer& webServer, Log<const char>& eventLog)
+WiFiStateMachine::WiFiStateMachine(WiFiNTP& timeServer, WebServer& webServer, Log<const char>& eventLog)
     : _timeServer(timeServer), _webServer(webServer), _eventLog(eventLog)
 {
     memset(_handlers, 0, sizeof(_handlers));
@@ -27,7 +31,7 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName)
     _hostName = hostName;
 
     String event = "Booted from ";
-    event += ESP.getResetReason();
+    event += getResetReason();
     logEvent(event);
     
     setState(WiFiState::Initializing);
@@ -90,7 +94,11 @@ void WiFiStateMachine::run()
         case WiFiState::Initializing:
             TRACE(F("Connecting to WiFi network '%s' ...\n"), _ssid.c_str());
             WiFi.mode(WIFI_STA);
+#ifdef ESP8266
             WiFi.hostname(_hostName);
+#else
+            WiFi.setHostname(_hostName.c_str());
+#endif
             WiFi.setAutoReconnect(true);
             WiFi.disconnect();
             WiFi.begin(_ssid.c_str(), _password.c_str());
@@ -175,4 +183,34 @@ void WiFiStateMachine::blinkLED(int freq)
     delay(interval);
     digitalWrite(LED_BUILTIN, 1);
     delay(interval);
+}
+
+
+String WiFiStateMachine::getResetReason()
+{
+#ifdef ESP8266
+    return ESP.getResetReason();
+#else
+    String result;
+    switch (rtc_get_reset_reason(0))
+    {
+        case 1  : result = "Power on reset"; break;
+        case 3  : result = "Software reset"; break;
+        case 4  : result = "Legacy watch dog reset"; break;
+        case 5  : result = "Deep Sleep reset"; break;
+        case 6  : result = "Reset by SLC module"; break;
+        case 7  : result = "Timer Group 0 Watch dog reset"; break;
+        case 8  : result = "Timer Group 1 Watch dog reset"; break;
+        case 9  : result = "RTC Watch dog reset"; break;
+        case 10 : result = "Instrusion tested to reset CPU"; break;
+        case 11 : result = "Time Group reset CPU"; break;
+        case 12 : result = "Software reset CPU"; break;
+        case 13 : result = "RTC Watch dog Reset CPU"; break;
+        case 14 : result = "APP CPU reset by PRO CPU"; break;
+        case 15 : result = "Brownout (voltage is not stable)"; break;
+        case 16 : result = "RTC Watch dog reset digital core and rtc module"; break;
+        default : result = "Unknown";
+    }
+    return result;
+#endif
 }

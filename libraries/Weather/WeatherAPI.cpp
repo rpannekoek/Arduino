@@ -1,5 +1,4 @@
 #include "WeatherAPI.h"
-#include <ESP8266HTTPClient.h>
 #include <WiFiClient.h>
 #include <Tracer.h>
 

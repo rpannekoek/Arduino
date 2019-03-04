@@ -3,12 +3,11 @@
         {
             "name": "Win32",
             "includePath": [
-                "${workspaceFolder}/**",
-                "C:/Program Files (x86)/Arduino/hardware/esp8266com/esp8266/libraries/**",
-                "C:/Program Files (x86)/Arduino/hardware/esp8266com/esp8266/cores/esp8266/**",
-                "C:/Program Files (x86)/Arduino/hardware/esp8266com/esp8266/tools/sdk/include/**",
-                "C:/Program Files (x86)/Arduino/hardware/esp8266com/esp8266/tools/sdk/libc/xtensa-lx106-elf/include",
-                "C:/Program Files (x86)/Arduino/hardware/esp8266com/esp8266/tools/xtensa-lx106-elf/lib/gcc/xtensa-lx106-elf/4.8.2/include"
+                "C:\\Users\\Rick\\AppData\\Local\\Arduino15\\packages\\esp32\\tools\\**",
+                "C:\\Users\\Rick\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\1.0.1\\**",
+                "C:\\Users\\Rick\\AppData\\Local\\Arduino15\\packages\\esp8266\\tools\\**",
+                "C:\\Users\\Rick\\AppData\\Local\\Arduino15\\packages\\esp8266\\hardware\\esp8266\\2.5.0\\**",
+                "${workspaceFolder}/**"
             ],
             "defines": [
                 "_DEBUG",

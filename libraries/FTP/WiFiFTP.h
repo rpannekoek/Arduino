@@ -1,7 +1,7 @@
 #ifndef WIFIFTP_H
 #define WIFIFTP_H
 
-#include <c_types.h>
+#include <stdint.h>
 #include <WiFiClient.h>
 #include <Print.h>
 

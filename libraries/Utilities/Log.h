@@ -1,7 +1,7 @@
 #ifndef LOG_H
 #define LOG_H
 
-#include <c_types.h>
+#include <stdint.h>
 
 template <class T>
 class Log

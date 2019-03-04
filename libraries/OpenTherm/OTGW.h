@@ -1,7 +1,7 @@
 #ifndef OTGW_H
 #define OTGW_H
 
-#include <c_types.h>
+#include <stdint.h>
 #include <WString.h>
 #include <Stream.h>
 

@@ -1,7 +1,7 @@
 #ifndef PERSISTENT_DATA_BASE_H
 #define PERSISTENT_DATA_BASE_H
 
-#include <c_types.h>
+#include <stddef.h>
 
 struct PersistentDataBase
 {

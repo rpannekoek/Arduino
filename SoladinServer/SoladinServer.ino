@@ -1,6 +1,6 @@
-#include <ESP8266WiFi.h>
-#include <ESP8266WebServer.h>
-#include <FS.h>
+#include <ESPWiFi.h>
+#include <ESPWebServer.h>
+#include <ESPFileSystem.h>
 #include <Soladin.h>
 #include <WiFiNTP.h>
 #include <WiFiFTP.h>
@@ -10,6 +10,7 @@
 #include <WiFiStateMachine.h>
 #include "PersistentData.h"
 #include "WiFiCredentials.private.h"
+#include <math.h>
 
  // Use same baud rate for debug output as ROM boot code
 #define DEBUG_BAUDRATE 74880
@@ -36,7 +37,7 @@ struct EnergyLogEntry
 
 
 SoladinComm Soladin;
-ESP8266WebServer WebServer(80); // Default HTTP port
+WebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer(NTP_SERVER, 24 * 3600); // Synchronize daily
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
@@ -508,8 +509,8 @@ void writeGraphRow(EnergyLogEntry* energyLogEntryPtr, const char* labelFormat, c
     int barLength = 0;
     if (maxValue != 0)
     {
-        barLength = std::round((energyLogEntryPtr->energy / maxValue) * MAX_BAR_LENGTH);
-        barLength = std::min(barLength, MAX_BAR_LENGTH);
+        barLength = round((energyLogEntryPtr->energy / maxValue) * MAX_BAR_LENGTH);
+        barLength = min(barLength, MAX_BAR_LENGTH);
     }
 
     char bar[MAX_BAR_LENGTH + 1];
