@@ -9,7 +9,6 @@
 PersistentDataBase::PersistentDataBase(size_t dataSize)
     : _dataSize(dataSize)
 {
-    EEPROM.begin(512);
 }
 
 
@@ -23,6 +22,8 @@ PersistentDataBase::~PersistentDataBase()
 void PersistentDataBase::begin()
 {
     Tracer tracer(F("PersistentDataBase::begin"));
+
+    EEPROM.begin(512);
 
     if (readFromEEPROM())
     {
