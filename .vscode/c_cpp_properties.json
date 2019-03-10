@@ -1,18 +1,27 @@
 {
     "configurations": [
         {
-            "name": "Win32",
+            "name": "ESP8266",
             "includePath": [
-                "C:\\Users\\Rick\\AppData\\Local\\Arduino15\\packages\\esp32\\tools\\**",
-                "C:\\Users\\Rick\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\1.0.1\\**",
-                "C:\\Users\\Rick\\AppData\\Local\\Arduino15\\packages\\esp8266\\tools\\**",
-                "C:\\Users\\Rick\\AppData\\Local\\Arduino15\\packages\\esp8266\\hardware\\esp8266\\2.5.0\\**",
+                "C:/Users/Rick/AppData/Local/Arduino15/packages/esp8266/tools/**",
+                "C:/Users/Rick/AppData/Local/Arduino15/packages/esp8266/hardware/esp8266/2.5.0/**",
+                "C:/Program Files (x86)/Arduino/libraries/**",
                 "${workspaceFolder}/**"
             ],
             "defines": [
-                "_DEBUG",
-                "UNICODE",
-                "_UNICODE"
+            ],
+            "intelliSenseMode": "gcc-x64",
+            "forcedInclude": []
+        },
+        {
+            "name": "ESP32",
+            "includePath": [
+                "C:/Users/Rick/AppData/Local/Arduino15/packages/esp32/tools/**",
+                "C:/Users/Rick/AppData/Local/Arduino15/packages/esp32/hardware/esp32/1.0.1/**",
+                "C:/Program Files (x86)/Arduino/libraries/**",
+                "${workspaceFolder}/**"
+            ],
+            "defines": [
             ],
             "intelliSenseMode": "gcc-x64",
             "forcedInclude": []
