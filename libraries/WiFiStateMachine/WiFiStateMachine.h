@@ -54,6 +54,7 @@ class WiFiStateMachine
     protected:
         WiFiState _state = WiFiState::Booting;
         uint32_t _stateChangeTime = 0;
+        uint32_t _retryTimeout;
         time_t _initTime = 0;
         String _ssid;
         String _password;

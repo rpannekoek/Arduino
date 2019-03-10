@@ -7,6 +7,7 @@
 #include <rom/rtc.h>
 #endif
 
+#define MAX_RETRY_TIMEOUT 300000
 
 // Constructor
 WiFiStateMachine::WiFiStateMachine(WiFiNTP& timeServer, WebServer& webServer, Log<const char>& eventLog)
@@ -29,6 +30,7 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName)
     _ssid = ssid;
     _password = password;
     _hostName = hostName;
+    _retryTimeout = 5000; // Start exponential backoff with 5 seconds
 
     String event = "Booted from ";
     event += getResetReason();
@@ -78,7 +80,6 @@ void WiFiStateMachine::setState(WiFiState newState)
     TRACE(F("WiFi state: %u @ %u ms\n"), _state, _stateChangeTime);
 }
 
-
 void WiFiStateMachine::run()
 {
     uint32_t currentMillis = millis();
@@ -93,14 +94,21 @@ void WiFiStateMachine::run()
     {
         case WiFiState::Initializing:
             TRACE(F("Connecting to WiFi network '%s' ...\n"), _ssid.c_str());
-            WiFi.mode(WIFI_STA);
+            WiFi.persistent(false);
+            if (!WiFi.setAutoReconnect(true))
+                TRACE(F("Unable to set auto reconnect\n"));
+            if (!WiFi.mode(WIFI_STA))
+                TRACE(F("Unable to set WiFi mode\n"));
+            if (!WiFi.disconnect())
+                TRACE(F("WiFi disconnect failed\n"));
 #ifdef ESP8266
-            WiFi.hostname(_hostName);
+            if (!WiFi.hostname(_hostName))
+                TRACE(F("Unable to set host name\n"));
 #else
-            WiFi.setHostname(_hostName.c_str());
+            TRACE(F("Host name: %s\n"), _hostName.c_str());
+            if (!WiFi.setHostname(_hostName.c_str()))
+                TRACE(F("Unable to set host name\n"));
 #endif
-            WiFi.setAutoReconnect(true);
-            WiFi.disconnect();
             WiFi.begin(_ssid.c_str(), _password.c_str());
             setState(WiFiState::Connecting);
             break;
@@ -116,9 +124,13 @@ void WiFiStateMachine::run()
             break;
 
         case WiFiState::ConnectFailed:
-            // Retry WiFi initialization after 60 seconds
-            if (currentMillis >= (_stateChangeTime + 60000))
+            if (currentMillis >= (_stateChangeTime + _retryTimeout))
+            {
+                _retryTimeout *= 2; // Exponential backoff
+                if (_retryTimeout > MAX_RETRY_TIMEOUT)
+                    _retryTimeout = MAX_RETRY_TIMEOUT;
                 setState(WiFiState::Initializing);
+            }
             else
                 blinkLED(2);
             break;
