@@ -1,5 +1,6 @@
 #include <PersistentDataBase.h>
-
+#include <string.h>
+#include <stdint.h>
 
 struct PersistentDataStruct : PersistentDataBase
 {
@@ -9,13 +10,13 @@ struct PersistentDataStruct : PersistentDataBase
     PersistentDataStruct() 
         : PersistentDataBase(sizeof(hostName) + sizeof(timeZoneOffset)) {}
 
-    virtual void initialize()
+    void initialize() override
     {
         strcpy(hostName, "RoboCar");
         timeZoneOffset = 1;
     }
 
-    virtual void validate()
+    void validate() override
     {
         if (timeZoneOffset < -12) timeZoneOffset = -12;
         if (timeZoneOffset > 14) timeZoneOffset = 14;
