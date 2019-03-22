@@ -15,29 +15,36 @@
 #define MAX_EVENT_LOG_SIZE 100
 #define ICON "/apple-touch-icon.png"
 #define NTP_SERVER "fritz.box"
-#define POLL_INTERVAL 30
 #define MIN_RANGE_MM 300
 
 #define SCRIPT_TOKEN_SEPARATORS " ,\r\n"
-#define MAX_SCRIPT_SIZE 1204
+#define MAX_SCRIPT_SIZE 1024
 #define MAX_INSTRUCTIONS 256
 #define MAX_LOOPS 8
+
+// These pins should not be used (interfere with boot):
+// 0, 2, 6-11, 12, 15
 
 #define STEER_LEFT_PIN 16
 #define STEER_RIGHT_PIN 17
 #define ENGINE_FWD_PIN 18
 #define ENGINE_REV_PIN 19
-#define FRONT_LIGHTS_PIN 4
-#define BRAKE_LIGHTS_PIN 15
-#define INDICATOR_LEFT_PIN 0
-#define INDICATOR_RIGHT_PIN 2
+
+#define FRONT_LIGHTS_PIN 26
+#define BRAKE_LIGHTS_PIN 13
+#define INDICATOR_LEFT_PIN 14
+#define INDICATOR_RIGHT_PIN 27
+
+#define STEER_ENC_BL_PIN 25
+#define STEER_ENC_BR_PIN 32
+#define STEER_ENC_WB_PIN 33
+#define STEER_ENC_WG_PIN 23
 
 #define ENGINE_PWM_CHANNEL 0
-#define INDICATOR_PWM_CHANNEL 1
+#define INDICATOR_PWM_CHANNEL 2
 
 #define ENGINE_PWM_FREQ 50
 #define INDICATOR_PWM_FREQ 2
-
 
 struct Instruction
 {
@@ -46,8 +53,6 @@ struct Instruction
 
     void parse(const char* token)
     {
-        Tracer tracer(F("Instruction::parse"), token);
-
         command = toupper(token[0]);
         if (strlen(token) > 1)
             argument = abs(min(atoi(token + 1), 255));
@@ -76,7 +81,7 @@ Log<const char> EventLog(MAX_EVENT_LOG_SIZE);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 Adafruit_VL53L0X DistanceSensor = Adafruit_VL53L0X();
 
-VL53L0X_Error lastRangingResult;
+volatile VL53L0X_Error lastRangingResult;
 VL53L0X_RangingMeasurementData_t lastRangingMeasurement;
 
 time_t currentTime;
@@ -84,16 +89,16 @@ time_t currentTime;
 int8_t engineSpeed = 0;
 int8_t steerPosition = 0;
 
-String script = F("L ( F W B R W B < W > W ^ W )2 L0");
+String script = F("L ( F W B R W B <2 W >2 W ^ W )2 L0");
 Instruction instructions[MAX_INSTRUCTIONS];
 LoopInfo loops[MAX_LOOPS];
-int currentInstructionIndex = -1;
+volatile int currentInstructionIndex = -1;
 int lastInstructionIndex = -1;
 int lastLoopIndex = -1;
-bool terminateScript;
+volatile bool terminateScript;
 
-TaskHandle_t rangeMonitorTaskHandle;
-TaskHandle_t scriptRunnerTaskHandle;
+TaskHandle_t rangeMonitorTaskHandle = nullptr;
+TaskHandle_t scriptRunnerTaskHandle = nullptr;
 
 
 const char* formatTime(const char* format, time_t time)
@@ -133,8 +138,8 @@ void setup()
     SPIFFS.begin();
 
     const char* cacheControl = "max-age=86400, public";
-    WebServer.on("/", handleHttpRootRequest);
-    WebServer.on("/", HTTP_POST, handleHttScriptPostRequest);
+    WebServer.on("/", HTTP_GET, handleHttpRootRequest);
+    WebServer.on("/", HTTP_POST, handleHttpScriptPostRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
     WebServer.on("/events/clear", handleHttpEventLogClearRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
@@ -144,6 +149,7 @@ void setup()
     WebServer.serveStatic("/styles.css", SPIFFS, "/styles.css", cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
 
+    WiFiSM.on(WiFiState::Connected, onWiFiConnected);
     WiFiSM.begin(WIFI_SSID, WIFI_PASSWORD, PersistentData.hostName);
 
     if (!DistanceSensor.begin(VL53L0X_I2C_ADDR, true))
@@ -164,12 +170,20 @@ void setup()
 }
 
 
+void onWiFiConnected()
+{
+    Tracer tracer(F("onWiFiConnected"));
+
+    resetLights();
+}
+
+
 bool spawnRangeMonitor()
 {
     Tracer tracer(F("spawnRangeMonitor"));
 
     xTaskCreatePinnedToCore(
-        monitorForwardRange,
+        monitorRange,
         "Range Monitor",
         8192, // Stack Size (words)
         nullptr,
@@ -185,6 +199,13 @@ bool spawnRangeMonitor()
 bool spawnScriptRunner()
 {
     Tracer tracer(F("spawnScriptRunner"));
+
+    if (scriptRunnerTaskHandle != nullptr)
+    {
+        TRACE(F("scriptRunnerTaskHandle = %p\n"), scriptRunnerTaskHandle);
+        logEvent("Cannot start new script: another script is still runnning.");
+        return false;
+    }
 
     xTaskCreatePinnedToCore(
         runScript,
@@ -224,28 +245,52 @@ void handleSerialRequest()
     size_t bytesRead = Serial.readBytesUntil('\n', cmd, sizeof(cmd));
     cmd[bytesRead] = 0;
 
-    Instruction instruction;
-    instruction.parse(cmd);
-    if (!executeInstruction(instruction))
+    if (cmd[0] == 'e')
     {
-        TRACE(F("Unexpected command: %s\n"), cmd);
+        uint8_t encoderPos = getSteerEncoderPos();
+        TRACE("Steer encoder position: %X\n", encoderPos);
+    }
+    else if (cmd[0] == 's')
+    {
+        if (parseScript())
+            spawnScriptRunner();
+    }
+    else
+    {
+        Instruction instruction;
+        instruction.parse(cmd);
+        if (!executeInstruction(instruction))
+            TRACE(F("Unexpected command: %s\n"), cmd);
     }
 }
 
 
 void initLights()
 {
-    Tracer(F("initLights"));
+    Tracer tracer(F("initLights"));
 
-    pinMode(BRAKE_LIGHTS_PIN, OUTPUT);
+    pinMode(FRONT_LIGHTS_PIN, OUTPUT_OPEN_DRAIN);
+    pinMode(BRAKE_LIGHTS_PIN, OUTPUT_OPEN_DRAIN);
+    pinMode(INDICATOR_LEFT_PIN, OUTPUT_OPEN_DRAIN);
+    pinMode(INDICATOR_RIGHT_PIN, OUTPUT_OPEN_DRAIN);
 
     // Turn all lights on
     digitalWrite(FRONT_LIGHTS_PIN, LOW);
     digitalWrite(BRAKE_LIGHTS_PIN, LOW);
-    digitalWrite(INDICATOR_LEFT_PIN, LOW);
-    digitalWrite(INDICATOR_RIGHT_PIN, LOW);
 
-    delay(500);
+    // Initialize indicator PWM
+    ledcSetup(INDICATOR_PWM_CHANNEL, INDICATOR_PWM_FREQ, 8);
+    ledcWrite(INDICATOR_PWM_CHANNEL, 128);
+
+    // Blink indicator lights
+    ledcAttachPin(INDICATOR_LEFT_PIN, INDICATOR_PWM_CHANNEL);
+    ledcAttachPin(INDICATOR_RIGHT_PIN, INDICATOR_PWM_CHANNEL);
+}
+
+
+void resetLights()
+{
+    Tracer tracer(F("resetLights"));
 
     // Turn all lights off
     digitalWrite(FRONT_LIGHTS_PIN, HIGH);
@@ -253,15 +298,29 @@ void initLights()
     digitalWrite(INDICATOR_LEFT_PIN, HIGH);
     digitalWrite(INDICATOR_RIGHT_PIN, HIGH);
 
-    // Initialize indicator PWM
-    ledcSetup(INDICATOR_PWM_CHANNEL, INDICATOR_PWM_FREQ, 8);
-    ledcWrite(INDICATOR_PWM_CHANNEL, 128);
+    ledcDetachPin(INDICATOR_LEFT_PIN);
+    ledcDetachPin(INDICATOR_RIGHT_PIN);
+}
+
+
+void alarmLights(uint16_t seconds)
+{
+    Tracer tracer(F("alarmLights"));
+
+    // Blink indicator lights
+    ledcAttachPin(INDICATOR_LEFT_PIN, INDICATOR_PWM_CHANNEL);
+    ledcAttachPin(INDICATOR_RIGHT_PIN, INDICATOR_PWM_CHANNEL);
+
+    delay(seconds * 1000);
+
+    ledcDetachPin(INDICATOR_LEFT_PIN);
+    ledcDetachPin(INDICATOR_RIGHT_PIN);
 }
 
 
 void initEngineDrive()
 {
-    Tracer(F("initEngineDrive"));
+    Tracer tracer(F("initEngineDrive"));
 
     pinMode(ENGINE_FWD_PIN, OUTPUT);
     pinMode(ENGINE_REV_PIN, OUTPUT);
@@ -275,15 +334,19 @@ void initEngineDrive()
 
 void initSteering()
 {
-    Tracer(F("initSteering"));
+    Tracer tracer(F("initSteering"));
 
     pinMode(STEER_LEFT_PIN, OUTPUT);
     pinMode(STEER_RIGHT_PIN, OUTPUT);
+    pinMode(STEER_ENC_BL_PIN, INPUT_PULLUP);
+    pinMode(STEER_ENC_BR_PIN, INPUT_PULLUP);
+    pinMode(STEER_ENC_WB_PIN, INPUT_PULLUP);
+    pinMode(STEER_ENC_WG_PIN, INPUT_PULLUP);
 
     digitalWrite(STEER_LEFT_PIN, LOW);
     digitalWrite(STEER_RIGHT_PIN, LOW);
 
-    // TODO: center
+    centerSteering();
 }
 
 
@@ -298,11 +361,13 @@ void setEngineSpeed(int8_t speed)
     if (speed >= 0)
     {
         digitalWrite(ENGINE_REV_PIN, LOW);
+        ledcDetachPin(ENGINE_REV_PIN);
         ledcAttachPin(ENGINE_FWD_PIN, ENGINE_PWM_CHANNEL);
     }
     else
     {
         digitalWrite(ENGINE_FWD_PIN, LOW);
+        ledcDetachPin(ENGINE_FWD_PIN);
         ledcAttachPin(ENGINE_REV_PIN, ENGINE_PWM_CHANNEL);
     }
 
@@ -318,6 +383,9 @@ void brake(uint16_t seconds)
     digitalWrite(ENGINE_REV_PIN, HIGH);
     digitalWrite(BRAKE_LIGHTS_PIN, LOW);
 
+    ledcDetachPin(ENGINE_FWD_PIN);
+    ledcDetachPin(ENGINE_REV_PIN);
+
     delay(seconds * 1000);
 
     digitalWrite(ENGINE_FWD_PIN, LOW);
@@ -332,27 +400,91 @@ void steer(int8_t toPosition)
 {
     Tracer tracer(F("steer"));
 
+    if (toPosition > 3) toPosition = 3;
+    if (toPosition < -3) toPosition = -3;
+    TRACE(F("toPosition = %d\n"), toPosition);
+
     if (toPosition == 0)
     {
         // Turn indicator lights off
-        if (steerPosition > 0)
-            ledcDetachPin(INDICATOR_RIGHT_PIN);
-        else if (steerPosition < 0)
-            ledcDetachPin(INDICATOR_LEFT_PIN);
+        ledcDetachPin(INDICATOR_RIGHT_PIN);
+        ledcDetachPin(INDICATOR_LEFT_PIN);
     }
     else
     {
         // Turn indicator lights on
         if (toPosition > 0)
+        {
             ledcAttachPin(INDICATOR_RIGHT_PIN, INDICATOR_PWM_CHANNEL);
+            ledcDetachPin(INDICATOR_LEFT_PIN);
+        }
         else
+        {
             ledcAttachPin(INDICATOR_LEFT_PIN, INDICATOR_PWM_CHANNEL);
+            ledcDetachPin(INDICATOR_RIGHT_PIN);
+        }
     }
 
     if (toPosition == steerPosition)
-        return;
+        return; // Already there
 
-    if (toPosition > steerPosition)
+    if (toPosition == 0)
+        centerSteering();
+    else
+    {
+        int direction = (toPosition > steerPosition) ? 1 : -1;
+        steerToPosition(direction, toPosition * 2);
+    }
+
+    steerPosition = toPosition;
+}
+
+
+bool centerSteering()
+{
+    Tracer tracer(F("centerSteering"));
+
+    int direction = (getSteerEncoderPos() & 8) ? -1 : 1;
+    steerToPosition(direction, direction);
+    return steerToPosition(-direction, 0);
+}
+
+
+bool steerToPosition(int direction, int8_t targetSteerPos)
+{
+    Tracer tracer(F("steerToPosition"));
+
+    static uint8_t steerEncoderPos[15] = {0x1, 0x3, 0x2, 0x6, 0x4, 0x5, 0x7, 0xF, 0xD, 0xC, 0xE, 0xA, 0xB, 0x9, 0x8};
+    uint8_t targetEncoderPos1 = steerEncoderPos[7 + targetSteerPos];
+    uint8_t targetEncoderPos2 = steerEncoderPos[7 + targetSteerPos + direction];
+    uint8_t maxEncoderPos = (direction > 0) ? steerEncoderPos[15] : steerEncoderPos[0];
+    TRACE(F("Direction: %d. Target pos: %X / %X. Max pos: %X\n"), direction, targetEncoderPos1, targetEncoderPos2, maxEncoderPos);
+
+    uint8_t currentEncoderPos = getSteerEncoderPos();
+    TRACE(F("Current pos: %X\n"), currentEncoderPos);
+
+    int i = 0;
+    while ((currentEncoderPos != targetEncoderPos1) && (currentEncoderPos != targetEncoderPos2))
+    {
+        if ((currentEncoderPos == maxEncoderPos) || (i++ == 20))
+        {
+            TRACE(F("ERROR: max steering reached (%d steps)\n"), i);
+            return false;
+        }
+
+        currentEncoderPos = moveSteering(direction, 20);
+    }
+
+    return true;
+}
+
+
+uint8_t moveSteering(int8_t direction, uint8_t duration)
+{
+    Tracer tracer(F("moveSteering"));
+
+    // Steering motor on (left/right)
+    if (direction > 0)
     {
         digitalWrite(STEER_RIGHT_PIN, HIGH);
         digitalWrite(STEER_LEFT_PIN, LOW);
@@ -363,19 +495,37 @@ void steer(int8_t toPosition)
         digitalWrite(STEER_RIGHT_PIN, LOW);
     }
 
-    // TODO: await feedback from rotary encoder
-    delay(500);
+    delay(duration);
 
+    // Brake steering motor
+    digitalWrite(STEER_LEFT_PIN, HIGH);
+    digitalWrite(STEER_RIGHT_PIN, HIGH);
+
+    delay(duration * 2);
+
+    // Steering motor off
     digitalWrite(STEER_LEFT_PIN, LOW);
     digitalWrite(STEER_RIGHT_PIN, LOW);
 
-    steerPosition = toPosition;
+    uint8_t result = getSteerEncoderPos();
+    TRACE(F("Steer encoder position: %X\n"), result);
+    return result;
 }
 
 
-void monitorForwardRange(void* taskParams)
+uint8_t getSteerEncoderPos()
 {
-    Tracer tracer(F("monitorForwardRange"));
+    return 
+        digitalRead(STEER_ENC_WG_PIN) |
+        (digitalRead(STEER_ENC_WB_PIN) << 1) |
+        (digitalRead(STEER_ENC_BR_PIN) << 2) |
+        (digitalRead(STEER_ENC_BL_PIN) << 3);
+}
+
+
+void monitorRange(void* taskParams)
+{
+    Tracer tracer(F("monitorRange"));
     TRACE(F("Core ID: %d\n"), xPortGetCoreID());
 
     char event[32];
@@ -383,11 +533,13 @@ void monitorForwardRange(void* taskParams)
     while (true)
     {
         delay(10);
+        VL53L0X_RangingMeasurementData_t rangingMeasurement;
+        lastRangingResult = DistanceSensor.rangingTest(&rangingMeasurement);
+        lastRangingMeasurement = rangingMeasurement;
 
         if (engineSpeed <= 0)
             continue;
 
-        lastRangingResult = DistanceSensor.rangingTest(&lastRangingMeasurement);
         if (lastRangingResult != VL53L0X_ERROR_NONE)
         {
             snprintf(event, sizeof(event), "Ranging error: %d", lastRangingResult);
@@ -397,15 +549,15 @@ void monitorForwardRange(void* taskParams)
             continue;
         }
 
-        if (lastRangingMeasurement.RangeStatus == 4) // Out of range
+        if (rangingMeasurement.RangeStatus == 4) // Out of range
             continue;
 
-        if (lastRangingMeasurement.RangeMilliMeter < MIN_RANGE_MM)
+        if (rangingMeasurement.RangeMilliMeter < MIN_RANGE_MM)
         {
-            snprintf(event, sizeof(event), "Collision detection: %d mm", lastRangingMeasurement.RangeMilliMeter);
+            snprintf(event, sizeof(event), "Collision detection: %d mm", rangingMeasurement.RangeMilliMeter);
             logEvent(event);
             terminateScript = true; 
-            brake(2);
+            brake(1);
         }
     }
 }
@@ -443,7 +595,11 @@ bool executeInstruction(Instruction& instruction)
             break;
 
         case 'L':
-            digitalWrite(FRONT_LIGHTS_PIN, instruction.argument);
+            digitalWrite(FRONT_LIGHTS_PIN, (instruction.argument == 0));
+            break;
+
+        case 'A':
+            alarmLights(instruction.argument);
             break;
 
         case 'W':
@@ -462,6 +618,8 @@ void runScript(void* taskParams)
 {
     Tracer tracer(F("runScript"));
     TRACE(F("Core ID: %d\n"), xPortGetCoreID());
+
+    logEvent("Script started");
 
     terminateScript = false;
     currentInstructionIndex = 0;
@@ -484,8 +642,11 @@ void runScript(void* taskParams)
                 currentLoopPtr = &loops[i];
         }
 
-        if ((currentLoopPtr != nullptr) && (currentInstructionIndex == currentLoopPtr->endIndex) && (currentLoopPtr->count-- > 0))
+        if ((currentLoopPtr != nullptr) && (currentInstructionIndex == currentLoopPtr->endIndex) && (--currentLoopPtr->count > 0))
+        {
+            TRACE(F("Looping back to %d. Count: %d\n"), currentLoopPtr->startIndex, currentLoopPtr->count);
             currentInstructionIndex = currentLoopPtr->startIndex;
+        }
         else
             currentInstructionIndex++;
     }
@@ -497,7 +658,9 @@ void runScript(void* taskParams)
     else
         logEvent("Script completed");
 
-    vTaskDelete(scriptRunnerTaskHandle);
+    TaskHandle_t taskHandle = scriptRunnerTaskHandle;
+    scriptRunnerTaskHandle = nullptr;
+    vTaskDelete(taskHandle);
 }
 
 
@@ -572,7 +735,7 @@ void writeHtmlHeader(String title, bool includeHomePageLink, bool includeHeading
     HttpResponse.printf(F("<title>%s - %s</title>\r\n"), PersistentData.hostName, title.c_str());
     HttpResponse.println(F("<link rel=\"stylesheet\" type=\"text/css\" href=\"/styles.css\">"));
     HttpResponse.printf(F("<link rel=\"icon\" sizes=\"128x128\" href=\"%s\">\r\n<link rel=\"apple-touch-icon-precomposed\" sizes=\"128x128\" href=\"%s\">\r\n"), ICON, ICON);
-    HttpResponse.printf(F("<meta http-equiv=\"refresh\" content=\"%d\">\r\n") , POLL_INTERVAL);
+    //HttpResponse.printf(F("<meta http-equiv=\"refresh\" content=\"%d\">\r\n") , POLL_INTERVAL);
     HttpResponse.println(F("</head>"));
     
     HttpResponse.println(F("<body>"));
@@ -601,6 +764,8 @@ void handleHttpRootRequest()
     HttpResponse.println(F("<table>"));
     HttpResponse.printf(F("<tr><td>Free Heap</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.printf(F("<tr><td>Uptime</td><td>%0.1f min</td></tr>\r\n"), float(WiFiSM.getUptime()) / 60);
+    HttpResponse.printf(F("<tr><td>Engine speed</td><td>%d</td></tr>\r\n"), engineSpeed);
+    HttpResponse.printf(F("<tr><td>Steer pos</td><td>%d</td></tr>\r\n"), steerPosition);
     HttpResponse.println(F("</table>"));
 
     HttpResponse.printf(F("<h2>Ranging</h2>\r\n"), lastRangingMeasurement.RangeMilliMeter);
@@ -632,9 +797,9 @@ void handleHttpRootRequest()
 }
 
 
-void handleHttScriptPostRequest()
+void handleHttpScriptPostRequest()
 {
-    Tracer tracer(F("handleHttScriptPostRequest"));
+    Tracer tracer(F("handleHttpScriptPostRequest"));
 
     script = WebServer.arg("script");
     if (parseScript())
