@@ -138,8 +138,10 @@ void setup()
     SPIFFS.begin();
 
     const char* cacheControl = "max-age=86400, public";
-    WebServer.on("/", HTTP_GET, handleHttpRootRequest);
-    WebServer.on("/", HTTP_POST, handleHttpScriptPostRequest);
+    WebServer.on("/", handleHttpRootRequest);
+    WebServer.on("/exec", handleHttpExecCommandRequest);
+    WebServer.on("/script", HTTP_GET, handleHttpScriptRequest);
+    WebServer.on("/script", HTTP_POST, handleHttpScriptPostRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
     WebServer.on("/events/clear", handleHttpEventLogClearRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
@@ -777,8 +779,53 @@ void handleHttpRootRequest()
 
     HttpResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), EventLog.count());
 
-    HttpResponse.println(F("<h2>Script</h2>"));
-    HttpResponse.println(F("<form action=\"/\" method=\"POST\">"));
+    HttpResponse.println(F("<p class=\"script\"><a href=\"/script\">Open Script</a></p>\r\n"));
+
+    HttpResponse.println(F("<h2>Direct Control</h2>"));
+    HttpResponse.println(F("<div class=\"cmd\">Engine <a href=\"/exec?cmd=F4\">Fast Forward</a> <a href=\"/exec?cmd=F\">Forward</a> <a href=\"/exec?cmd=B\">Brake</a> <a href=\"/exec?cmd=R\">Reverse</a> <a href=\"/exec?cmd=R4\">Fast Reverse</a></div>"));
+    HttpResponse.println(F("<div class=\"cmd\">Steer <a href=\"/exec?cmd=&lt;3\">Left</a> <a href=\"/exec?cmd=^\">Center</a> <a href=\"/exec?cmd=&gt;3\">Right</a></div>"));
+    HttpResponse.println(F("<div class=\"cmd\">Lights <a href=\"/exec?cmd=L1\">On</a> <a href=\"/exec?cmd=L0\">Off</a> <a href=\"/exec?cmd=A\">Alarm</a></div>"));
+
+    writeHtmlFooter();
+
+    WebServer.send(200, "text/html", HttpResponse);
+}
+
+
+void handleHttpExecCommandRequest()
+{
+    Tracer tracer(F("handleHttpExecCommandRequest"));
+
+    String cmd = WebServer.arg("cmd");
+    if (cmd.length() > 0)
+    {
+        Instruction instruction;
+        instruction.parse(cmd.c_str());
+        if (!executeInstruction(instruction))
+        {
+            String response = F("Unknown command: ");
+            response += cmd;
+            WebServer.send(400, "text/plain", response);
+            return;
+        }
+    }
+
+    // Redirect to home page
+    char location[32];
+    snprintf(location, sizeof(location), "http://%s", WiFi.localIP().toString().c_str());
+    WebServer.sendHeader(F("Location"), location);
+    WebServer.sendHeader(F("Cache-Control"), F("no-cache"));
+    WebServer.send(302, "text/plain", F("Redirect"));
+}
+
+
+void handleHttpScriptRequest()
+{
+    Tracer tracer(F("handleHttpScriptRequest"));
+
+    writeHtmlHeader(F("Script"), true, true);
+
+    HttpResponse.println(F("<form action=\"/script\" method=\"POST\">"));
     HttpResponse.println(F("<textarea name=\"script\" rows=\"10\" cols=\"40\">"));
     HttpResponse.println(script);
     HttpResponse.println(F("</textarea><br>"));
@@ -805,7 +852,7 @@ void handleHttpScriptPostRequest()
     if (parseScript())
         spawnScriptRunner();
 
-    handleHttpRootRequest();
+    handleHttpScriptRequest();
 }
 
 
