@@ -1,0 +1,48 @@
+html 
+{
+    background-color: lightgray;
+    font-family: sans-serif;
+    font-size: 12pt;
+}
+
+h1
+{
+	font-size: 18pt;
+}
+
+h2
+{
+	font-size: 14pt;
+}
+
+table
+{
+    border: thin black;
+}
+
+td, th
+{
+	padding-left: 1em;
+    padding-right: 1em;
+}
+
+td.control
+{
+    border: thin darkgray;
+    background-color: black;
+    padding: 1em;
+}
+
+a.control
+{
+    color: white;
+    text-decoration: none;
+    font-family: monospace;
+    font-size: 14pt;
+    padding: 1em;
+}
+
+.label
+{
+    font-size: 10pt;
+}

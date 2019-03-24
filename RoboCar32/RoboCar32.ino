@@ -1,4 +1,5 @@
 #include <math.h>
+#include <Arduino.h>
 #include <ESPWiFi.h>
 #include <ESPWebServer.h>
 #include <ESPFileSystem.h>
@@ -139,10 +140,8 @@ void setup()
 
     const char* cacheControl = "max-age=86400, public";
     WebServer.on("/", handleHttpRootRequest);
-    WebServer.on("/exec", handleHttpExecCommandRequest);
     WebServer.on("/script", HTTP_GET, handleHttpScriptRequest);
     WebServer.on("/script", HTTP_POST, handleHttpScriptPostRequest);
-    WebServer.on("/events", handleHttpEventLogRequest);
     WebServer.on("/events/clear", handleHttpEventLogClearRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
     WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
@@ -356,8 +355,14 @@ void setEngineSpeed(int8_t speed)
 {
     Tracer tracer(F("setEngineSpeed"));
 
-    uint32_t pwmDuty = min(abs(speed) << 5, 255);
-    TRACE(F("Engine PWM duty: %u\n"), pwmDuty);
+    speed = constrain(speed, -2, 5);
+
+    // Linear 8 step: { 0, 32, 64, 96, 128, 160, 192, 224, 255}
+    // Exponential 5 step:
+    static const uint32_t pwmDutyMap[6] = { 0, 32, 60, 88, 144 , 255};
+
+    uint32_t pwmDuty = pwmDutyMap[abs(speed)];
+    TRACE(F("Speed %d => Engine PWM duty: %u\n"), speed, pwmDuty);
     ledcWrite(ENGINE_PWM_CHANNEL, pwmDuty);
 
     if (speed >= 0)
@@ -402,8 +407,7 @@ void steer(int8_t toPosition)
 {
     Tracer tracer(F("steer"));
 
-    if (toPosition > 3) toPosition = 3;
-    if (toPosition < -3) toPosition = -3;
+    toPosition = constrain(toPosition, -3, 3);
     TRACE(F("toPosition = %d\n"), toPosition);
 
     if (toPosition == 0)
@@ -530,7 +534,7 @@ void monitorRange(void* taskParams)
     Tracer tracer(F("monitorRange"));
     TRACE(F("Core ID: %d\n"), xPortGetCoreID());
 
-    char event[32];
+    char event[64];
 
     while (true)
     {
@@ -551,15 +555,40 @@ void monitorRange(void* taskParams)
             continue;
         }
 
-        if (rangingMeasurement.RangeStatus == 4) // Out of range
-            continue;
-
-        if (rangingMeasurement.RangeMilliMeter < MIN_RANGE_MM)
+        uint16_t distance = rangingMeasurement.RangeMilliMeter;
+        switch (rangingMeasurement.RangeStatus)
         {
-            snprintf(event, sizeof(event), "Collision detection: %d mm", rangingMeasurement.RangeMilliMeter);
-            logEvent(event);
-            terminateScript = true; 
-            brake(1);
+            case 0: // Valid measurement
+            case 3: // Below minumum range
+                if (distance < MIN_RANGE_MM)
+                {
+                    snprintf(event, sizeof(event), "Emergency stop; collision in %d mm.", distance);
+                    logEvent(event);
+                    terminateScript = true; 
+                    brake(1);
+                }
+                break;
+            
+            case 2:
+                // Signal error: unreliable measurement
+                if ((distance < MIN_RANGE_MM) && (distance != 0))
+                {
+                    if (engineSpeed > 2)
+                    {
+                        snprintf(event, sizeof(event), "Safety mode; potential collision in %d mm.", distance);
+                        logEvent(event);
+                        setEngineSpeed(2);
+                    }
+                }
+                break;
+            
+            case 4:
+                // Phase error: Out of range. Nothing to do
+                break;
+            
+            default:
+                snprintf(event, sizeof(event), "Unexpected range status: %d.", rangingMeasurement.RangeStatus);
+                logEvent(event);
         }
     }
 }
@@ -759,32 +788,37 @@ void handleHttpRootRequest()
 {
     Tracer tracer(F("handleHttpRootRequest"));
     
-    writeHtmlHeader(F("Home"), false, false);
+    writeHtmlHeader(F("Home"), true, false);
 
     HttpResponse.println(F("<h1>RoboCar</h1>"));
 
-    HttpResponse.println(F("<table>"));
-    HttpResponse.printf(F("<tr><td>Free Heap</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><td>Uptime</td><td>%0.1f min</td></tr>\r\n"), float(WiFiSM.getUptime()) / 60);
-    HttpResponse.printf(F("<tr><td>Engine speed</td><td>%d</td></tr>\r\n"), engineSpeed);
-    HttpResponse.printf(F("<tr><td>Steer pos</td><td>%d</td></tr>\r\n"), steerPosition);
-    HttpResponse.println(F("</table>"));
+    // Execute command (if specified)
+    String cmd = WebServer.arg("cmd");
+    if (cmd.length() > 0)
+    {
+        Instruction instruction;
+        instruction.parse(cmd.c_str());
+        if (!executeInstruction(instruction))
+            HttpResponse.printf(F("<div>Unknown command: %s</div>\r\n"), cmd.c_str());
+    }
 
-    HttpResponse.printf(F("<h2>Ranging</h2>\r\n"), lastRangingMeasurement.RangeMilliMeter);
-    HttpResponse.println(F("<table>"));
-    HttpResponse.printf(F("<tr><td>Result</td><td>%d</td></tr>\r\n"), lastRangingResult);
-    HttpResponse.printf(F("<tr><td>Status</td><td>%d</td></tr>\r\n"), lastRangingMeasurement.RangeStatus);
-    HttpResponse.printf(F("<tr><td>Distance</td><td>%d mm</td></tr>\r\n"), lastRangingMeasurement.RangeMilliMeter);
-    HttpResponse.println(F("</table>"));
-
-    HttpResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), EventLog.count());
+    renderControlsTable();
 
     HttpResponse.println(F("<p class=\"script\"><a href=\"/script\">Open Script</a></p>\r\n"));
 
-    HttpResponse.println(F("<h2>Direct Control</h2>"));
-    HttpResponse.println(F("<div class=\"cmd\">Engine <a href=\"/exec?cmd=F4\">Fast Forward</a> <a href=\"/exec?cmd=F\">Forward</a> <a href=\"/exec?cmd=B\">Brake</a> <a href=\"/exec?cmd=R\">Reverse</a> <a href=\"/exec?cmd=R4\">Fast Reverse</a></div>"));
-    HttpResponse.println(F("<div class=\"cmd\">Steer <a href=\"/exec?cmd=&lt;3\">Left</a> <a href=\"/exec?cmd=^\">Center</a> <a href=\"/exec?cmd=&gt;3\">Right</a></div>"));
-    HttpResponse.println(F("<div class=\"cmd\">Lights <a href=\"/exec?cmd=L1\">On</a> <a href=\"/exec?cmd=L0\">Off</a> <a href=\"/exec?cmd=A\">Alarm</a></div>"));
+    HttpResponse.println(F("<h2>Status</h2>"));
+    HttpResponse.println(F("<table>"));
+    HttpResponse.printf(F("<tr><td>Engine speed</td><td>%d</td></tr>\r\n"), engineSpeed);
+    HttpResponse.printf(F("<tr><td>Steer pos</td><td>%d</td></tr>\r\n"), steerPosition);
+    HttpResponse.printf(F("<tr><td>Ranging Result</td><td>%d</td></tr>\r\n"), lastRangingResult);
+    HttpResponse.printf(F("<tr><td>Range Status</td><td>%d</td></tr>\r\n"), lastRangingMeasurement.RangeStatus);
+    HttpResponse.printf(F("<tr><td>Distance</td><td>%d mm</td></tr>\r\n"), lastRangingMeasurement.RangeMilliMeter);
+    HttpResponse.printf(F("<tr><td>Uptime</td><td>%0.1f min</td></tr>\r\n"), float(WiFiSM.getUptime()) / 60);
+    HttpResponse.printf(F("<tr><td>Free Heap</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
+    HttpResponse.println(F("</table>"));
+
+    HttpResponse.println(F("<h2>Event log</h2>"));
+    renderEventLog();
 
     writeHtmlFooter();
 
@@ -792,30 +826,37 @@ void handleHttpRootRequest()
 }
 
 
-void handleHttpExecCommandRequest()
+void renderControlsTable()
 {
-    Tracer tracer(F("handleHttpExecCommandRequest"));
+    static const char* controls[6][7] = {
+        { "F4", "_Forward",       "B", "_Brake",        "",        "",        "" },
+        { "F2",         "",        "",       "",        "",        "",        "" },
+        { "F1",         "",   "_Left",       "", "_Center",        "",  "_Right" },
+        { "F0",    "_Idle",   "&lt;3",  "&lt;1",       "^",   "&gt;1",   "&gt;3" },
+        { "R1",         "",        "",       "",        "",        "",        "" },
+        { "R2", "_Reverse",      "L0",      "L1", "_Lights",     "A5",  "_Alarm" },
+        };
 
-    String cmd = WebServer.arg("cmd");
-    if (cmd.length() > 0)
+    HttpResponse.println(F("<table class=\"controls\">"));
+
+    for (int row = 0; row < 6; row++)
     {
-        Instruction instruction;
-        instruction.parse(cmd.c_str());
-        if (!executeInstruction(instruction))
+        HttpResponse.print(F("<tr>"));
+        for (int col = 0; col < 7; col++)
         {
-            String response = F("Unknown command: ");
-            response += cmd;
-            WebServer.send(400, "text/plain", response);
-            return;
+            // TODO: highlight
+            const char* control = controls[row][col];
+            if (strlen(control) == 0) // Empty cell
+                HttpResponse.print(F("<td></td>"));
+            else if (control[0] == '_') // Label
+                HttpResponse.printf(F("<td class=\"label\">%s</td>"), control + 1);
+            else // Control
+                HttpResponse.printf(F("<td class=\"control\"><a class=\"control\" href=\"?cmd=%s\">%s</a></td>"), control, control);
         }
+        HttpResponse.println("</tr>");
     }
 
-    // Redirect to home page
-    char location[32];
-    snprintf(location, sizeof(location), "http://%s", WiFi.localIP().toString().c_str());
-    WebServer.sendHeader(F("Location"), location);
-    WebServer.sendHeader(F("Cache-Control"), F("no-cache"));
-    WebServer.send(302, "text/plain", F("Redirect"));
+    HttpResponse.println(F("</table>"));
 }
 
 
@@ -856,12 +897,8 @@ void handleHttpScriptPostRequest()
 }
 
 
-void handleHttpEventLogRequest()
+void renderEventLog()
 {
-    Tracer tracer(F("handleHttpEventLogRequest"));
-
-    writeHtmlHeader(F("Event log"), true, true);
-
     const char* event = EventLog.getFirstEntry();
     while (event != nullptr)
     {
@@ -870,10 +907,6 @@ void handleHttpEventLogRequest()
     }
 
     HttpResponse.println(F("<p><a href=\"/events/clear\">Clear event log</a></p>"));
-
-    writeHtmlFooter();
-
-    WebServer.send(200, F("text/html"), HttpResponse);
 }
 
 
@@ -884,7 +917,7 @@ void handleHttpEventLogClearRequest()
     EventLog.clear();
     logEvent(F("Event log cleared."));
 
-    handleHttpEventLogRequest();
+    handleHttpRootRequest();
 }
 
 
