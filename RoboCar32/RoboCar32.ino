@@ -16,7 +16,6 @@
 #define MAX_EVENT_LOG_SIZE 100
 #define ICON "/apple-touch-icon.png"
 #define NTP_SERVER "fritz.box"
-#define MIN_RANGE_MM 300
 
 #define SCRIPT_TOKEN_SEPARATORS " ,\r\n"
 #define MAX_SCRIPT_SIZE 1024
@@ -85,10 +84,9 @@ Adafruit_VL53L0X DistanceSensor = Adafruit_VL53L0X();
 volatile VL53L0X_Error lastRangingResult;
 VL53L0X_RangingMeasurementData_t lastRangingMeasurement;
 
-time_t currentTime;
-
 int8_t engineSpeed = 0;
 int8_t steerPosition = 0;
+bool pursuitMode = false;
 
 String script = F("L ( F W B R W B <2 W >2 W ^ W )2 L0");
 Instruction instructions[MAX_INSTRUCTIONS];
@@ -538,13 +536,14 @@ void monitorRange(void* taskParams)
 
     while (true)
     {
-        delay(10);
-        VL53L0X_RangingMeasurementData_t rangingMeasurement;
-        lastRangingResult = DistanceSensor.rangingTest(&rangingMeasurement);
-        lastRangingMeasurement = rangingMeasurement;
+        lastRangingResult = DistanceSensor.rangingTest(&lastRangingMeasurement);
 
-        if (engineSpeed <= 0)
+        if ((engineSpeed <= 0)  && !pursuitMode)
+        {
+            // Only monitor during forward motion (unless in pursuit mode)
+            delay(100);
             continue;
+        }
 
         if (lastRangingResult != VL53L0X_ERROR_NONE)
         {
@@ -555,40 +554,42 @@ void monitorRange(void* taskParams)
             continue;
         }
 
-        uint16_t distance = rangingMeasurement.RangeMilliMeter;
-        switch (rangingMeasurement.RangeStatus)
+        // Collision detect range (mm) as a function of engine speed
+        // Note: max range of distance sensor is approx. 1200 mm.
+        static uint16_t speedRangeMap[6] = { 0, 100, 400, 700, 1300, 2500 };
+
+        uint16_t collisionDetectRange = speedRangeMap[max<int>(engineSpeed, 0)];
+        uint16_t distance = lastRangingMeasurement.RangeMilliMeter;
+        if (pursuitMode)
         {
-            case 0: // Valid measurement
-            case 3: // Below minumum range
-                if (distance < MIN_RANGE_MM)
-                {
-                    snprintf(event, sizeof(event), "Emergency stop; collision in %d mm.", distance);
-                    logEvent(event);
-                    terminateScript = true; 
-                    brake(1);
-                }
-                break;
-            
-            case 2:
-                // Signal error: unreliable measurement
-                if ((distance < MIN_RANGE_MM) && (distance != 0))
-                {
-                    if (engineSpeed > 2)
-                    {
-                        snprintf(event, sizeof(event), "Safety mode; potential collision in %d mm.", distance);
-                        logEvent(event);
-                        setEngineSpeed(2);
-                    }
-                }
-                break;
-            
-            case 4:
-                // Phase error: Out of range. Nothing to do
-                break;
-            
-            default:
-                snprintf(event, sizeof(event), "Unexpected range status: %d.", rangingMeasurement.RangeStatus);
+            if ((engineSpeed >= 0) && (distance <= (collisionDetectRange + 100)))
+                setEngineSpeed(engineSpeed - 1); // Slow down (or reverse)
+            else if ((engineSpeed < 3) && (distance >= (speedRangeMap[engineSpeed + 1] + 150)))
+                setEngineSpeed(engineSpeed + 1); // Speed up
+        }
+        else if (distance <= collisionDetectRange)
+        {
+            if (lastRangingMeasurement.RangeStatus == 0)
+            {
+                // Reliable measurement
+                snprintf(event, sizeof(event), "Emergency stop; collision in %d mm.", distance);
                 logEvent(event);
+                terminateScript = true;
+                if (engineSpeed > 1)
+                {
+                    // Shortly reverse for more braking power
+                    setEngineSpeed(-2);
+                    delay(500); 
+                }
+                brake(2);
+            }
+            else if (engineSpeed > 2)
+            {
+                // Less reliable measurement
+                snprintf(event, sizeof(event), "Safety mode; potential collision in %d mm.", distance);
+                logEvent(event);
+                setEngineSpeed(2);
+            }
         }
     }
 }
@@ -631,6 +632,10 @@ bool executeInstruction(Instruction& instruction)
 
         case 'A':
             alarmLights(instruction.argument);
+            break;
+
+        case 'P':
+            pursuitMode = (instruction.argument != 0);
             break;
 
         case 'W':
@@ -809,7 +814,8 @@ void handleHttpRootRequest()
     HttpResponse.println(F("<h2>Status</h2>"));
     HttpResponse.println(F("<table>"));
     HttpResponse.printf(F("<tr><td>Engine speed</td><td>%d</td></tr>\r\n"), engineSpeed);
-    HttpResponse.printf(F("<tr><td>Steer pos</td><td>%d</td></tr>\r\n"), steerPosition);
+    HttpResponse.printf(F("<tr><td>Steer position</td><td>%d</td></tr>\r\n"), steerPosition);
+    HttpResponse.printf(F("<tr><td>Pursuit mode</td><td>%d</td></tr>\r\n"), pursuitMode);
     HttpResponse.printf(F("<tr><td>Ranging Result</td><td>%d</td></tr>\r\n"), lastRangingResult);
     HttpResponse.printf(F("<tr><td>Range Status</td><td>%d</td></tr>\r\n"), lastRangingMeasurement.RangeStatus);
     HttpResponse.printf(F("<tr><td>Distance</td><td>%d mm</td></tr>\r\n"), lastRangingMeasurement.RangeMilliMeter);
@@ -829,7 +835,7 @@ void handleHttpRootRequest()
 void renderControlsTable()
 {
     static const char* controls[6][7] = {
-        { "F4", "_Forward",       "B", "_Brake",        "",        "",        "" },
+        { "F4", "_Forward",       "B", "_Brake",      "P0",      "P1","_Pursuit" },
         { "F2",         "",        "",       "",        "",        "",        "" },
         { "F1",         "",   "_Left",       "", "_Center",        "",  "_Right" },
         { "F0",    "_Idle",   "&lt;3",  "&lt;1",       "^",   "&gt;1",   "&gt;3" },
