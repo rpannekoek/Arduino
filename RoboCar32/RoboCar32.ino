@@ -1,5 +1,6 @@
 #include <math.h>
 #include <Arduino.h>
+#include <ArduinoOTA.h>
 #include <ESPWiFi.h>
 #include <ESPWebServer.h>
 #include <ESPFileSystem.h>
@@ -148,6 +149,15 @@ void setup()
     WebServer.serveStatic("/styles.css", SPIFFS, "/styles.css", cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
 
+    ArduinoOTA.onStart([]() 
+        {
+            TRACE(F("OTA start %d\n"), ArduinoOTA.getCommand());
+            if (ArduinoOTA.getCommand() == U_SPIFFS)
+                SPIFFS.end();
+        });
+    ArduinoOTA.onEnd([]() { TRACE(F("OTA end %d\n"), ArduinoOTA.getCommand()); });
+    ArduinoOTA.onError([](ota_error_t error) { TRACE(F("OTA error %u\n"), error); });
+
     WiFiSM.on(WiFiState::Connected, onWiFiConnected);
     WiFiSM.begin(WIFI_SSID, WIFI_PASSWORD, PersistentData.hostName);
 
@@ -160,8 +170,6 @@ void setup()
 
     spawnRangeMonitor();
 
-    parseScript();
-
     Tracer::traceFreeHeap();
 
     // Turn built-in LED off
@@ -172,6 +180,8 @@ void setup()
 void onWiFiConnected()
 {
     Tracer tracer(F("onWiFiConnected"));
+
+    ArduinoOTA.begin();
 
     resetLights();
 }
@@ -231,6 +241,7 @@ void loop()
     }
 
     WiFiSM.run();
+    ArduinoOTA.handle();
 
     delay(10);
 }
@@ -562,10 +573,26 @@ void monitorRange(void* taskParams)
         uint16_t distance = lastRangingMeasurement.RangeMilliMeter;
         if (pursuitMode)
         {
-            if ((engineSpeed >= 0) && (distance <= (collisionDetectRange + 100)))
-                setEngineSpeed(engineSpeed - 1); // Slow down (or reverse)
-            else if ((engineSpeed < 3) && (distance >= (speedRangeMap[engineSpeed + 1] + 150)))
-                setEngineSpeed(engineSpeed + 1); // Speed up
+            if (distance < 1200)
+            {
+                uint16_t slowDownDistance = collisionDetectRange + 100;
+                uint16_t speedUpDistance = speedRangeMap[engineSpeed + 1] + 150;
+                if ((engineSpeed >= 0) && (distance <= slowDownDistance))
+                {
+                    TRACE(F("Pursuit slow down; distance below %d mm: %d mm\n"), slowDownDistance, distance);
+                    setEngineSpeed(engineSpeed - 1);
+                }
+                else if ((engineSpeed < 3) && (distance >= speedUpDistance) && (lastRangingMeasurement.RangeStatus != 4))
+                {
+                    TRACE(F("Pursuit speed up; distance above %d mm: %d mm\n"), speedUpDistance, distance);
+                    setEngineSpeed(engineSpeed + 1);
+                }
+            }
+            else if (engineSpeed != 0)
+            {
+                TRACE(F("Pursuit stop; out of range (%d mm)\n"), distance);
+                brake(1);
+            }
         }
         else if (distance <= collisionDetectRange)
         {
@@ -835,7 +862,7 @@ void handleHttpRootRequest()
 void renderControlsTable()
 {
     static const char* controls[6][7] = {
-        { "F4", "_Forward",       "B", "_Brake",      "P0",      "P1","_Pursuit" },
+        { "F3", "_Forward",       "B", "_Brake",      "P0",      "P1","_Pursuit" },
         { "F2",         "",        "",       "",        "",        "",        "" },
         { "F1",         "",   "_Left",       "", "_Center",        "",  "_Right" },
         { "F0",    "_Idle",   "&lt;3",  "&lt;1",       "^",   "&gt;1",   "&gt;3" },
@@ -878,6 +905,8 @@ void handleHttpScriptRequest()
     HttpResponse.println(F("</textarea><br>"));
     HttpResponse.println(F("<input type=\"submit\" value=\"Run\">"));
     HttpResponse.println(F("</form>"));
+
+    parseScript();
 
     HttpResponse.println(F("<table>"));
     HttpResponse.printf(F("<tr><td>#Instructions</td><td>%d</td></tr>\r\n"), lastInstructionIndex + 1);
