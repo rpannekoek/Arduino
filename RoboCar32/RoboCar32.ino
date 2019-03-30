@@ -395,14 +395,26 @@ void brake(uint16_t seconds)
 {
     Tracer tracer(F("brake"));
 
+    digitalWrite(BRAKE_LIGHTS_PIN, LOW);
+
+    uint16_t engineBrakeMillis = seconds * 1000;
+    if (abs(engineSpeed) > 1)
+    {
+        // Shortly reverse for more braking power
+        setEngineSpeed(-engineSpeed);
+
+        delay(seconds * 500);
+        engineBrakeMillis = seconds * 500;
+    }
+
+    // Engine brake
     digitalWrite(ENGINE_FWD_PIN, HIGH);
     digitalWrite(ENGINE_REV_PIN, HIGH);
-    digitalWrite(BRAKE_LIGHTS_PIN, LOW);
 
     ledcDetachPin(ENGINE_FWD_PIN);
     ledcDetachPin(ENGINE_REV_PIN);
 
-    delay(seconds * 1000);
+    delay(engineBrakeMillis);
 
     digitalWrite(ENGINE_FWD_PIN, LOW);
     digitalWrite(ENGINE_REV_PIN, LOW);
@@ -602,12 +614,6 @@ void monitorRange(void* taskParams)
                 snprintf(event, sizeof(event), "Emergency stop; collision in %d mm.", distance);
                 logEvent(event);
                 terminateScript = true;
-                if (engineSpeed > 1)
-                {
-                    // Shortly reverse for more braking power
-                    setEngineSpeed(-2);
-                    delay(500); 
-                }
                 brake(2);
             }
             else if (engineSpeed > 2)
