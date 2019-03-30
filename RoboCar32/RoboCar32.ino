@@ -17,6 +17,8 @@
 #define MAX_EVENT_LOG_SIZE 100
 #define ICON "/apple-touch-icon.png"
 #define NTP_SERVER "fritz.box"
+#define CONTENT_TYPE_HTML F("text/html")
+#define RANGE_LOG_SIZE 25
 
 #define SCRIPT_TOKEN_SEPARATORS " ,\r\n"
 #define MAX_SCRIPT_SIZE 1024
@@ -74,6 +76,12 @@ struct LoopInfo
     }
 };
 
+struct RangeLogEntry
+{
+    uint32_t time;
+    uint8_t status;
+    uint16_t distance;
+};
 
 WebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer(NTP_SERVER, 24 * 3600); // Synchronize daily
@@ -81,13 +89,16 @@ StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 Log<const char> EventLog(MAX_EVENT_LOG_SIZE);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 Adafruit_VL53L0X DistanceSensor = Adafruit_VL53L0X();
+Log<RangeLogEntry> RangeLog(RANGE_LOG_SIZE);
 
+bool rangingInitialized;
 volatile VL53L0X_Error lastRangingResult;
 VL53L0X_RangingMeasurementData_t lastRangingMeasurement;
 
 int8_t engineSpeed = 0;
 int8_t steerPosition = 0;
 bool pursuitMode = false;
+bool reset = false;
 
 String script = F("L ( F W B R W B <2 W >2 W ^ W )2 L0");
 Instruction instructions[MAX_INSTRUCTIONS];
@@ -161,14 +172,16 @@ void setup()
     WiFiSM.on(WiFiState::Connected, onWiFiConnected);
     WiFiSM.begin(WIFI_SSID, WIFI_PASSWORD, PersistentData.hostName);
 
-    if (!DistanceSensor.begin(VL53L0X_I2C_ADDR, true))
-        TRACE(F("Cannot initialize distance sensor\n"));
+    rangingInitialized = DistanceSensor.begin(VL53L0X_I2C_ADDR, true);
+    if (rangingInitialized)
+        spawnRangeMonitor();
+    else
+        TRACE(F("Error initializing distance sensor\n"));
 
     initEngineDrive();
     initSteering();
     initLights();
 
-    spawnRangeMonitor();
 
     Tracer::traceFreeHeap();
 
@@ -233,6 +246,9 @@ bool spawnScriptRunner()
 // Called repeatedly
 void loop() 
 {
+    if (reset)
+        ESP.restart();
+
     if (Serial.available())
     {
         digitalWrite(LED_BUILTIN, 0);
@@ -397,14 +413,13 @@ void brake(uint16_t seconds)
 
     digitalWrite(BRAKE_LIGHTS_PIN, LOW);
 
-    uint16_t engineBrakeMillis = seconds * 1000;
+    uint32_t engineBrakeMillis = seconds * 1000;
     if (abs(engineSpeed) > 1)
     {
         // Shortly reverse for more braking power
         setEngineSpeed(-engineSpeed);
-
-        delay(seconds * 500);
-        engineBrakeMillis = seconds * 500;
+        delay(500);
+        engineBrakeMillis -= 500;
     }
 
     // Engine brake
@@ -583,6 +598,16 @@ void monitorRange(void* taskParams)
 
         uint16_t collisionDetectRange = speedRangeMap[max<int>(engineSpeed, 0)];
         uint16_t distance = lastRangingMeasurement.RangeMilliMeter;
+
+        if (engineSpeed != 0)
+        {
+            RangeLogEntry* rangeLogEntryPtr = new RangeLogEntry();
+            rangeLogEntryPtr->time = millis();
+            rangeLogEntryPtr->status = lastRangingMeasurement.RangeStatus;
+            rangeLogEntryPtr->distance = distance;
+            RangeLog.add(rangeLogEntryPtr);
+        }
+
         if (pursuitMode)
         {
             if (distance < 1200)
@@ -834,21 +859,27 @@ void handleHttpRootRequest()
     String cmd = WebServer.arg("cmd");
     if (cmd.length() > 0)
     {
-        Instruction instruction;
-        instruction.parse(cmd.c_str());
-        if (!executeInstruction(instruction))
-            HttpResponse.printf(F("<div>Unknown command: %s</div>\r\n"), cmd.c_str());
+        if (cmd == "reset")
+            reset = true;
+        else
+        {
+            Instruction instruction;
+            instruction.parse(cmd.c_str());
+            if (!executeInstruction(instruction))
+                HttpResponse.printf(F("<div>Unknown command: %s</div>\r\n"), cmd.c_str());
+        }
     }
 
     renderControlsTable();
 
-    HttpResponse.println(F("<p class=\"script\"><a href=\"/script\">Open Script</a></p>\r\n"));
+    HttpResponse.println(F("<p><a href=\"/script\">Open Script</a></p>\r\n"));
 
     HttpResponse.println(F("<h2>Status</h2>"));
     HttpResponse.println(F("<table>"));
     HttpResponse.printf(F("<tr><td>Engine speed</td><td>%d</td></tr>\r\n"), engineSpeed);
     HttpResponse.printf(F("<tr><td>Steer position</td><td>%d</td></tr>\r\n"), steerPosition);
     HttpResponse.printf(F("<tr><td>Pursuit mode</td><td>%d</td></tr>\r\n"), pursuitMode);
+    HttpResponse.printf(F("<tr><td>Ranging Init</td><td>%d</td></tr>\r\n"), rangingInitialized);
     HttpResponse.printf(F("<tr><td>Ranging Result</td><td>%d</td></tr>\r\n"), lastRangingResult);
     HttpResponse.printf(F("<tr><td>Range Status</td><td>%d</td></tr>\r\n"), lastRangingMeasurement.RangeStatus);
     HttpResponse.printf(F("<tr><td>Distance</td><td>%d mm</td></tr>\r\n"), lastRangingMeasurement.RangeMilliMeter);
@@ -856,12 +887,17 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><td>Free Heap</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.println(F("</table>"));
 
+    HttpResponse.println(F("<p class=\"reset\"><a href=\"?cmd=reset\">Reset</a></p>\r\n"));
+
+    HttpResponse.println(F("<h2>Range log</h2>"));
+    renderRangeLogTable();
+
     HttpResponse.println(F("<h2>Event log</h2>"));
     renderEventLog();
 
     writeHtmlFooter();
 
-    WebServer.send(200, "text/html", HttpResponse);
+    WebServer.send(200, CONTENT_TYPE_HTML, HttpResponse);
 }
 
 
@@ -899,6 +935,38 @@ void renderControlsTable()
 }
 
 
+void renderRangeLogTable()
+{
+    HttpResponse.println(F("<table>"));
+    HttpResponse.println(F("<tr><th>Time (ms)</th><th>Distance (mm)</th><th>Status</th></tr>"));
+
+    RangeLogEntry* lastRangeLogEntryPtr = RangeLog.getEntryFromEnd(1);
+    RangeLogEntry* rangeLogEntryPtr = RangeLog.getFirstEntry();
+
+    uint32_t timeOffset = 0;
+    if (lastRangeLogEntryPtr != nullptr)
+        timeOffset = lastRangeLogEntryPtr->time;
+
+    lastRangeLogEntryPtr = rangeLogEntryPtr;
+    while (rangeLogEntryPtr != nullptr)
+    {
+        HttpResponse.printf(
+            F("<tr><td>%d (+%d)</td><td>%d (%d)</td><td>%d</td></tr>\r\n"), 
+            rangeLogEntryPtr->time - timeOffset,
+            rangeLogEntryPtr->time - lastRangeLogEntryPtr->time,
+            rangeLogEntryPtr->distance,
+            rangeLogEntryPtr->distance - lastRangeLogEntryPtr->distance,
+            rangeLogEntryPtr->status
+            );
+
+        lastRangeLogEntryPtr = rangeLogEntryPtr;
+        rangeLogEntryPtr = RangeLog.getNextEntry();
+    }
+
+    HttpResponse.println(F("</table>"));
+}
+
+
 void handleHttpScriptRequest()
 {
     Tracer tracer(F("handleHttpScriptRequest"));
@@ -906,13 +974,14 @@ void handleHttpScriptRequest()
     writeHtmlHeader(F("Script"), true, true);
 
     HttpResponse.println(F("<form action=\"/script\" method=\"POST\">"));
-    HttpResponse.println(F("<textarea name=\"script\" rows=\"10\" cols=\"40\">"));
+    HttpResponse.println(F("<textarea name=\"script\" rows=\"10\" cols=\"40\" class=\"script\">"));
     HttpResponse.println(script);
     HttpResponse.println(F("</textarea><br>"));
     HttpResponse.println(F("<input type=\"submit\" value=\"Run\">"));
     HttpResponse.println(F("</form>"));
 
-    parseScript();
+    if (lastInstructionIndex < 0)
+        parseScript();
 
     HttpResponse.println(F("<table>"));
     HttpResponse.printf(F("<tr><td>#Instructions</td><td>%d</td></tr>\r\n"), lastInstructionIndex + 1);
@@ -922,7 +991,7 @@ void handleHttpScriptRequest()
 
     writeHtmlFooter();
 
-    WebServer.send(200, "text/html", HttpResponse);
+    WebServer.send(200, CONTENT_TYPE_HTML, HttpResponse);
 }
 
 
@@ -993,7 +1062,7 @@ void handleHttpConfigFormRequest()
 
     writeHtmlFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, CONTENT_TYPE_HTML, HttpResponse);
 }
 
 

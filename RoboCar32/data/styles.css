@@ -46,3 +46,9 @@ a.control
 {
     font-size: 10pt;
 }
+
+.script
+{
+    font-family: monospace;
+    font-size: 16pt;
+}
