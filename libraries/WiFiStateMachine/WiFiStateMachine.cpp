@@ -1,6 +1,8 @@
 #include "WiFiStateMachine.h"
 #include <Arduino.h>
+#include <ArduinoOTA.h>
 #include <ESPWiFi.h>
+#include <ESPFileSystem.h>
 #include <Tracer.h>
 
 #ifdef ESP32
@@ -35,6 +37,15 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName)
     String event = "Booted from ";
     event += getResetReason();
     logEvent(event);
+
+    ArduinoOTA.onStart([]() 
+        {
+            TRACE(F("OTA start %d\n"), ArduinoOTA.getCommand());
+            if (ArduinoOTA.getCommand() == U_SPIFFS)
+                SPIFFS.end();
+        });
+    ArduinoOTA.onEnd([]() { TRACE(F("OTA end %d\n"), ArduinoOTA.getCommand()); });
+    ArduinoOTA.onError([](ota_error_t error) { TRACE(F("OTA error %u\n"), error); });
     
     setState(WiFiState::Initializing);
 }
@@ -140,6 +151,7 @@ void WiFiStateMachine::run()
             event += WiFi.localIP().toString();
             logEvent(event);
             _webServer.begin();
+            ArduinoOTA.begin();
             setState(WiFiState::TimeServerInitializing);
             break;
 
@@ -184,7 +196,10 @@ void WiFiStateMachine::run()
     }
 
     if (_state > WiFiState::Connected)
+    {
         _webServer.handleClient();
+        ArduinoOTA.handle();
+    }
 }
 
 

@@ -1,6 +1,5 @@
 #include <math.h>
 #include <Arduino.h>
-#include <ArduinoOTA.h>
 #include <ESPWiFi.h>
 #include <ESPWebServer.h>
 #include <ESPFileSystem.h>
@@ -160,15 +159,6 @@ void setup()
     WebServer.serveStatic("/styles.css", SPIFFS, "/styles.css", cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
 
-    ArduinoOTA.onStart([]() 
-        {
-            TRACE(F("OTA start %d\n"), ArduinoOTA.getCommand());
-            if (ArduinoOTA.getCommand() == U_SPIFFS)
-                SPIFFS.end();
-        });
-    ArduinoOTA.onEnd([]() { TRACE(F("OTA end %d\n"), ArduinoOTA.getCommand()); });
-    ArduinoOTA.onError([](ota_error_t error) { TRACE(F("OTA error %u\n"), error); });
-
     WiFiSM.on(WiFiState::Connected, onWiFiConnected);
     WiFiSM.begin(WIFI_SSID, WIFI_PASSWORD, PersistentData.hostName);
 
@@ -193,8 +183,6 @@ void setup()
 void onWiFiConnected()
 {
     Tracer tracer(F("onWiFiConnected"));
-
-    ArduinoOTA.begin();
 
     resetLights();
 }
@@ -257,7 +245,6 @@ void loop()
     }
 
     WiFiSM.run();
-    ArduinoOTA.handle();
 
     delay(10);
 }
