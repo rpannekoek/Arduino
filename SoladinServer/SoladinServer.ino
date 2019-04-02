@@ -225,6 +225,25 @@ void initializeMonth()
 }
 
 
+void startNewDay()
+{
+    Tracer tracer(F("startNewDay"));
+
+    initializeDay();
+
+    if (currentTime >= (energyPerWeekLogEntryPtr->time + 561600)) // use 6.5 days to deal with sunrise earlier than last week
+        initializeWeek();
+
+    int currentMonth = gmtime(&currentTime)->tm_mon;
+    int lastLogMonth = gmtime(&energyPerMonthLogEntryPtr->time)->tm_mon;
+    if (currentMonth != lastLogMonth)
+        initializeMonth();
+
+    // Try to sync last day entry with FTP server
+    syncFTPTime = currentTime;
+}
+
+
 bool trySyncFTP(Print* printTo)
 {
     Tracer tracer(F("trySyncFTP"));
@@ -287,21 +306,7 @@ void pollSoladin()
     }
     
     if (currentTime > (soladinLastOnTime + MIN_NIGHT_DURATION))
-    {
-        initializeDay();
-
-        if (currentTime >= (energyPerWeekLogEntryPtr->time + 604800))
-            initializeWeek();
-
-        struct tm* now = gmtime(&currentTime);
-        struct tm* monthLog = gmtime(&energyPerMonthLogEntryPtr->time);
-
-        if (now->tm_mon != monthLog->tm_mon)
-            initializeMonth();
-
-        // Try to sync last day entry with FTP server
-        syncFTPTime = currentTime;
-    }
+        startNewDay();
     else if (currentTime >= energyPerHourLogEntryPtr->time + 3600)
         initializeHour();
 
@@ -389,11 +394,10 @@ void handleSerialRequest()
     Serial.println(cmd);
 
     if (cmd == 't')
-        for (int i = 0; i < 100; i++) 
-        {
-            Soladin.probe();
-            yield();
-        }
+    {
+        currentTime += 32 * 24 * 3600;
+        startNewDay();
+    }
     else if (cmd == 'p')
         Soladin.probe();
     else if (cmd == 's')
