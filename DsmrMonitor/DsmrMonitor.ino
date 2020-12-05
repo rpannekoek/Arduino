@@ -72,6 +72,7 @@ float currentGasKWh = 0;
 struct PhaseData phaseData[3];
 EnergyLogEntry* energyPerHourLogEntryPtr = nullptr;
 EnergyLogEntry* energyPerDayLogEntryPtr = nullptr;
+int logEntriesToSync = 0;
 
 
 const char* formatTime(const char* format, time_t time)
@@ -204,7 +205,7 @@ void updateStatistics(P1Telegram& p1Telegram, float hoursSinceLastUpdate)
 
     String gasTimestamp;
     currentGasKWh = p1Telegram.getFloatValue(P1Telegram::PropertyId::Gas, &gasTimestamp) * GAS_KWH_PER_M3;
-    TRACE(F("Gas: %0.3f kWh\n"), currentGasKWh);
+    TRACE(F("Gas: %0.3f kWh. Timestamp: %s\n"), currentGasKWh, gasTimestamp.c_str());
 
     float powerDelivered = phaseData[0].powerDelivered + phaseData[1].powerDelivered + phaseData[2].powerDelivered;
     float powerReturned = phaseData[0].powerReturned + phaseData[1].powerReturned + phaseData[2].powerReturned;    
@@ -250,6 +251,32 @@ void updateEnergyLog(
 }
 
 
+void testFillLogs()
+{
+    Tracer tracer(F("testFillLogs"));
+
+    for (int hour = 0; hour <= 24; hour++)
+    {
+        initializeHour();
+        energyPerHourLogEntryPtr->time += hour * SECONDS_PER_HOUR;
+        energyPerHourLogEntryPtr->energyDelivered = hour;
+        energyPerHourLogEntryPtr->energyReturned = 24 - hour;
+        energyPerHourLogEntryPtr->gasKWhEnd += float(hour) / 1000;
+    }
+
+    for (int day = 0; day <= 7; day++)
+    {
+        initializeDay();
+        energyPerDayLogEntryPtr->time += day * SECONDS_PER_DAY;
+        energyPerDayLogEntryPtr->energyDelivered = day;
+        energyPerDayLogEntryPtr->energyReturned = 7 - day;
+        energyPerDayLogEntryPtr->gasKWhEnd += day;
+    }
+
+    logEntriesToSync = 24;
+}
+
+
 void onTimeServerSynced()
 {
     currentTime = TimeServer.getCurrentTime();
@@ -264,7 +291,14 @@ void onWiFiInitialized()
     if (currentTime >= energyPerDayLogEntryPtr->time + SECONDS_PER_DAY)
         initializeDay();
     if (currentTime >= energyPerHourLogEntryPtr->time + SECONDS_PER_HOUR)
+    {
         initializeHour();
+        if (++logEntriesToSync == 24)
+        {
+            syncFTPTime = currentTime;
+        }
+        if (logEntriesToSync > 24) logEntriesToSync = 24;
+    }
 
     if (Serial.available())
     {
@@ -285,7 +319,9 @@ void onWiFiInitialized()
         if (message.length() > 0)
             logEvent(message);
 
-        if (!message.startsWith(F("ERROR")))
+        if (message.startsWith(F("/testFill")))
+            testFillLogs();
+        else if (!message.startsWith(F("ERROR")))
         {
             float hoursSinceLastUpdate = float(millisSinceLastTelegram) / 3600000;
             updateStatistics(LastP1Telegram, hoursSinceLastUpdate);
@@ -324,25 +360,49 @@ bool trySyncFTP(Print* printTo)
     }
 
     bool success = false;
-    WiFiClient& dataClient = FTPClient.append(filename);
-    if (dataClient.connected())
+    if (logEntriesToSync == 0)
+        success = true;
+    else
     {
-        // TODO
-        TRACE("Nothing to sync.\n");
-        dataClient.stop();
-
-        if (FTPClient.readServerResponse() == 226)
+        WiFiClient& dataClient = FTPClient.append(filename);
+        if (dataClient.connected())
         {
-            lastFTPSyncTime = currentTime;
-            success = true;
+            writeCsvDataLines(EnergyPerHourLog, dataClient);
+            dataClient.stop();
+
+            if (FTPClient.readServerResponse() == 226)
+            {
+                TRACE(F("Successfully appended log entries.\n"));
+                logEntriesToSync = 0;
+                lastFTPSyncTime = currentTime;
+                success = true;
+            }
+            else
+                TRACE(F("FTP Append command failed: %s\n"), FTPClient.getLastResponse());
         }
-        else
-            TRACE(F("FTP Append command failed: %s\n"), FTPClient.getLastResponse());
     }
 
     FTPClient.end();
 
     return success;
+}
+
+
+void writeCsvDataLines(Log<EnergyLogEntry>& energyLog, Print& destination)
+{
+    EnergyLogEntry* energyLogEntryPtr = energyLog.getEntryFromEnd(logEntriesToSync);
+    while (energyLogEntryPtr != nullptr)
+    {
+        destination.printf(
+            "\"%s\",%0.0f,%0.0f,%0.0f\r\n", 
+            formatTime("%F %H:%M", energyLogEntryPtr->time),
+            energyLogEntryPtr->energyDelivered,
+            energyLogEntryPtr->energyReturned,
+            energyLogEntryPtr->getGasKwh() * 1000
+            );
+        
+        energyLogEntryPtr = energyLog.getNextEntry();
+    }
 }
 
 
@@ -435,11 +495,11 @@ void writeHtmlEnergyRow(
     EnergyLogEntry* energyLogEntryPtr,
     const char* labelFormat,
     float maxValue,
-    int hours
+    float hours
     )
 {
-    float gasAveragePower = energyPerHourLogEntryPtr->getGasKwh() * 1000 / hours;
-    float gasEnergy = energyPerHourLogEntryPtr->getGasKwh();
+    float gasAveragePower = energyLogEntryPtr->getGasKwh() * 1000 / hours;
+    float gasEnergy = energyLogEntryPtr->getGasKwh();
     const char* unitOfMeasure;
     if (hours == 1) 
     {
@@ -538,8 +598,8 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><td>Free Heap</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.printf(F("<tr><td>Uptime</td><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
     HttpResponse.printf(F("<tr><td><a href=\"/telegram\">Last Telegram</a></td><td>%s</td></tr>\r\n"), formatTime("%H:%M:%S", lastTelegramReceivedTime));
-    if (lastFTPSyncTime != 0)
-        HttpResponse.printf(F("<tr><td>FTP Sync</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastFTPSyncTime));
+    HttpResponse.printf(F("<tr><td>FTP Sync Time</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastFTPSyncTime));
+    HttpResponse.printf(F("<tr><td><a href=\"/sync\">FTP Sync Entries</a></td><td>%d</td></tr>\r\n"), logEntriesToSync);
     HttpResponse.println(F("</table>"));
 
     HttpResponse.printf(F("<p><a href=\"/events\">%d events logged.</a></p>\r\n"), EventLog.count());

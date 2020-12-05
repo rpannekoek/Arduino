@@ -75,7 +75,7 @@ String P1Telegram::readFrom(Stream& stream)
     if (dataLine.startsWith(F("/test")))
     {
         populateTestData(dataLine);
-        return F("Received test telegram.");
+        return dataLine;
     }
 
     // There should be an empty line after header
