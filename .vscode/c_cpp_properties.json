@@ -3,26 +3,30 @@
         {
             "name": "ESP8266",
             "includePath": [
-                "C:/Users/Rick/AppData/Local/Arduino15/packages/esp8266/tools/**",
-                "C:/Users/Rick/AppData/Local/Arduino15/packages/esp8266/hardware/esp8266/2.5.0/**",
-                "C:/Program Files (x86)/Arduino/libraries/**",
-                "${workspaceFolder}/**"
+                "${workspaceFolder}/**",
+                "C:\\Users\\rickp\\OneDrive\\Documents\\Arduino\\libraries\\**",
+                "C:\\Users\\rickp\\AppData\\Local\\Arduino15\\packages\\esp8266\\tools\\**",
+                "C:\\Users\\rickp\\AppData\\Local\\Arduino15\\packages\\esp8266\\hardware\\esp8266\\2.5.0\\**",
+                "C:\\Program Files (x86)\\Arduino\\libraries\\**",
+                "C:\\Users\\rickp\\Documents\\Arduino\\libraries\\**"
             ],
             "defines": [
+                "USBCON",
+                "ESP8266"
             ],
             "intelliSenseMode": "gcc-x64",
-            "forcedInclude": []
+            "forcedInclude": [],
+            "cppStandard": "c++11"
         },
         {
             "name": "ESP32",
             "includePath": [
+                "${workspaceFolder}/**",
                 "C:/Users/Rick/AppData/Local/Arduino15/packages/esp32/tools/**",
                 "C:/Users/Rick/AppData/Local/Arduino15/packages/esp32/hardware/esp32/1.0.1/**",
-                "C:/Program Files (x86)/Arduino/libraries/**",
-                "${workspaceFolder}/**"
+                "C:/Program Files (x86)/Arduino/libraries/**"
             ],
-            "defines": [
-            ],
+            "defines": [],
             "intelliSenseMode": "gcc-x64",
             "forcedInclude": []
         }

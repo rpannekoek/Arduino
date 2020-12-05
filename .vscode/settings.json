@@ -1,5 +1,6 @@
 {
     "C_Cpp.default.intelliSenseMode": "gcc-x64",
     "C_Cpp.default.cppStandard": "c++11",
-    "arduino.enableUSBDetection": false
+    "arduino.enableUSBDetection": false,
+    "esp8266fs.dataFiles": "DsmrMonitor/data"
 }
