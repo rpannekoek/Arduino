@@ -24,6 +24,7 @@
 
 #define GAS_KWH_PER_M3 9.769
 #define MAX_PHASE_POWER (230 * 25)
+#define MAX_TOTAL_POWER (230 * 25 * 3)
 #define SECONDS_PER_HOUR 3600
 #define SECONDS_PER_DAY (3600 * 24)
 
@@ -33,6 +34,36 @@ struct PhaseData
     float current;
     float powerDelivered;
     float powerReturned;
+
+    void update(float newVoltage, float newCurrent, float newPowerDelivered, float newPowerReturned)
+    {
+        voltage = newVoltage;
+        current = newCurrent;
+        powerDelivered = newPowerDelivered * 1000; // Watts
+        powerReturned = newPowerReturned * 1000; // Watts
+    }
+};
+
+struct GasData
+{
+    String timestamp;
+    time_t time = 0;
+    float energy = 0; // kWh
+    float power = 0;
+
+    void update(String& newTimestamp, time_t newTime, float newEnergy)
+    {
+        timestamp = newTimestamp;
+        if (time > 0)
+        {
+            float deltaEnergy = (newEnergy - energy) * 1000; // Wh
+            float deltaTime = float(newTime - time) / SECONDS_PER_HOUR; // hours
+            power = deltaEnergy / deltaTime;
+            TRACE(F("Delta energy: %0.0f Wh in %f h. Power: %0.0f W\n"), deltaEnergy, deltaTime, power);
+        }
+        time = newTime;
+        energy = newEnergy;
+    }
 };
 
 struct EnergyLogEntry
@@ -40,14 +71,34 @@ struct EnergyLogEntry
     time_t time;
     uint16_t maxPowerDelivered = 0; // Watts
     uint16_t maxPowerReturned = 0; // Watts
+    uint16_t maxPowerGas = 0; // Watts
     float energyDelivered = 0.0; // Wh or kWh
     float energyReturned = 0.0; // Wh or kWh
-    float gasKWhStart;
-    float gasKWhEnd;
+    float energyGas = 0.0; // Wh or kWh
 
-    float getGasKwh()
+    void update(
+        float powerDelivered,
+        float powerReturned,
+        float powerGas,
+        float hoursSinceLastUpdate,
+        float scale
+        )
     {
-        return gasKWhEnd - gasKWhStart;
+        TRACE(F("EnergyLogEntry::update(%0.0f, %0.0f, %0.0f, %f, %0.0f)\n"), 
+            powerDelivered, powerReturned, powerGas, hoursSinceLastUpdate, scale);
+
+        energyDelivered += powerDelivered * hoursSinceLastUpdate / scale;
+        energyReturned += powerReturned * hoursSinceLastUpdate / scale;
+        energyGas += powerGas * hoursSinceLastUpdate / scale;
+
+        if (powerDelivered > maxPowerDelivered)
+            maxPowerDelivered = powerDelivered;
+
+        if (powerReturned > maxPowerReturned)
+            maxPowerReturned = powerReturned;
+
+        if (powerGas > maxPowerGas)
+            maxPowerGas = powerGas;
     }
 };
 
@@ -68,8 +119,8 @@ time_t currentTime = 0;
 time_t syncFTPTime = 0;
 time_t lastFTPSyncTime = 0;
 
-float currentGasKWh = 0;
 struct PhaseData phaseData[3];
+struct GasData gasData;
 EnergyLogEntry* energyPerHourLogEntryPtr = nullptr;
 EnergyLogEntry* energyPerDayLogEntryPtr = nullptr;
 int logEntriesToSync = 0;
@@ -96,8 +147,8 @@ void setup()
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, 0);
 
-    // ESMR 5.0: 115200 N81 (TODO: inverted?)
-    Serial.setTimeout(10000);
+    // ESMR 5.0: 115200 8N1
+    Serial.setTimeout(1000);
     Serial.begin(115200);
     Serial.println();
 
@@ -154,8 +205,6 @@ void initializeDay()
     energyPerDayLogEntryPtr = new EnergyLogEntry();
     // Set entry time to start of day (00:00)
     energyPerDayLogEntryPtr->time = currentTime - currentTime % SECONDS_PER_DAY;
-    energyPerDayLogEntryPtr->gasKWhStart = currentGasKWh;
-    energyPerDayLogEntryPtr->gasKWhEnd = currentGasKWh;
 
     EnergyPerDayLog.add(energyPerDayLogEntryPtr);
 }
@@ -168,8 +217,6 @@ void initializeHour()
     energyPerHourLogEntryPtr = new EnergyLogEntry();
     // Set entry time to start of hour (xy:00)
     energyPerHourLogEntryPtr->time = currentTime - currentTime % SECONDS_PER_HOUR;
-    energyPerDayLogEntryPtr->gasKWhStart = currentGasKWh;
-    energyPerDayLogEntryPtr->gasKWhEnd = currentGasKWh;
 
     EnergyPerHourLog.add(energyPerHourLogEntryPtr);
 }
@@ -179,24 +226,21 @@ void updateStatistics(P1Telegram& p1Telegram, float hoursSinceLastUpdate)
 {
     Tracer tracer(F("updateStatistics"));
 
-    updatePhaseData(
-        phaseData[0], 
+    phaseData[0].update(
         p1Telegram.getFloatValue(P1Telegram::PropertyId::VoltageL1),
         p1Telegram.getFloatValue(P1Telegram::PropertyId::CurrentL1),
         p1Telegram.getFloatValue(P1Telegram::PropertyId::PowerDeliveredL1),
         p1Telegram.getFloatValue(P1Telegram::PropertyId::PowerReturnedL1)
         );
 
-    updatePhaseData(
-        phaseData[1], 
+    phaseData[1].update(
         p1Telegram.getFloatValue(P1Telegram::PropertyId::VoltageL2),
         p1Telegram.getFloatValue(P1Telegram::PropertyId::CurrentL2),
         p1Telegram.getFloatValue(P1Telegram::PropertyId::PowerDeliveredL2),
         p1Telegram.getFloatValue(P1Telegram::PropertyId::PowerReturnedL2)
         );
 
-    updatePhaseData(
-        phaseData[2], 
+    phaseData[2].update(
         p1Telegram.getFloatValue(P1Telegram::PropertyId::VoltageL3),
         p1Telegram.getFloatValue(P1Telegram::PropertyId::CurrentL3),
         p1Telegram.getFloatValue(P1Telegram::PropertyId::PowerDeliveredL3),
@@ -204,50 +248,29 @@ void updateStatistics(P1Telegram& p1Telegram, float hoursSinceLastUpdate)
         );
 
     String gasTimestamp;
-    currentGasKWh = p1Telegram.getFloatValue(P1Telegram::PropertyId::Gas, &gasTimestamp) * GAS_KWH_PER_M3;
-    TRACE(F("Gas: %0.3f kWh. Timestamp: %s\n"), currentGasKWh, gasTimestamp.c_str());
+    float gasEnergy = p1Telegram.getFloatValue(P1Telegram::PropertyId::Gas, &gasTimestamp) * GAS_KWH_PER_M3;
+    TRACE(F("Gas: %0.3f kWh @ %s.\n"), gasEnergy, gasTimestamp.c_str());
+    if (gasTimestamp != gasData.timestamp)
+        gasData.update(gasTimestamp, currentTime, gasEnergy);
 
     float powerDelivered = phaseData[0].powerDelivered + phaseData[1].powerDelivered + phaseData[2].powerDelivered;
     float powerReturned = phaseData[0].powerReturned + phaseData[1].powerReturned + phaseData[2].powerReturned;    
-    updateEnergyLog(energyPerHourLogEntryPtr, powerDelivered, powerReturned, hoursSinceLastUpdate); // Wh  
-    updateEnergyLog(energyPerDayLogEntryPtr, powerDelivered, powerReturned, hoursSinceLastUpdate / 1000); // kWh  
-}
 
+    energyPerHourLogEntryPtr->update(
+        powerDelivered,
+        powerReturned,
+        gasData.power,
+        hoursSinceLastUpdate,
+        1 // Wh
+        );  
 
-void updatePhaseData(
-    PhaseData& phaseData,
-    float voltage,
-    float current,
-    float powerDelivered,
-    float powerReturned
-    )
-{
-    phaseData.voltage = voltage;
-    phaseData.current = current;
-    phaseData.powerDelivered = powerDelivered * 1000; // Watts
-    phaseData.powerReturned = powerReturned * 1000; // Watts
-}
-
-
-void updateEnergyLog(
-    EnergyLogEntry* energyLogEntryPtr,
-    float powerDelivered,
-    float powerReturned,
-    float hoursSinceLastUpdate
-    )
-{
-    TRACE(F("updateEnergyLog(%0.0f, %0.0f, %f)\n"), powerDelivered, powerReturned, hoursSinceLastUpdate);
-
-    energyLogEntryPtr->energyDelivered += powerDelivered * hoursSinceLastUpdate;
-    energyLogEntryPtr->energyReturned += powerReturned * hoursSinceLastUpdate;
-
-    if (powerDelivered > energyLogEntryPtr->maxPowerDelivered)
-        energyLogEntryPtr->maxPowerDelivered = powerDelivered;
-
-    if (powerReturned > energyLogEntryPtr->maxPowerReturned)
-        energyLogEntryPtr->maxPowerReturned = powerReturned;
-
-    energyLogEntryPtr->gasKWhEnd = currentGasKWh;
+    energyPerDayLogEntryPtr->update(
+        powerDelivered,
+        powerReturned,
+        gasData.power,
+        hoursSinceLastUpdate,
+        1000 // kWh
+        );  
 }
 
 
@@ -259,9 +282,12 @@ void testFillLogs()
     {
         initializeHour();
         energyPerHourLogEntryPtr->time += hour * SECONDS_PER_HOUR;
+        energyPerHourLogEntryPtr->maxPowerDelivered = hour * 10;
+        energyPerHourLogEntryPtr->maxPowerReturned = 240 - hour * 10;
+        energyPerHourLogEntryPtr->maxPowerGas = 2400 / (hour + 1);
         energyPerHourLogEntryPtr->energyDelivered = hour;
         energyPerHourLogEntryPtr->energyReturned = 24 - hour;
-        energyPerHourLogEntryPtr->gasKWhEnd += float(hour) / 1000;
+        energyPerHourLogEntryPtr->energyGas = hour;
     }
 
     for (int day = 0; day <= 7; day++)
@@ -270,7 +296,7 @@ void testFillLogs()
         energyPerDayLogEntryPtr->time += day * SECONDS_PER_DAY;
         energyPerDayLogEntryPtr->energyDelivered = day;
         energyPerDayLogEntryPtr->energyReturned = 7 - day;
-        energyPerDayLogEntryPtr->gasKWhEnd += day;
+        energyPerDayLogEntryPtr->energyGas = day;
     }
 
     logEntriesToSync = 24;
@@ -394,11 +420,14 @@ void writeCsvDataLines(Log<EnergyLogEntry>& energyLog, Print& destination)
     while (energyLogEntryPtr != nullptr)
     {
         destination.printf(
-            "\"%s\",%0.0f,%0.0f,%0.0f\r\n", 
+            "\"%s\",%d,%d,%d,%0.0f,%0.0f,%0.0f\r\n", 
             formatTime("%F %H:%M", energyLogEntryPtr->time),
+            energyLogEntryPtr->maxPowerDelivered,
+            energyLogEntryPtr->maxPowerReturned,
+            energyLogEntryPtr->maxPowerGas,
             energyLogEntryPtr->energyDelivered,
             energyLogEntryPtr->energyReturned,
-            energyLogEntryPtr->getGasKwh() * 1000
+            energyLogEntryPtr->energyGas
             );
         
         energyLogEntryPtr = energyLog.getNextEntry();
@@ -451,6 +480,12 @@ void writeHtmlBar(float value, String cssClass, bool fill)
 
         HttpResponse.printf(F("<span class=\"barFill\">%s</span>"), bar);
     }
+    else if (barLength == 0)
+    {
+        // Ensure that an empty bar has the same height
+        HttpResponse.print(F("<span class=\"emptyBar\">o</span>"));
+    }
+    
 
     HttpResponse.print("</div>");
 }
@@ -476,16 +511,12 @@ void writeHtmlPhaseData(String label,PhaseData& phaseData, float maxPower)
 
 void writeHtmlGasData(float maxPower)
 {
-    float gasPower = 0;
-    if (currentTime > energyPerHourLogEntryPtr->time)
-        gasPower = energyPerHourLogEntryPtr->getGasKwh() * 3600000 / (currentTime - energyPerHourLogEntryPtr->time);
-
     HttpResponse.printf(
         F("<tr><th>Gas</th><td></td><td></td><td>%0.0f W</td><td>"),
-        gasPower
+        gasData.power
         );
 
-    writeHtmlBar(gasPower / maxPower, F("gasBar"), true);
+    writeHtmlBar(gasData.power / maxPower, F("gasBar"), true);
 
     HttpResponse.println(F("</td></tr>"));
 }
@@ -498,27 +529,15 @@ void writeHtmlEnergyRow(
     float hours
     )
 {
-    float gasAveragePower = energyLogEntryPtr->getGasKwh() * 1000 / hours;
-    float gasEnergy = energyLogEntryPtr->getGasKwh();
-    const char* unitOfMeasure;
-    if (hours == 1) 
-    {
-        gasEnergy *= 1000;
-        unitOfMeasure = "Wh";
-    }
-    else
-    {
-        unitOfMeasure = "kWh";
-    }
-    
+    const char* unitOfMeasure = (hours == 1) ?  "Wh" : "kWh";    
 
     HttpResponse.printf(F("<tr><td>%s</td>"), formatTime(labelFormat, energyLogEntryPtr->time));
 
     HttpResponse.printf(
-        F("<td><div>+%d W max</div><div>-%d W max</div><div>%0.0f W avg</div></td>"),
+        F("<td><div>+%d W max</div><div>-%d W max</div><div>%d W max</div></td>"),
         energyLogEntryPtr->maxPowerDelivered,
         energyLogEntryPtr->maxPowerReturned,
-        gasAveragePower
+        energyLogEntryPtr->maxPowerGas
         );
 
     HttpResponse.printf(
@@ -527,13 +546,13 @@ void writeHtmlEnergyRow(
         unitOfMeasure,
         energyLogEntryPtr->energyReturned,
         unitOfMeasure,
-        gasEnergy,
+        energyLogEntryPtr->energyGas,
         unitOfMeasure
         );
 
     writeHtmlBar(energyLogEntryPtr->energyDelivered / maxValue, F("deliveredBar"), false);
     writeHtmlBar(energyLogEntryPtr->energyReturned / maxValue, F("returnedBar"), false);
-    writeHtmlBar(gasEnergy / maxValue, F("gasBar"), false);
+    writeHtmlBar(energyLogEntryPtr->energyGas / maxValue, F("gasBar"), false);
 
     HttpResponse.println(F("</td></tr>")); 
 }
@@ -550,6 +569,8 @@ void writeHtmlEnergyLogTable(String title, Log<EnergyLogEntry>& energyLog, const
             maxValue  = energyLogEntryPtr->energyDelivered;
         if (energyLogEntryPtr->energyReturned > maxValue)
             maxValue  = energyLogEntryPtr->energyReturned;
+        if (energyLogEntryPtr->energyGas > maxValue)
+            maxValue  = energyLogEntryPtr->energyGas;
         energyLogEntryPtr = energyLog.getNextEntry();
     }
 
@@ -589,8 +610,8 @@ void handleHttpRootRequest()
     writeHtmlPhaseData(F("L1"), phaseData[0], MAX_PHASE_POWER);
     writeHtmlPhaseData(F("L2"), phaseData[1], MAX_PHASE_POWER);
     writeHtmlPhaseData(F("L3"), phaseData[2], MAX_PHASE_POWER);
-    writeHtmlPhaseData(F("Total"), total, MAX_PHASE_POWER * 3);
-    writeHtmlGasData(MAX_PHASE_POWER);
+    writeHtmlPhaseData(F("Total"), total, MAX_TOTAL_POWER);
+    writeHtmlGasData(MAX_TOTAL_POWER);
     HttpResponse.println(F("</table></p>"));
 
     HttpResponse.println(F("<h1>Monitor status</h1>"));
@@ -598,6 +619,7 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><td>Free Heap</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.printf(F("<tr><td>Uptime</td><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
     HttpResponse.printf(F("<tr><td><a href=\"/telegram\">Last Telegram</a></td><td>%s</td></tr>\r\n"), formatTime("%H:%M:%S", lastTelegramReceivedTime));
+    HttpResponse.printf(F("<tr><td>Last Gas Time</td><td>%s</td></tr>\r\n"), formatTime("%H:%M:%S", gasData.time));
     HttpResponse.printf(F("<tr><td>FTP Sync Time</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastFTPSyncTime));
     HttpResponse.printf(F("<tr><td><a href=\"/sync\">FTP Sync Entries</a></td><td>%d</td></tr>\r\n"), logEntriesToSync);
     HttpResponse.println(F("</table>"));
@@ -628,7 +650,7 @@ void handleHttpViewTelegramRequest()
 
     for (int i = 0; i < LastP1Telegram._numDataLines; i++)
     {
-        HttpResponse.println(LastP1Telegram._dataLines[i]);
+        HttpResponse.print(LastP1Telegram._dataLines[i]);
     }
 
     HttpResponse.println(F("</pre>"));

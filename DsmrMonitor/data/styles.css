@@ -60,6 +60,13 @@ td,th
     color: gray;
 }
 
+.emptyBar
+{
+    background-color: lightgreen;
+    color: lightgreen;
+}
+
+
 pre.telegram
 {
     background-color: white;

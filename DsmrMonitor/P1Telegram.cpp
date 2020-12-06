@@ -25,20 +25,20 @@ P1Telegram::P1Telegram()
 
 static float _testGasKWh = 0;
 
-void P1Telegram::populateTestData(String testId)
+void P1Telegram::populateTestData()
 {
     char gasDataLine[64];
-    snprintf(gasDataLine, sizeof(gasDataLine), "0-1:24.2.1(201205123456W)(%0.3f*m3)", _testGasKWh);
+    snprintf(gasDataLine, sizeof(gasDataLine), "0-1:24.2.1(201205%dW)(%0.3f*m3)\r\n", millis(), _testGasKWh);
     _testGasKWh += 0.123;
 
-    _dataLines[0] = F("1-0:32.7.0(233.1*V)");
-    _dataLines[1] = F("1-0:31.7.0(025*A)");
-    _dataLines[2] = F("1-0:21.7.0(05.828*kW)");
-    _dataLines[3] = F("1-0:22.7.0(01.234*kW)");
-    _dataLines[4] = F("1-0:52.7.0(232.6*V)");
-    _dataLines[5] = F("1-0:51.7.0(015*A)");
-    _dataLines[6] = F("1-0:41.7.0(03.489*kW)");
-    _dataLines[7] = F("1-0:42.7.0(00.001*kW)");
+    _dataLines[0] = F("1-0:32.7.0(233.1*V)\r\n");
+    _dataLines[1] = F("1-0:31.7.0(025*A)\r\n");
+    _dataLines[2] = F("1-0:21.7.0(05.828*kW)\r\n");
+    _dataLines[3] = F("1-0:22.7.0(01.234*kW)\r\n");
+    _dataLines[4] = F("1-0:52.7.0(232.6*V)\r\n");
+    _dataLines[5] = F("1-0:51.7.0(015*A)\r\n");
+    _dataLines[6] = F("1-0:41.7.0(03.489*kW)\r\n");
+    _dataLines[7] = F("1-0:42.7.0(00.001*kW)\r\n");
     _dataLines[8] = gasDataLine;
     _numDataLines = 9;
 }
@@ -50,11 +50,11 @@ void P1Telegram::addProperty(PropertyId propertyId, String obisId, String label)
     _labels[propertyIndex] = label;
 }
 
-String P1Telegram::readDataLineFrom(Stream& stream)
+const char* P1Telegram::readDataLine(Stream& stream)
 {
-    String dataLine;
-    dataLine = stream.readStringUntil('\n');
-    TRACE(F("P1: %s\n"), dataLine.c_str());
+    static char dataLine[64];
+    size_t bytesRead = stream.readBytesUntil('\n', dataLine, sizeof(dataLine) - 1);
+    dataLine[bytesRead] = 0;
     return dataLine;
 }
 
@@ -65,38 +65,41 @@ String P1Telegram::readFrom(Stream& stream)
 
     _numDataLines = 0;
 
-    // Read telegram header
-    String dataLine = readDataLineFrom(stream);
-    if (dataLine.length() == 0 || dataLine[0] != '/')
+    // Find telegram header
+    const char* dataLine;
+    do
     {
-        return F("ERROR: No P1 telegram header received.");
-    }
-
-    if (dataLine.startsWith(F("/test")))
+        dataLine = readDataLine(stream);
+        if (dataLine[0] == 0)
+        {
+            return F("ERROR: No P1 header found.");
+        }
+    } while (dataLine[0] != '/');
+    
+    if (strncmp(dataLine, "/test", 5) == 0)
     {
-        populateTestData(dataLine);
-        return dataLine;
+        populateTestData();
+        return String(dataLine);
     }
-
-    // There should be an empty line after header
-    readDataLineFrom(stream);
 
     do
     {
-        dataLine = readDataLineFrom(stream);
-        if (dataLine.length() == 0)
+        dataLine = readDataLine(stream);
+        if (dataLine[0] == 0)
         {
-            return F("ERROR: No data received.");
+            return F("ERROR: P1 Timeout.");
         }
 
         if (dataLine[0] == '!')
         {
-            TRACE(F("Received %d data lines.\n"), _numDataLines);
             // TODO: verify CRC
             return String();
         }
 
-        _dataLines[_numDataLines++] = dataLine;
+        if (strlen(dataLine) > 2)
+        {
+            _dataLines[_numDataLines++] = dataLine;
+        }
 
     } while (_numDataLines < MAX_DATA_LINES);
     

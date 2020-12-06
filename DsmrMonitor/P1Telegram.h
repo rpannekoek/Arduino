@@ -1,7 +1,7 @@
 #include <Stream.h>
 #include <String.h>
 
-#define MAX_DATA_LINES 100
+#define MAX_DATA_LINES 32
 
 class P1Telegram
 {
@@ -42,6 +42,6 @@ class P1Telegram
         String _labels[static_cast<size_t>(PropertyId::_EndMarker)];
 
         void addProperty(PropertyId propertyId, String obisId, String label);
-        String readDataLineFrom(Stream& stream);
-        void populateTestData(String testId);
+        const char* readDataLine(Stream& stream);
+        void populateTestData();
 };
