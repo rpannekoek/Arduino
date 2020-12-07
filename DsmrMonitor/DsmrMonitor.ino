@@ -419,7 +419,8 @@ void writeCsvDataLines(Log<EnergyLogEntry>& energyLog, Print& destination)
 {
     // Do not include the last entry, which is still in progress.
     EnergyLogEntry* energyLogEntryPtr = energyLog.getEntryFromEnd(logEntriesToSync + 1);
-    while (energyLogEntryPtr != nullptr)
+    int i = logEntriesToSync;
+    while ((energyLogEntryPtr != nullptr) && (i-- > 0))
     {
         destination.printf(
             "\"%s\";%d;%d;%d;%0.0f;%0.0f;%0.0f\r\n", 

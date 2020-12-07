@@ -10,8 +10,13 @@ struct PersistentDataStruct : PersistentDataBase
     uint16_t maxPhaseCurrent; // A (per phase)
     float gasCalorificValue; // kWh per m3
 
-    PersistentDataStruct() 
-        : PersistentDataBase(sizeof(hostName) + sizeof(timeZoneOffset)) {}
+    PersistentDataStruct() : PersistentDataBase(
+        sizeof(hostName) + 
+        sizeof(timeZoneOffset) +
+        sizeof(phaseCount) +
+        sizeof(maxPhaseCurrent) +
+        sizeof(gasCalorificValue)
+        ) {}
 
     virtual void initialize()
     {
