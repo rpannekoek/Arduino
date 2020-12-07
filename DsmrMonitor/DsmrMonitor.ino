@@ -14,19 +14,18 @@
 #include "WiFiCredentials.private.h"
 
 #define REFRESH_INTERVAL 30
-#define MAX_EVENT_LOG_SIZE 100
+#define MAX_EVENT_LOG_SIZE 50
 #define MAX_BAR_LENGTH 60
-#define MAX_DATA_LINES 100
 #define ICON "/apple-touch-icon.png"
 #define NTP_SERVER "fritz.box"
 #define FTP_SERVER "fritz.box"
 #define FTP_RETRY_INTERVAL 3600
 
-#define GAS_KWH_PER_M3 9.769
-#define MAX_PHASE_POWER (230 * 25)
-#define MAX_TOTAL_POWER (230 * 25 * 3)
 #define SECONDS_PER_HOUR 3600
 #define SECONDS_PER_DAY (3600 * 24)
+
+#define LED_ON 0
+#define LED_OFF 1
 
 struct PhaseData
 {
@@ -110,7 +109,7 @@ Log<const char> EventLog(MAX_EVENT_LOG_SIZE);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
 P1Telegram LastP1Telegram;
-Log<EnergyLogEntry> EnergyPerHourLog(24);
+Log<EnergyLogEntry> EnergyPerHourLog(25); // 24 + 1 so we can FTP sync daily
 Log<EnergyLogEntry> EnergyPerDayLog(7);
 
 unsigned long lastTelegramReceivedMillis = 0;
@@ -145,7 +144,7 @@ void setup()
 {
     // Turn built-in LED on during boot
     pinMode(LED_BUILTIN, OUTPUT);
-    digitalWrite(LED_BUILTIN, 0);
+    digitalWrite(LED_BUILTIN, LED_ON);
 
     // ESMR 5.0: 115200 8N1
     Serial.setTimeout(1000);
@@ -171,7 +170,6 @@ void setup()
     WebServer.on("/events/clear", handleHttpEventLogClearRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
     WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
-    WebServer.serveStatic("/favicon.ico", SPIFFS, "/favicon.ico", cacheControl);
     WebServer.serveStatic(ICON, SPIFFS, ICON, cacheControl);
     WebServer.serveStatic("/styles.css", SPIFFS, "/styles.css", cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
@@ -184,8 +182,7 @@ void setup()
 
     memset(phaseData, 0, sizeof(phaseData));
 
-    // Turn built-in LED off
-    digitalWrite(LED_BUILTIN, 1);
+    digitalWrite(LED_BUILTIN, LED_OFF);
 }
 
 
@@ -233,22 +230,25 @@ void updateStatistics(P1Telegram& p1Telegram, float hoursSinceLastUpdate)
         p1Telegram.getFloatValue(P1Telegram::PropertyId::PowerReturnedL1)
         );
 
-    phaseData[1].update(
-        p1Telegram.getFloatValue(P1Telegram::PropertyId::VoltageL2),
-        p1Telegram.getFloatValue(P1Telegram::PropertyId::CurrentL2),
-        p1Telegram.getFloatValue(P1Telegram::PropertyId::PowerDeliveredL2),
-        p1Telegram.getFloatValue(P1Telegram::PropertyId::PowerReturnedL2)
-        );
+    if (PersistentData.phaseCount == 3)
+    {
+        phaseData[1].update(
+            p1Telegram.getFloatValue(P1Telegram::PropertyId::VoltageL2),
+            p1Telegram.getFloatValue(P1Telegram::PropertyId::CurrentL2),
+            p1Telegram.getFloatValue(P1Telegram::PropertyId::PowerDeliveredL2),
+            p1Telegram.getFloatValue(P1Telegram::PropertyId::PowerReturnedL2)
+            );
 
-    phaseData[2].update(
-        p1Telegram.getFloatValue(P1Telegram::PropertyId::VoltageL3),
-        p1Telegram.getFloatValue(P1Telegram::PropertyId::CurrentL3),
-        p1Telegram.getFloatValue(P1Telegram::PropertyId::PowerDeliveredL3),
-        p1Telegram.getFloatValue(P1Telegram::PropertyId::PowerReturnedL3)
-        );
+        phaseData[2].update(
+            p1Telegram.getFloatValue(P1Telegram::PropertyId::VoltageL3),
+            p1Telegram.getFloatValue(P1Telegram::PropertyId::CurrentL3),
+            p1Telegram.getFloatValue(P1Telegram::PropertyId::PowerDeliveredL3),
+            p1Telegram.getFloatValue(P1Telegram::PropertyId::PowerReturnedL3)
+            );
+    }
 
     String gasTimestamp;
-    float gasEnergy = p1Telegram.getFloatValue(P1Telegram::PropertyId::Gas, &gasTimestamp) * GAS_KWH_PER_M3;
+    float gasEnergy = p1Telegram.getFloatValue(P1Telegram::PropertyId::Gas, &gasTimestamp) * PersistentData.gasCalorificValue;
     TRACE(F("Gas: %0.3f kWh @ %s.\n"), gasEnergy, gasTimestamp.c_str());
     if (gasTimestamp != gasData.timestamp)
         gasData.update(gasTimestamp, currentTime, gasEnergy);
@@ -338,9 +338,10 @@ void onWiFiInitialized()
         lastTelegramReceivedMillis = currentMillis;
         lastTelegramReceivedTime = currentTime;
 
-        digitalWrite(LED_BUILTIN, 0);
+        // Turn on built-in LED while receiving P1 telegram
+        digitalWrite(LED_BUILTIN, LED_ON);
         String message = LastP1Telegram.readFrom(Serial); 
-        digitalWrite(LED_BUILTIN, 1);
+        digitalWrite(LED_BUILTIN, LED_OFF);
 
         if (message.length() > 0)
             logEvent(message);
@@ -416,11 +417,12 @@ bool trySyncFTP(Print* printTo)
 
 void writeCsvDataLines(Log<EnergyLogEntry>& energyLog, Print& destination)
 {
-    EnergyLogEntry* energyLogEntryPtr = energyLog.getEntryFromEnd(logEntriesToSync);
+    // Do not include the last entry, which is still in progress.
+    EnergyLogEntry* energyLogEntryPtr = energyLog.getEntryFromEnd(logEntriesToSync + 1);
     while (energyLogEntryPtr != nullptr)
     {
         destination.printf(
-            "\"%s\",%d,%d,%d,%0.0f,%0.0f,%0.0f\r\n", 
+            "\"%s\";%d;%d;%d;%0.0f;%0.0f;%0.0f\r\n", 
             formatTime("%F %H:%M", energyLogEntryPtr->time),
             energyLogEntryPtr->maxPowerDelivered,
             energyLogEntryPtr->maxPowerReturned,
@@ -497,7 +499,7 @@ void writeHtmlPhaseData(String label,PhaseData& phaseData, float maxPower)
     HttpResponse.printf(F("<td>%0.1f V</td>"), phaseData.voltage);
     HttpResponse.printf(F("<td>%0.0f A</td>"), phaseData.current);
     HttpResponse.printf(
-        F("<td><div>+%0.0f W</div><div>-%0.0f W</div></td><td>"),
+        F("<td><div>+%0.0f W</div><div>-%0.0f W</div></td><td class=\"graph\">"),
         phaseData.powerDelivered,
         phaseData.powerReturned
         );
@@ -512,7 +514,7 @@ void writeHtmlPhaseData(String label,PhaseData& phaseData, float maxPower)
 void writeHtmlGasData(float maxPower)
 {
     HttpResponse.printf(
-        F("<tr><th>Gas</th><td></td><td></td><td>%0.0f W</td><td>"),
+        F("<tr><th>Gas</th><td></td><td></td><td>%0.0f W</td><td class=\"graph\">"),
         gasData.power
         );
 
@@ -541,7 +543,7 @@ void writeHtmlEnergyRow(
         );
 
     HttpResponse.printf(
-        F("<td><div>+%0.2f %s</div><div>-%0.2f %s</div><div>%0.2f %s</div></td><td>"),
+        F("<td><div>+%0.2f %s</div><div>-%0.2f %s</div><div>%0.2f %s</div></td><td class=\"graph\">"),
         energyLogEntryPtr->energyDelivered,
         unitOfMeasure,
         energyLogEntryPtr->energyReturned,
@@ -598,24 +600,30 @@ void handleHttpRootRequest()
     Tracer tracer(F("handleHttpRootRequest"));
     
     PhaseData total;
-    total.voltage = (phaseData[0].voltage + phaseData[1].voltage + phaseData[2].voltage) / 3;
+    total.voltage = (phaseData[0].voltage + phaseData[1].voltage + phaseData[2].voltage) / PersistentData.phaseCount;
     total.current = phaseData[0].current + phaseData[1].current + phaseData[2].current;
     total.powerDelivered = phaseData[0].powerDelivered + phaseData[1].powerDelivered + phaseData[2].powerDelivered;
     total.powerReturned = phaseData[0].powerReturned + phaseData[1].powerReturned + phaseData[2].powerReturned;
+    
+    int maxPhasePower = 230 * PersistentData.maxPhaseCurrent; 
+    int maxTotalPower = maxPhasePower * PersistentData.phaseCount;
 
     writeHtmlHeader(F("Home"), false, false);
 
     HttpResponse.println(F("<h1>Current power</h1>"));
-    HttpResponse.println(F("<p><table class=\"powerBars\">"));
-    writeHtmlPhaseData(F("L1"), phaseData[0], MAX_PHASE_POWER);
-    writeHtmlPhaseData(F("L2"), phaseData[1], MAX_PHASE_POWER);
-    writeHtmlPhaseData(F("L3"), phaseData[2], MAX_PHASE_POWER);
-    writeHtmlPhaseData(F("Total"), total, MAX_TOTAL_POWER);
-    writeHtmlGasData(MAX_TOTAL_POWER);
+    HttpResponse.println(F("<p><table class=\"power\">"));
+    if (PersistentData.phaseCount == 3)
+    {
+        writeHtmlPhaseData(F("L1"), phaseData[0], maxPhasePower);
+        writeHtmlPhaseData(F("L2"), phaseData[1], maxPhasePower);
+        writeHtmlPhaseData(F("L3"), phaseData[2], maxPhasePower);
+    }
+    writeHtmlPhaseData(F("Total"), total, maxTotalPower);
+    writeHtmlGasData(maxTotalPower);
     HttpResponse.println(F("</table></p>"));
 
     HttpResponse.println(F("<h1>Monitor status</h1>"));
-    HttpResponse.println(F("<table class=\"borders\">"));
+    HttpResponse.println(F("<table class=\"status\">"));
     HttpResponse.printf(F("<tr><td>Free Heap</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.printf(F("<tr><td>Uptime</td><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
     HttpResponse.printf(F("<tr><td><a href=\"/telegram\">Last Telegram</a></td><td>%s</td></tr>\r\n"), formatTime("%H:%M:%S", lastTelegramReceivedTime));
@@ -727,12 +735,30 @@ void addTextBoxRow(StringBuilder& output, String name, String value, String labe
 }
 
 
+void addCheckboxRow(StringBuilder& output, String name, bool value, String label)
+{
+    const char* checked = value ? "checked" : "";
+
+    output.printf(
+        F("<tr><td><label for=\"%s\">%s</label></td><td><input type=\"checkbox\" name=\"%s\" value=\"true\" %s></td></tr>\r\n"), 
+        name.c_str(),
+        label.c_str(),
+        name.c_str(),
+        checked
+        );
+}
+
+
 void handleHttpConfigFormRequest()
 {
     Tracer tracer(F("handleHttpConfigFormRequest"));
 
     char tzOffsetString[4];
-    sprintf(tzOffsetString, "%d", PersistentData.timeZoneOffset);
+    char maxCurrentString[4];
+    char gasCalorificString[8];
+    snprintf(tzOffsetString, sizeof(tzOffsetString), "%d", PersistentData.timeZoneOffset);
+    snprintf(maxCurrentString, sizeof(maxCurrentString), "%d", PersistentData.maxPhaseCurrent);
+    snprintf(gasCalorificString, sizeof(gasCalorificString), "%0.3f", PersistentData.gasCalorificValue);
 
     writeHtmlHeader(F("Configuration"), true, true);
 
@@ -740,6 +766,9 @@ void handleHttpConfigFormRequest()
     HttpResponse.println(F("<table>"));
     addTextBoxRow(HttpResponse, F("hostName"), PersistentData.hostName, F("Host name"));
     addTextBoxRow(HttpResponse, F("tzOffset"), tzOffsetString, F("Timezone offset"));
+    addTextBoxRow(HttpResponse, F("maxCurrent"), maxCurrentString, F("Max current"));
+    addCheckboxRow(HttpResponse, F("isThreePhase"), (PersistentData.phaseCount == 3), F("Three phases"));
+    addTextBoxRow(HttpResponse, F("gasCalorific"), gasCalorificString, F("Gas kWh per m3"));
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
     HttpResponse.println(F("</form>"));
@@ -755,10 +784,16 @@ void handleHttpConfigFormPost()
     Tracer tracer(F("handleHttpConfigFormPost"));
 
     String tzOffsetString = WebServer.arg("tzOffset");
+    String maxCurrentString = WebServer.arg("maxCurrent");
+    String isThreePhaseString = WebServer.arg("isThreePhase");
+    String gasCalorificString = WebServer.arg("gasCalorific");
 
     strcpy(PersistentData.hostName, WebServer.arg("hostName").c_str()); 
 
-    PersistentData.timeZoneOffset = static_cast<int8_t>(atoi(tzOffsetString.c_str()));
+    PersistentData.timeZoneOffset = tzOffsetString.toInt();
+    PersistentData.maxPhaseCurrent = maxCurrentString.toInt();
+    PersistentData.phaseCount = (isThreePhaseString == "true") ? 3 : 1;
+    PersistentData.gasCalorificValue = gasCalorificString.toFloat();
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();

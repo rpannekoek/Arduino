@@ -24,16 +24,12 @@ td,th
 {
 	padding-left: 0.5em;
 	padding-right: 0.5em;
-}
-
-.borders
-{
     border: thin solid gray;
 }
 
-.borders td
+td.graph
 {
-    border: thin solid gray;
+    border: none;
 }
 
 .deliveredBar
