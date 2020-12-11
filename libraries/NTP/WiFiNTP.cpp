@@ -7,9 +7,17 @@
 
 
 // Constructor
-WiFiNTP::WiFiNTP(const char* timeServerPool, int serverSyncInterval)
+WiFiNTP::WiFiNTP(int serverSyncInterval)
 {
-  _timeServerPool = timeServerPool;
+  _serverSyncInterval = serverSyncInterval;
+  _lastServerSync = 0;
+  _lastServerTry = 0;
+}
+
+// Constructor
+WiFiNTP::WiFiNTP(const char* ntpServer, int serverSyncInterval)
+{
+  NTPServer = ntpServer;
   _serverSyncInterval = serverSyncInterval;
   _lastServerSync = 0;
   _lastServerTry = 0;
@@ -20,8 +28,14 @@ bool WiFiNTP::beginGetServerTime()
 {
     Tracer tracer(F("WiFiNTP::beginGetServerTime"));
 
-    TRACE(F("Resolving NTP server name '%s' ...\n"), _timeServerPool);
-    if (!WiFi.hostByName(_timeServerPool, _timeServerIP))
+    if (NTPServer == nullptr)
+    {
+        TRACE(F("Time server pool not set.\n"));
+        return false;
+    }
+
+    TRACE(F("Resolving NTP server name '%s' ...\n"), NTPServer);
+    if (!WiFi.hostByName(NTPServer, _timeServerIP))
     {
         TRACE(F("Unable to resolve DNS name.\n"));
         return false;

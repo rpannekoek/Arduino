@@ -9,8 +9,11 @@ class WiFiNTP
   public:
     int8_t timeZoneOffset = 0;
 
-    // Constructor
-    WiFiNTP(const char* timeServerPool, int serverSyncInterval);
+    // Constructors
+    WiFiNTP(int serverSyncInterval);
+    WiFiNTP(const char* ntpServer, int serverSyncInterval);
+
+    const char* NTPServer = nullptr;
 
     bool beginGetServerTime();
     time_t endGetServerTime();
@@ -22,7 +25,7 @@ class WiFiNTP
     static const int NTP_PACKET_SIZE = 48;
 
     WiFiUDP _udp;
-    const char* _timeServerPool;
+    const char* _ntpServer = nullptr;
     IPAddress _timeServerIP;
     uint8_t _packetBuffer[NTP_PACKET_SIZE];
     long  _serverSyncInterval;

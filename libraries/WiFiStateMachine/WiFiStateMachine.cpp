@@ -33,6 +33,8 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName)
     _password = password;
     _hostName = hostName;
     _retryTimeout = 5000; // Start exponential backoff with 5 seconds
+    _isTimeServerAvailable = false;
+    _resetTime = 0;
 
     String event = "Booted from ";
     event += getResetReason();
@@ -53,7 +55,7 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName)
 
 time_t WiFiStateMachine::getCurrentTime()
 {
-    if (_state == WiFiState::Initialized)
+    if (_isTimeServerAvailable)
         return _timeServer.getCurrentTime();
     else
         return millis() / 1000;
@@ -68,7 +70,7 @@ void WiFiStateMachine::logEvent(String msg)
 
     char* event = new char[timestamp_size + msg.length()];
 
-    if (_state == WiFiState::Initialized)
+    if (_isTimeServerAvailable)
     {
         time_t currentTime = _timeServer.getCurrentTime();
         strftime(event, timestamp_size, "%F %H:%M:%S : ", gmtime(&currentTime));
@@ -91,6 +93,49 @@ void WiFiStateMachine::setState(WiFiState newState)
     TRACE(F("WiFi state: %u @ %u ms\n"), _state, _stateChangeTime);
 }
 
+
+void WiFiStateMachine::initializeAP()
+{
+    TRACE(F("Starting WiFi network '%s' ...\n"), AP_SSID);
+
+    WiFi.persistent(false);
+    if (!WiFi.mode(WIFI_AP))
+        TRACE(F("Unable to set WiFi mode\n"));
+
+    if (!WiFi.softAP(AP_SSID))
+        TRACE(F("Unable to start Access Point\n"));
+
+    String event = F("Started Access Point mode. IP address: ");
+    event += WiFi.softAPIP().toString();
+    logEvent(event);
+
+    if (!MDNS.begin(_hostName))
+        TRACE(F("Failed to start mDNS\n"));
+}
+
+
+void WiFiStateMachine::initializeSTA()
+{
+    TRACE(F("Connecting to WiFi network '%s' ...\n"), _ssid.c_str());
+    WiFi.persistent(false);
+    if (!WiFi.setAutoReconnect(true))
+        TRACE(F("Unable to set auto reconnect\n"));
+    if (!WiFi.mode(WIFI_STA))
+        TRACE(F("Unable to set WiFi mode\n"));
+    if (!WiFi.disconnect())
+        TRACE(F("WiFi disconnect failed\n"));
+#ifdef ESP8266
+    if (!WiFi.hostname(_hostName))
+        TRACE(F("Unable to set host name\n"));
+#else
+    TRACE(F("Host name: %s\n"), _hostName.c_str());
+    if (!WiFi.setHostname(_hostName.c_str()))
+        TRACE(F("Unable to set host name\n"));
+#endif
+    WiFi.begin(_ssid.c_str(), _password.c_str());
+}
+
+
 void WiFiStateMachine::run()
 {
     uint32_t currentMillis = millis();
@@ -104,24 +149,30 @@ void WiFiStateMachine::run()
     switch (_state)
     {
         case WiFiState::Initializing:
-            TRACE(F("Connecting to WiFi network '%s' ...\n"), _ssid.c_str());
-            WiFi.persistent(false);
-            if (!WiFi.setAutoReconnect(true))
-                TRACE(F("Unable to set auto reconnect\n"));
-            if (!WiFi.mode(WIFI_STA))
-                TRACE(F("Unable to set WiFi mode\n"));
-            if (!WiFi.disconnect())
-                TRACE(F("WiFi disconnect failed\n"));
-#ifdef ESP8266
-            if (!WiFi.hostname(_hostName))
-                TRACE(F("Unable to set host name\n"));
-#else
-            TRACE(F("Host name: %s\n"), _hostName.c_str());
-            if (!WiFi.setHostname(_hostName.c_str()))
-                TRACE(F("Unable to set host name\n"));
-#endif
-            WiFi.begin(_ssid.c_str(), _password.c_str());
-            setState(WiFiState::Connecting);
+            if (_ssid.length() == 0)
+            {
+                initializeAP();
+                _isInAccessPointMode = true;
+                setState(WiFiState::AwaitingConnection);
+            }
+            else
+            {
+                initializeSTA();
+                _isInAccessPointMode = false;
+                setState(WiFiState::Connecting);
+            }
+            break;
+
+        case WiFiState::AwaitingConnection:
+            if (WiFi.softAPgetStationNum() > 0)
+            {
+                _webServer.begin();
+                ArduinoOTA.begin();
+                // Skip actual time server sync (no internet access), but still trigger TimeServerSynced event.
+                setState(WiFiState::TimeServerSynced);
+            }
+            else
+                blinkLED(100, 400);
             break;
 
         case WiFiState::Connecting:
@@ -138,18 +189,19 @@ void WiFiStateMachine::run()
             if (currentMillis >= (_stateChangeTime + _retryTimeout))
             {
                 _retryTimeout *= 2; // Exponential backoff
-                if (_retryTimeout > MAX_RETRY_TIMEOUT)
-                    _retryTimeout = MAX_RETRY_TIMEOUT;
+                if (_retryTimeout > MAX_RETRY_TIMEOUT) _retryTimeout = MAX_RETRY_TIMEOUT;
                 setState(WiFiState::Initializing);
             }
             else
-                blinkLED(2);
+                blinkLED(500, 500);
             break;
 
         case WiFiState::Connected:
             event = F("WiFi connected. IP address: ");
             event += WiFi.localIP().toString();
             logEvent(event);
+            if (!MDNS.begin(_hostName))
+                TRACE(F("Failed to start mDNS\n"));
             _webServer.begin();
             ArduinoOTA.begin();
             setState(WiFiState::TimeServerInitializing);
@@ -174,7 +226,10 @@ void WiFiStateMachine::run()
                 }
             }
             else
+            {
+                _isTimeServerAvailable = true;
                 setState(WiFiState::TimeServerSynced);
+            }
             break;
         
         case WiFiState::TimeServerSyncFailed:
@@ -182,11 +237,16 @@ void WiFiStateMachine::run()
             if (currentMillis >= (_stateChangeTime + 15000))
                 setState(WiFiState::TimeServerInitializing);
             else
-                blinkLED(3);
+                blinkLED(250, 250);
             break;
 
         case WiFiState::TimeServerSynced:
-            logEvent(F("Time synchronized"));
+            if (_isTimeServerAvailable)
+            {
+                String event = F("Time synchronized using NTP server: ");
+                event += _timeServer.NTPServer; 
+                logEvent(event);
+            }
             setState(WiFiState::Initialized);
             break;
 
@@ -200,16 +260,26 @@ void WiFiStateMachine::run()
         _webServer.handleClient();
         ArduinoOTA.handle();
     }
+
+    if ((_resetTime > 0) && (currentMillis >= _resetTime))
+    {
+        TRACE(F("Resetting...\n"));
+        ESP.reset();
+    }
 }
 
 
-void WiFiStateMachine::blinkLED(int freq)
+void WiFiStateMachine::reset()
 {
-    int interval = 500 / freq;
+    _resetTime = millis() + 1000;
+}
+
+void WiFiStateMachine::blinkLED(int tOn, int tOff)
+{
     digitalWrite(LED_BUILTIN, 0);
-    delay(interval);
+    delay(tOn);
     digitalWrite(LED_BUILTIN, 1);
-    delay(interval);
+    delay(tOff);
 }
 
 
