@@ -7,7 +7,7 @@ class HtmlWriter
 {
     public:
         // Constructor
-        HtmlWriter(StringBuilder& output, const char* icon, size_t maxBarLength);
+        HtmlWriter(StringBuilder& output, const char* icon, const char* css, size_t maxBarLength);
 
         // Destructor
         ~HtmlWriter();
@@ -24,6 +24,7 @@ class HtmlWriter
     private:
         StringBuilder& _output;
         const char* _icon;
+        const char* _css;
         const char* _titlePrefix;
         char* _bar;
         size_t _maxBarLength;

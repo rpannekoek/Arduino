@@ -2,8 +2,8 @@
 #include <math.h>
 
 // Constructor
-HtmlWriter::HtmlWriter(StringBuilder& output, const char* icon, size_t maxBarLength)
-    : _output(output), _icon(icon), _maxBarLength(maxBarLength)
+HtmlWriter::HtmlWriter(StringBuilder& output, const char* icon, const char* css, size_t maxBarLength)
+    : _output(output), _icon(icon), _css(css), _maxBarLength(maxBarLength)
 {
     _titlePrefix = "ESP";
     _bar = new char[maxBarLength + 1]; 
@@ -13,7 +13,7 @@ HtmlWriter::HtmlWriter(StringBuilder& output, const char* icon, size_t maxBarLen
 // Destructor
 HtmlWriter::~HtmlWriter()
 {
-    delete _bar;
+    delete[] _bar;
 }
 
 
@@ -30,7 +30,7 @@ void HtmlWriter::writeHeader(String title, bool includeHomePageLink, bool includ
     
     _output.println(F("<head>"));
     _output.printf(F("<title>%s - %s</title>\r\n"), _titlePrefix, title.c_str());
-    _output.println(F("<link rel=\"stylesheet\" type=\"text/css\" href=\"/styles.css\">"));
+    _output.printf(F("<link rel=\"stylesheet\" type=\"text/css\" href=\"%s\">\r\n"), _css);
     _output.printf(F("<link rel=\"icon\" sizes=\"128x128\" href=\"%s\">\r\n<link rel=\"apple-touch-icon-precomposed\" sizes=\"128x128\" href=\"%s\">\r\n"), _icon, _icon);
     if (refreshInterval > 0)
         _output.printf(F("<meta http-equiv=\"refresh\" content=\"%d\">\r\n") , refreshInterval);

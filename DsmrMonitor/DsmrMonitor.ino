@@ -10,22 +10,25 @@
 #include <Log.h>
 #include <WiFiStateMachine.h>
 #include "PersistentData.h"
+#include "PhaseData.h"
+#include "GasData.h"
+#include "EnergyLogEntry.h"
 #include "P1Telegram.h"
 
-#define REFRESH_INTERVAL 30
-#define MAX_EVENT_LOG_SIZE 50
-#define MAX_BAR_LENGTH 60
 #define ICON "/apple-touch-icon.png"
-#define FTP_RETRY_INTERVAL 3600
+#define CSS "/styles.css"
 
+#define REFRESH_INTERVAL 30
+#define FTP_RETRY_INTERVAL 3600
 #define SECONDS_PER_HOUR 3600
 #define SECONDS_PER_DAY (3600 * 24)
 
 #define LED_ON 0
 #define LED_OFF 1
+#define P1_ENABLE 5
 
 #define CFG_WIFI_SSID F("WifiSSID")
-#define CFG_WIFI_KEY F("wifiKey")
+#define CFG_WIFI_KEY F("WifiKey")
 #define CFG_HOST_NAME F("HostName")
 #define CFG_NTP_SERVER F("NTPServer")
 #define CFG_FTP_SERVER F("FTPServer")
@@ -36,86 +39,12 @@
 #define CFG_IS_3PHASE F("Is3Phase")
 #define CFG_GAS_CALORIFIC F("GasCalorific")
 
-struct PhaseData
-{
-    float voltage;
-    float current;
-    float powerDelivered;
-    float powerReturned;
-
-    void update(float newVoltage, float newCurrent, float newPowerDelivered, float newPowerReturned)
-    {
-        voltage = newVoltage;
-        current = newCurrent;
-        powerDelivered = newPowerDelivered * 1000; // Watts
-        powerReturned = newPowerReturned * 1000; // Watts
-    }
-};
-
-struct GasData
-{
-    String timestamp;
-    time_t time = 0;
-    float energy = 0; // kWh
-    float power = 0;
-
-    void update(String& newTimestamp, time_t newTime, float newEnergy)
-    {
-        timestamp = newTimestamp;
-        if (time > 0)
-        {
-            float deltaEnergy = (newEnergy - energy) * 1000; // Wh
-            float deltaTime = float(newTime - time) / SECONDS_PER_HOUR; // hours
-            power = deltaEnergy / deltaTime;
-            TRACE(F("Delta energy: %0.0f Wh in %f h. Power: %0.0f W\n"), deltaEnergy, deltaTime, power);
-        }
-        time = newTime;
-        energy = newEnergy;
-    }
-};
-
-struct EnergyLogEntry
-{
-    time_t time;
-    uint16_t maxPowerDelivered = 0; // Watts
-    uint16_t maxPowerReturned = 0; // Watts
-    uint16_t maxPowerGas = 0; // Watts
-    float energyDelivered = 0.0; // Wh or kWh
-    float energyReturned = 0.0; // Wh or kWh
-    float energyGas = 0.0; // Wh or kWh
-
-    void update(
-        float powerDelivered,
-        float powerReturned,
-        float powerGas,
-        float hoursSinceLastUpdate,
-        float scale
-        )
-    {
-        TRACE(F("EnergyLogEntry::update(%0.0f, %0.0f, %0.0f, %f, %0.0f)\n"), 
-            powerDelivered, powerReturned, powerGas, hoursSinceLastUpdate, scale);
-
-        energyDelivered += powerDelivered * hoursSinceLastUpdate / scale;
-        energyReturned += powerReturned * hoursSinceLastUpdate / scale;
-        energyGas += powerGas * hoursSinceLastUpdate / scale;
-
-        if (powerDelivered > maxPowerDelivered)
-            maxPowerDelivered = powerDelivered;
-
-        if (powerReturned > maxPowerReturned)
-            maxPowerReturned = powerReturned;
-
-        if (powerGas > maxPowerGas)
-            maxPowerGas = powerGas;
-    }
-};
-
 WebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer(SECONDS_PER_DAY); // Synchronize daily
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
-HtmlWriter Html(HttpResponse, ICON, MAX_BAR_LENGTH);
-Log<const char> EventLog(MAX_EVENT_LOG_SIZE);
+HtmlWriter Html(HttpResponse, ICON, CSS, 60); // Max bar length: 60
+Log<const char> EventLog(50); // Max 50 log entries
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
 P1Telegram LastP1Telegram;
@@ -157,6 +86,10 @@ void setup()
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, LED_ON);
 
+    // Disable P1 interface
+    digitalWrite(P1_ENABLE, 0);
+    pinMode(P1_ENABLE, OUTPUT);
+
     // ESMR 5.0: 115200 8N1
     Serial.setTimeout(1000);
     Serial.begin(115200);
@@ -186,7 +119,7 @@ void setup()
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
     WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
     WebServer.serveStatic(ICON, SPIFFS, ICON, cacheControl);
-    WebServer.serveStatic("/styles.css", SPIFFS, "/styles.css", cacheControl);
+    WebServer.serveStatic(CSS, SPIFFS, CSS, cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
 
     WiFiSM.on(WiFiState::TimeServerSynced, onTimeServerSynced);
@@ -324,6 +257,9 @@ void onTimeServerSynced()
 
     initializeDay();
     initializeHour();
+
+    // Enable P1 interface
+    digitalWrite(P1_ENABLE, 1);
 }
 
 
@@ -533,12 +469,9 @@ void writeHtmlEnergyLogTable(String title, Log<EnergyLogEntry>& energyLog, const
     EnergyLogEntry* energyLogEntryPtr = energyLog.getFirstEntry();
     while (energyLogEntryPtr != nullptr)
     {
-        if (energyLogEntryPtr->energyDelivered > maxValue)
-            maxValue  = energyLogEntryPtr->energyDelivered;
-        if (energyLogEntryPtr->energyReturned > maxValue)
-            maxValue  = energyLogEntryPtr->energyReturned;
-        if (energyLogEntryPtr->energyGas > maxValue)
-            maxValue  = energyLogEntryPtr->energyGas;
+        if (energyLogEntryPtr->energyDelivered > maxValue) maxValue  = energyLogEntryPtr->energyDelivered;
+        if (energyLogEntryPtr->energyReturned > maxValue) maxValue  = energyLogEntryPtr->energyReturned;
+        if (energyLogEntryPtr->energyGas > maxValue) maxValue  = energyLogEntryPtr->energyGas;
         energyLogEntryPtr = energyLog.getNextEntry();
     }
 
@@ -761,8 +694,6 @@ void handleHttpConfigFormPost()
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();
-
-    TimeServer.timeZoneOffset = PersistentData.timeZoneOffset; 
 
     handleHttpConfigFormRequest();
 
