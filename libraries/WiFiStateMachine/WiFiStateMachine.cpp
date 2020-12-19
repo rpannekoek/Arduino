@@ -172,7 +172,7 @@ void WiFiStateMachine::run()
                 setState(WiFiState::TimeServerSynced);
             }
             else
-                blinkLED(100, 400);
+                blinkLED(400, 100);
             break;
 
         case WiFiState::Connecting:

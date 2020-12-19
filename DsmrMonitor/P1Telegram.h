@@ -1,7 +1,7 @@
 #include <Stream.h>
 #include <String.h>
 
-#define MAX_DATA_LINES 32
+#define MAX_DATA_LINES 50
 
 class P1Telegram
 {
