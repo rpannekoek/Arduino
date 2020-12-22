@@ -90,8 +90,9 @@ void setup()
     digitalWrite(P1_ENABLE, 0);
     pinMode(P1_ENABLE, OUTPUT);
 
-    // ESMR 5.0: 115200 8N1
-    Serial.setTimeout(1000);
+    // ESMR 5.0: 115200 8N1, telegram each second (approx. 900 bytes)
+    Serial.setTimeout(1500); // Timeout allows for skipping one telegram
+    Serial.setRxBufferSize(1024); // Ensure RX buffer fits full telegram
     Serial.begin(115200);
     Serial.println();
 
@@ -257,6 +258,12 @@ void onTimeServerSynced()
 
     initializeDay();
     initializeHour();
+
+    // Flush any garbage from Serial input
+    while (Serial.available())
+    {
+        Serial.read();
+    }
 
     // Enable P1 interface
     digitalWrite(P1_ENABLE, 1);
