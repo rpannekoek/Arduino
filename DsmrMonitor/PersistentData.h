@@ -14,6 +14,7 @@ struct PersistentDataStruct : PersistentDataBase
     int16_t timeZoneOffset; // hours
     uint16_t phaseCount; // 1 or 3
     uint16_t maxPhaseCurrent; // A (per phase)
+    uint16_t powerLogDelta;
     float gasCalorificValue; // kWh per m3
 
     PersistentDataStruct() : PersistentDataBase(
@@ -27,6 +28,7 @@ struct PersistentDataStruct : PersistentDataBase
         sizeof(timeZoneOffset) +
         sizeof(phaseCount) +
         sizeof(maxPhaseCurrent) +
+        sizeof(powerLogDelta) +
         sizeof(gasCalorificValue)
         ) {}
 
@@ -43,6 +45,7 @@ struct PersistentDataStruct : PersistentDataBase
         phaseCount = 1;
         maxPhaseCurrent = 35;
         gasCalorificValue = DEFAULT_GAS_KWH_PER_M3;
+        powerLogDelta = 10;
     }
 
     virtual void validate()
@@ -62,6 +65,7 @@ struct PersistentDataStruct : PersistentDataBase
         if (maxPhaseCurrent < 25) maxPhaseCurrent = 25;
         if (maxPhaseCurrent > 75) maxPhaseCurrent = 75;
         if ((gasCalorificValue < 1) || (gasCalorificValue > 15)) gasCalorificValue = DEFAULT_GAS_KWH_PER_M3; 
+        if (powerLogDelta > 1000) powerLogDelta = 1000;
     }
 };
 

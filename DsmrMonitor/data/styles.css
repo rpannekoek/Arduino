@@ -63,7 +63,7 @@ td.graph
 }
 
 
-pre.telegram
+.telegram, .powerlog, .ftplog
 {
     background-color: white;
     padding: 0.5em;

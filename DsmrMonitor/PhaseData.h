@@ -2,8 +2,8 @@ struct PhaseData
 {
     float voltage;
     float current;
-    float powerDelivered;
-    float powerReturned;
+    float powerDelivered = 0;
+    float powerReturned = 0;
 
     void update(float newVoltage, float newCurrent, float newPowerDelivered, float newPowerReturned)
     {
