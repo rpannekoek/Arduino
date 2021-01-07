@@ -125,6 +125,9 @@ void WiFiStateMachine::initializeSTA()
     if (!WiFi.hostname(_hostName))
         TRACE(F("Unable to set host name\n"));
 #else
+     // See https://github.com/espressif/arduino-esp32/issues/2537
+    if (!WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE))
+        TRACE(F("WiFi.config failed\n"));
     if (!WiFi.setHostname(_hostName.c_str()))
         TRACE(F("Unable to set host name ('%s')\n"), _hostName.c_str());
 #endif
