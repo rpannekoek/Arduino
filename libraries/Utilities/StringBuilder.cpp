@@ -1,19 +1,36 @@
 #include <Arduino.h>
 #include <StringBuilder.h>
 
+#ifdef ESP32
+    // Small String Optimization is implemented in recent versions of the SDK
+    #define SSO true
+#endif
+
+#ifdef SSO
+    #define CAPACITY capacity()
+#else
+    #define CAPACITY capacity
+#endif
+
 // Constructor
 StringBuilder::StringBuilder(size_t size)
+    : String((const char*)nullptr) // Minimal String init
 {
+#ifdef SSO
+    setBuffer((char*) malloc(size));
+    setCapacity(size - 1);
+#else
     buffer = (char*) malloc(size);
     capacity = size - 1;
-    _space = capacity;
+#endif
+    _space = CAPACITY;
 }
 
 
 void StringBuilder::clear()
 {
-    len = 0;
-    _space = capacity;
+    set_length(0);
+    _space = CAPACITY;
 }
 
 
@@ -24,7 +41,7 @@ void StringBuilder::printf(const __FlashStringHelper* fformat, ...)
 
     va_list args;
     va_start(args, fformat);
-    size_t additional = vsnprintf_P(buffer + len, _space, (PGM_P) fformat, args);
+    size_t additional = vsnprintf_P(end(), _space, (PGM_P) fformat, args);
     va_end(args);
 
     update_length(additional);
@@ -45,8 +62,8 @@ size_t StringBuilder::write(const uint8_t* dataPtr, size_t size)
     if (size >= _space)
         size = (_space - 1);
 
-    memcpy(buffer + len, dataPtr, size);
-    buffer[len + size] = 0; 
+    memcpy(end(), dataPtr, size);
+    end()[size] = 0; 
 
     update_length(size);
 
@@ -54,16 +71,18 @@ size_t StringBuilder::write(const uint8_t* dataPtr, size_t size)
 }
 
 
+void StringBuilder::set_length(size_t value)
+{
+#ifdef SSO
+    setLen(value);
+#else
+    len = value;
+#endif
+}
+
+
 void StringBuilder::update_length(size_t additional)
 {
-    if (additional <= _space)
-    {
-        len += additional;
-        _space -= additional;
-    }
-    else
-    {
-        len += _space;
-        _space = 0;
-    }
+    unsigned int newLength = length() + additional;  
+    set_length(std::min(newLength, CAPACITY)); 
 }

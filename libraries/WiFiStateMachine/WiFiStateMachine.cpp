@@ -108,9 +108,6 @@ void WiFiStateMachine::initializeAP()
     String event = F("Started Access Point mode. IP address: ");
     event += WiFi.softAPIP().toString();
     logEvent(event);
-
-    if (!MDNS.begin(_hostName))
-        TRACE(F("Failed to start mDNS\n"));
 }
 
 
@@ -128,10 +125,10 @@ void WiFiStateMachine::initializeSTA()
     if (!WiFi.hostname(_hostName))
         TRACE(F("Unable to set host name\n"));
 #else
-    TRACE(F("Host name: %s\n"), _hostName.c_str());
     if (!WiFi.setHostname(_hostName.c_str()))
-        TRACE(F("Unable to set host name\n"));
+        TRACE(F("Unable to set host name ('%s')\n"), _hostName.c_str());
 #endif
+    ArduinoOTA.setHostname(_hostName.c_str());
     WiFi.begin(_ssid.c_str(), _password.c_str());
 }
 
@@ -167,7 +164,6 @@ void WiFiStateMachine::run()
             if (WiFi.softAPgetStationNum() > 0)
             {
                 _webServer.begin();
-                ArduinoOTA.begin();
                 // Skip actual time server sync (no internet access), but still trigger TimeServerSynced event.
                 setState(WiFiState::TimeServerSynced);
             }
@@ -200,10 +196,8 @@ void WiFiStateMachine::run()
             event = F("WiFi connected. IP address: ");
             event += WiFi.localIP().toString();
             logEvent(event);
-            if (!MDNS.begin(_hostName))
-                TRACE(F("Failed to start mDNS\n"));
-            _webServer.begin();
             ArduinoOTA.begin();
+            _webServer.begin();
             setState(WiFiState::TimeServerInitializing);
             break;
 
@@ -264,7 +258,7 @@ void WiFiStateMachine::run()
     if ((_resetTime > 0) && (currentMillis >= _resetTime))
     {
         TRACE(F("Resetting...\n"));
-        ESP.reset();
+        ESP.restart();
     }
 }
 
