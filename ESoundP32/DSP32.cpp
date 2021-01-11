@@ -12,6 +12,8 @@ DSP32::DSP32(bool tracePerformance)
 
 bool DSP32::begin(uint16_t frameSize, WindowType windowType, float sampleFrequency)
 {
+    Tracer tracer(F("DSP32::begin"));
+
     esp_err_t dsps_result = dsps_fft2r_init_fc32(NULL, frameSize);
     if (dsps_result  != ESP_OK)
     {
@@ -84,14 +86,18 @@ bool DSP32::begin(uint16_t frameSize, WindowType windowType, float sampleFrequen
 
 void DSP32::end()
 {
-    delete[] _octaveStartIndex;
+    Tracer tracer(F("DSP32::end"));
+
     delete[] _fftBuffer;
     delete[] _spectralPower;
+    delete[] _octavePower;
+    delete[] _octaveStartIndex;
     delete[] _window;
 
-    _octaveStartIndex = nullptr;
     _fftBuffer = nullptr;
     _spectralPower = nullptr;
+    _octavePower = nullptr;
+    _octaveStartIndex = nullptr;
     _window = nullptr;
 
     dsps_fft2r_deinit_fc32();
@@ -158,7 +164,7 @@ float* DSP32::getOctavePower(float* spectralPower)
     int octave = 0;
     int octaveLength = 1;
     int nextOctaveIndex = 2;
-    for (int i = 1; i <= _frameSize / 2; i++)
+    for (int i = 1; i < _frameSize / 2; i++)
     {
         if (i == nextOctaveIndex)
         {
