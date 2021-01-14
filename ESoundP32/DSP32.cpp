@@ -1,6 +1,7 @@
+#define CONFIG_DSP_OPTIMIZED true
+
 #include <esp_dsp.h>
 #include <Tracer.h>
-#include <PrintHex.h>
 #include "DSP32.h"
 
 // Constructor
@@ -253,5 +254,18 @@ BinInfo DSP32::getOctaveInfo(uint16_t index)
         .minFrequency = minFreq,
         .maxFrequency = maxFreq
     };
+    return result;
+}
+
+String DSP32::getNote(float frequency)
+{
+    static const char* notes[] = { "A", "Bb", "B", "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab" };
+    const float a0Frequency = 27.5;
+
+    int noteIndex = roundf(log2f(frequency / a0Frequency) * 12);
+    int octave = noteIndex / 12;
+
+    String result = String(notes[noteIndex % 12]);
+    result += octave;
     return result;
 }

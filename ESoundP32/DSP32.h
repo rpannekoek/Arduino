@@ -1,6 +1,8 @@
 #ifndef DSP32_H
 #define DSP32_H
 
+#include <math.h>
+
 enum struct WindowType
 {
     None = 0,
@@ -41,7 +43,7 @@ struct complex_t
 
     float inline getPhase() // in degrees
     {
-        return atan2f(im, re) * 57.29578;
+        return degrees(atan2f(im, re));
     }
 };
 
@@ -64,6 +66,7 @@ class DSP32
         BinInfo getFundamental(float* spectralPower);
         BinInfo getBinInfo(uint16_t index);
         BinInfo getOctaveInfo(uint16_t index);
+        String getNote(float frequency);
 
     protected:
         bool _tracePerformance;

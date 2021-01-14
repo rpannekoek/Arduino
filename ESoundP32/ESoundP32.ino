@@ -1,8 +1,7 @@
-#define CONFIG_DSP_OPTIMIZED true
 #define DEBUG_ESP_PORT Serial
-#define CORE_DEBUG_LEVEL ARDUHAL_LOG_LEVEL_INFO
 
 #include <math.h>
+#include <U8g2lib.h>
 #include <ESPWiFi.h>
 #include <ESPWebServer.h>
 #include <ESPFileSystem.h>
@@ -36,6 +35,7 @@
 #define CFG_FTP_PASSWORD F("FTPPassword")
 #define CFG_TZ_OFFSET F("TZOffset")
 
+
 WebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer(3600 * 24); // Synchronize daily
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
@@ -44,6 +44,7 @@ HtmlWriter Html(HttpResponse, ICON, CSS, 60); // Max bar length: 60
 Log<const char> EventLog(50); // Max 50 log entries
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 DSP32 DSP(true); // Trace DSP performance
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C Display(U8G2_R0, /*RST*/ U8X8_PIN_NONE, /*SCL*/ 4, /*SDA*/ 5);   
 
 time_t currentTime = 0;
 time_t syncFTPTime = 0;
@@ -107,6 +108,9 @@ void setup()
 
     //DSP.begin(FRAME_SIZE, WindowType::None, SAMPLE_FREQUENCY);
 
+    if (!Display.begin())
+        TRACE(F("Display initialization failed!\n"));
+
     digitalWrite(LED_BUILTIN, LED_OFF);
 }
 
@@ -150,6 +154,31 @@ void onWiFiInitialized()
     }
 }
 
+
+void drawVUMeter(float* octavePower, uint8_t octaves, uint8_t width, uint8_t height)
+{
+    Tracer tracer(F("drawVUMeter"));;
+
+    uint8_t barWidth = (width - 2) / octaves;
+    uint8_t segments = (height - 2) / 3;
+    const float minDb = -20;
+    const float maxDb = 0;
+
+    Display.drawFrame(0, 0, width, height);
+
+    for (uint8_t o = 0; o < octaves; o++)
+    {
+        int barX = 1 + o * barWidth;
+
+        float dB = std::min(std::max(10 * log10f(octavePower[o]), minDb), maxDb);
+        uint8_t barSegments = roundf(segments * (dB - minDb) / (maxDb - minDb));
+        for (int s = 0; s < barSegments; s++)
+        {
+            int segmentY = height - 3 - (s * 3);
+            Display.drawBox(barX, segmentY, barWidth - 1, 2);
+        }
+    }
+}
 
 bool trySyncFTP(Print* printTo)
 {
@@ -257,8 +286,8 @@ void handleHttpTestDSPRequest()
     if (DSP.begin(frameSize, windowType, sampleFrequency))
     {
         // Generate square wave signal @ Fs/64 with small DC offset
-        static int16_t signal[FRAME_SIZE];
-        for (int i = 0; i < FRAME_SIZE; i++)
+        int16_t* signal = new int16_t[frameSize];
+        for (int i = 0; i < frameSize; i++)
         {
             signal[i] = ((i % 64) < 32) ? 32000 : -32000;
             signal[i] += 700; 
@@ -268,15 +297,30 @@ void handleHttpTestDSPRequest()
         float* spectralPower = DSP.getSpectralPower(complexSpectrum);
         float* octavePower = DSP.getOctavePower(spectralPower);
         BinInfo fundamental = DSP.getFundamental(spectralPower);
+        String note = DSP.getNote(fundamental.getCenterFrequency());
+
+        // Show info on OLED Display
+        Display.clearBuffer();
+        drawVUMeter(octavePower, DSP.getOctaves(), 128, 48);
+        Display.setFont(u8g2_font_9x15_tf);
+        Display.setCursor(0, 63);
+        Display.printf("%0.0f Hz ~ %s", fundamental.getCenterFrequency(), note.c_str());
+        Display.sendBuffer();
 
         // Output fundamental info
         HttpResponse.println(F("<h2>Fundamental analysis</h2>"));
         HttpResponse.printf(
-            F("<p>bin #%i, min = %0.0f Hz, max = %0.0f Hz, center = %0.0f Hz</p>\r\n"),
+            F("<p>bin #%i => %0.0f - %0.0f Hz, Center = %0.0f Hz</p>\r\n"),
             fundamental.index,
             fundamental.minFrequency,
             fundamental.maxFrequency,
             fundamental.getCenterFrequency()
+            );
+        HttpResponse.printf(
+            F("<p>Note: %s - %s, Center = %s</p>\r\n"),
+            DSP.getNote(fundamental.minFrequency).c_str(),
+            DSP.getNote(fundamental.maxFrequency).c_str(),
+            note.c_str()
             );
 
         // Output octave bins
@@ -334,6 +378,7 @@ void handleHttpTestDSPRequest()
         }
         HttpResponse.println(F("</table>"));
 
+        delete[] signal;
         DSP.end();
     }
     else
