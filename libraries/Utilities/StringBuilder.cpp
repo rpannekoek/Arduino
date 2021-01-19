@@ -1,5 +1,7 @@
 #include <Arduino.h>
-#include <StringBuilder.h>
+#include <PSRAM.h>
+#include "StringBuilder.h"
+
 
 #ifdef ESP32
     // Small String Optimization is implemented in recent versions of the SDK
@@ -17,10 +19,10 @@ StringBuilder::StringBuilder(size_t size)
     : String((const char*)nullptr) // Minimal String init
 {
 #ifdef SSO
-    setBuffer((char*) malloc(size));
+    setBuffer((char*) ESP_MALLOC(size));
     setCapacity(size - 1);
 #else
-    buffer = (char*) malloc(size);
+    buffer = (char*) ESP_MALLOC(size);
     capacity = size - 1;
 #endif
     _space = CAPACITY;

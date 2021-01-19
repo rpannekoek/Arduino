@@ -27,9 +27,36 @@ void Tracer::trace(String format, ...)
 
 void Tracer::traceFreeHeap()
 {
-    trace(F("Free heap: %d\n"), ESP.getFreeHeap());
+    traceHeapStats(
+        "Internal",
+        ESP.getHeapSize(),
+        ESP.getFreeHeap(),
+        ESP.getMinFreeHeap(),
+        ESP.getMaxAllocHeap()
+        );
+
+#ifdef ESP32
+    traceHeapStats(
+        "PSRAM",
+        ESP.getPsramSize(),
+        ESP.getFreePsram(),
+        ESP.getMinFreePsram(),
+        ESP.getMaxAllocPsram()
+        );
+#endif
 }
 
+
+void Tracer::traceHeapStats(const char* heapName, uint32_t total, uint32_t free, uint32_t minFree, uint32_t largest)
+{
+    total /= 100; // Calculate percentages
+    if (total == 0) return;
+
+    trace(F("%s heap statistics:\n"), heapName);
+    trace(F("\t%u bytes free (%d %%)\n"), free, free / total);
+    trace(F("\t%u bytes free minimal (%d %%)\n"), minFree, minFree / total);
+    trace(F("\tLargest free block: %u\n"), largest);
+}
 
 
 //Constructor

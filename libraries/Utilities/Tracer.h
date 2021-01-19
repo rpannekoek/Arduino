@@ -20,6 +20,8 @@ class Tracer
   private:
     String _name;
     unsigned long _startMicros;
+
+    static void traceHeapStats(const char* heapName, uint32_t total, uint32_t free, uint32_t minFree, uint32_t largest);
 };
 
 #endif
