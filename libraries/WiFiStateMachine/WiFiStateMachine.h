@@ -39,24 +39,29 @@ class WiFiStateMachine
         void logEvent(String msg);
         time_t getCurrentTime();
 
-        time_t getInitTime()
+        time_t inline getInitTime()
         {
             return _initTime;
         }
 
-        uint32_t getUptime()
+        uint32_t inline getUptime()
         {
             return getCurrentTime() - _initTime;
         }
 
-        WiFiState getState()
+        WiFiState inline getState()
         {
             return _state;
         }
 
-        bool isInAccessPointMode()
+        bool inline isInAccessPointMode()
         {
             return _isInAccessPointMode;
+        }
+
+        String inline getIPAddress()
+        {
+            return _ipAddress.toString();
         }
 
     protected:
@@ -74,6 +79,7 @@ class WiFiStateMachine
         void (*_handlers[static_cast<int>(WiFiState::Initialized) + 1])(void); // function pointers indexed by state
         bool _isTimeServerAvailable = false;
         bool _isInAccessPointMode = false;
+        IPAddress _ipAddress;
 
         void initializeAP();
         void initializeSTA();

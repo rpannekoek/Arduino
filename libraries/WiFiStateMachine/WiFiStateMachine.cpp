@@ -105,8 +105,9 @@ void WiFiStateMachine::initializeAP()
     if (!WiFi.softAP(AP_SSID))
         TRACE(F("Unable to start Access Point\n"));
 
+    _ipAddress = WiFi.softAPIP();
     String event = F("Started Access Point mode. IP address: ");
-    event += WiFi.softAPIP().toString();
+    event += getIPAddress();
     logEvent(event);
 }
 
@@ -196,8 +197,9 @@ void WiFiStateMachine::run()
             break;
 
         case WiFiState::Connected:
+            _ipAddress = WiFi.localIP();
             event = F("WiFi connected. IP address: ");
-            event += WiFi.localIP().toString();
+            event += getIPAddress();
             logEvent(event);
             ArduinoOTA.begin();
             _webServer.begin();
