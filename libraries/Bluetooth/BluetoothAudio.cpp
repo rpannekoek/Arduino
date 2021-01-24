@@ -7,36 +7,84 @@
 #include <esp_a2dp_api.h>
 #include <esp_avrc_api.h>
 #include <Tracer.h>
+#include <PSRAM.h>
 
 #include "BluetoothAudio.h"
 
+static const char* _stateNames[] = {
+    "Uninitialized",
+    "Initialized",
+    "Discovering",
+    "Discovery Complete",
+    "Authenticated",
+    "Authentication Failed",
+    "Awaiting Source",
+    "Source Not Ready",
+    "Audio Connecting",
+    "Audio Connected",
+    "Audio Started",
+    "Audio Suspended",
+    "Audio Stopped",
+    "Audio Disconnecting",
+    "Audio Disconnected"
+    };
+
 static const char* _a2dpConnectionState[] = { "Disconnected", "Connecting", "Connected", "Disconnecting" };
 static const char* _a2dpAudioState[] = { "Suspended", "Stopped", "Started" };
+static const char* _mediaControlCommands[] = { "None", "Check Source Ready", "Start", "Stop", "Suspend" };
+
 BluetoothAudio* _instancePtr = nullptr;
 
-// Global callback function
+// Global GAP callback function
 void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param)
 {
     _instancePtr->gapCallback(event, param);
 }
 
-// Global callback function
+// Global A2DP callback function
 void bt_a2d_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 {
     _instancePtr->a2dpCallback(event, param);
 }
 
-// Global callback function
-void bt_a2d_data_cb(const uint8_t* data, uint32_t length)
+
+String getDeviceName(void* namePtr, uint8_t length)
 {
-    _instancePtr->a2dpDataSinkCallback(data, length);
+    static char strBuf[ESP_BT_GAP_MAX_BDNAME_LEN];
+    memcpy(strBuf, namePtr, length);
+    strBuf[length] = 0;
+    return String(strBuf);
 }
 
 
 // Constructor
 BluetoothAudio::BluetoothAudio()
+    : discoveredDevices(8)
 {
     _instancePtr = this;
+}
+
+
+String BluetoothAudio::getStateName()
+{
+    uint16_t stateIndex = static_cast<uint16_t>(_state);
+    if (stateIndex <= 14) 
+        return _stateNames[stateIndex];
+    else
+        return String(F("[Out of range]"));
+}
+
+
+const char* BluetoothAudio::formatDeviceAddress(esp_bd_addr_t bda)
+{
+    static char result[32];
+    snprintf(
+        result,
+        sizeof(result),
+        "%02X:%02X:%02X:%02X:%02X:%02X",
+        bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]
+        );
+    return result;
 }
 
 
@@ -46,26 +94,6 @@ bool BluetoothAudio::begin(const char* deviceName, const char* pinCode)
 
     _deviceName = deviceName;
     _pinCode = pinCode;
-
-    /* NVS initialization is done by Arduino Core (esp32-hal-misc.c:initArduino())
-    // Initialize NVS — it is used to store PHY calibration data
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) 
-    {
-        err = nvs_flash_erase();
-        if (err != ESP_OK)
-        {
-            TRACE(F("nvs_flash_erase() returned %X\n"), err);
-            return false;
-        }
-        err = nvs_flash_init();
-    }
-    if (err != ESP_OK)
-    {
-        TRACE(F("nvs_flash_init() returned %X\n"), err);
-        return false;
-    }
-    */
 
     if (!btStarted())
     {
@@ -127,6 +155,13 @@ bool BluetoothAudio::begin(const char* deviceName, const char* pinCode)
         return false;
     }
 
+    err = esp_a2d_register_callback(bt_a2d_cb);
+    if (err != ESP_OK)
+    {
+        TRACE(F("esp_a2d_register_callback() returned %X\n"), err);
+        return false;
+    }
+
     err = esp_bt_gap_set_scan_mode(ESP_BT_SCAN_MODE_CONNECTABLE_DISCOVERABLE);
     if (err != ESP_OK)
     {
@@ -137,6 +172,7 @@ bool BluetoothAudio::begin(const char* deviceName, const char* pinCode)
     _state = BluetoothState::Initialized;
     return true;
 }
+
 
 bool BluetoothAudio::startBluetooth()
 {
@@ -182,34 +218,115 @@ bool BluetoothAudio::startBluetooth()
 }
 
 
-bool BluetoothAudio::startSink(void (*dataHandler)(const uint8_t* data, uint32_t length))
+bool BluetoothAudio::startDiscovery(uint8_t inquiryTime)
 {
-    if (_state != BluetoothState::Initialized)
-    {
-        TRACE(F("Invalid state: %d\n"), _state);
-        return false;
-    }
+    Tracer tracer(F("BluetoothAudio::startDiscovery"));
 
-    _sinkDataHandler = dataHandler;
+    if (inquiryTime > 48) inquiryTime = 48;
 
-    esp_err_t err = esp_a2d_register_callback(bt_a2d_cb);
+    esp_err_t err = esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, inquiryTime, 0);
     if (err != ESP_OK)
     {
-        TRACE(F("esp_a2d_register_callback() returned %X\n"), err);
+        TRACE(F("esp_bt_gap_start_discovery() returned %X\n"), err);
         return false;
     }
 
-    err= esp_a2d_sink_register_data_callback(bt_a2d_data_cb);
-    if (err != ESP_OK)
+    _state = BluetoothState::Discovering;
+    discoveredDevices.clear();
+    return true;
+}
+
+
+void BluetoothAudio::addDiscoveredDevice(esp_bt_gap_cb_param_t* gapParam)
+{
+    esp_bd_addr_t& bda = gapParam->disc_res.bda;
+    TRACE(F("BluetoothAudio::addDiscoveredDevice(%s)\n"), formatDeviceAddress(bda));
+
+    // Check if the device was already added earlier
+    BluetoothDeviceInfo* devInfoPtr = discoveredDevices.getFirstEntry();
+    while (devInfoPtr != nullptr)
     {
-        TRACE(F("esp_a2d_sink_register_data_callback() returned %X\n"), err);
-        return false;
+        if (memcmp(devInfoPtr->deviceAddress, bda, sizeof(esp_bd_addr_t)) == 0)
+            return;
+        devInfoPtr = discoveredDevices.getNextEntry();
     }
 
-    err = esp_a2d_sink_init();
+    devInfoPtr = new BluetoothDeviceInfo();
+    memcpy(devInfoPtr->deviceAddress, bda, sizeof(esp_bd_addr_t));
+    devInfoPtr->deviceName = String();
+
+    for (int i = 0; i < gapParam->disc_res.num_prop; i++)
+    {
+        esp_bt_gap_dev_prop_t& gapDevProp = gapParam->disc_res.prop[i]; 
+        switch (gapDevProp.type) 
+        {
+            case ESP_BT_GAP_DEV_PROP_COD:
+                devInfoPtr->cod = *((uint32_t*)gapDevProp.val);
+                break;
+
+            case ESP_BT_GAP_DEV_PROP_RSSI:
+                devInfoPtr->rssi = *((int8_t*)gapDevProp.val);
+                break;
+
+            case ESP_BT_GAP_DEV_PROP_BDNAME:
+                devInfoPtr->deviceName = ::getDeviceName(gapDevProp.val, gapDevProp.len);
+                break;
+
+            case ESP_BT_GAP_DEV_PROP_EIR:
+                devInfoPtr->eirLength = gapDevProp.len;
+                devInfoPtr->eirData = (uint8_t*) ESP_MALLOC(gapDevProp.len);
+                memcpy(devInfoPtr->eirData, gapDevProp.val, gapDevProp.len);
+                break;
+
+            default:
+                TRACE(F("Unexpected GAP property type: %d\n"), gapDevProp.type);
+        }
+    }
+
+    devInfoPtr->codMajorDevice = esp_bt_gap_get_cod_major_dev(devInfoPtr->cod); 
+    devInfoPtr->codServices = esp_bt_gap_get_cod_srvc(devInfoPtr->cod);
+
+    if (devInfoPtr->deviceName.length() == 0)
+    {
+        // Try to get device name from EIR
+        uint8_t* eir = devInfoPtr->eirData;
+        if (eir != nullptr)
+        {
+            uint8_t length;
+            uint8_t* eirPtr = esp_bt_gap_resolve_eir_data(eir, ESP_BT_EIR_TYPE_CMPL_LOCAL_NAME, &length);
+            if (eirPtr == nullptr)
+                eirPtr = esp_bt_gap_resolve_eir_data(eir, ESP_BT_EIR_TYPE_SHORT_LOCAL_NAME, &length);
+            if (eirPtr != nullptr)
+                devInfoPtr->deviceName = ::getDeviceName(eirPtr, length);
+        }
+
+        if (devInfoPtr->deviceName.length() == 0)
+        {
+            TRACE(F("No device name found\n"));
+            devInfoPtr->deviceName = formatDeviceAddress(bda);
+        }
+    }
+
+    discoveredDevices.add(devInfoPtr);
+    TRACE(F("%d discovered devices\n"), discoveredDevices.count());
+}
+
+
+bool BluetoothAudio::startSink(esp_a2d_sink_data_cb_t dataCallback)
+{
+    Tracer tracer(F("BluetoothAudio::startSink"));
+
+    esp_err_t err = esp_a2d_sink_init();
     if (err != ESP_OK)
     {
         TRACE(F("esp_a2d_sink_init() returned %X\n"), err);
+        return false;
+    }
+
+    err= esp_a2d_sink_register_data_callback(dataCallback);
+    if (err != ESP_OK)
+    {
+        TRACE(F("esp_a2d_sink_register_data_callback() returned %X\n"), err);
         return false;
     }
 
@@ -217,18 +334,74 @@ bool BluetoothAudio::startSink(void (*dataHandler)(const uint8_t* data, uint32_t
 }
 
 
+bool BluetoothAudio::connectSource(esp_bd_addr_t sinkAddress, esp_a2d_source_data_cb_t dataCallback)
+{
+    Tracer tracer(F("BluetoothAudio::connectSource"));
+
+    esp_err_t err = esp_a2d_source_init();
+    if (err != ESP_OK)
+    {
+        TRACE(F("esp_a2d_source_init() returned %X\n"), err);
+        return false;
+    }
+
+    err = esp_a2d_source_register_data_callback(dataCallback);
+    if (err != ESP_OK)
+    {
+        TRACE(F("esp_a2d_source_register_data_callback() returned %X\n"), err);
+        return false;
+    }
+
+    err = esp_a2d_source_connect(sinkAddress);
+    if (err != ESP_OK)
+    {
+        TRACE(F("esp_a2d_source_connect() returned %X\n"), err);
+        return false;
+    }
+
+    _sampleRate = 44100; // Currently hard-coded in ESP IDF
+    _sourceEnabled = true;
+    _state = BluetoothState::AudioConnecting;
+    return true;
+}
+
+
+bool BluetoothAudio::mediaControl(esp_a2d_media_ctrl_t ctrl)
+{
+    TRACE(F("BluetoothAudio::mediaControl('%s') [Core #%d]\n"), _mediaControlCommands[ctrl], xPortGetCoreID());
+    esp_err_t err = esp_a2d_media_ctrl(ctrl);
+    if (err != ESP_OK)
+    {
+        TRACE(F("esp_a2d_media_ctrl(%d) returned %X\n"), ctrl, err);
+        return false;
+    }
+    return true;
+}
+
+
 void BluetoothAudio::gapCallback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param)
 {
-    TRACE(F("BluetoothAudio::gapCallback(%d)\n"), event);
+    TRACE(F("BluetoothAudio::gapCallback(%d)  [Core #%d]\n"), event, xPortGetCoreID());
 
     switch (event) 
     {
+        case ESP_BT_GAP_DISC_RES_EVT:
+            addDiscoveredDevice(param);
+            break;
+
+        case ESP_BT_GAP_DISC_STATE_CHANGED_EVT:
+            if (param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STARTED)
+                _state = BluetoothState::Discovering;
+            else
+                _state = BluetoothState::DiscoveryComplete;
+            break;
+
         case ESP_BT_GAP_AUTH_CMPL_EVT: 
             if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) 
             {
-                _remoteDeviceName = (const char*)param->auth_cmpl.device_name;
+                _remoteDevice = (const char*)param->auth_cmpl.device_name;
                 _state = BluetoothState::Authenticated;
-                TRACE(F("Authentication success. Remote device: %s\n"), _remoteDeviceName.c_str());
+                TRACE(F("Authentication success. Remote device name: '%s'\n"), _remoteDevice.c_str());
             } else 
             {
                 _state = BluetoothState::AuthenticationFailed;
@@ -257,16 +430,16 @@ void BluetoothAudio::gapCallback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_para
 
 void BluetoothAudio::a2dpCallback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param)
 {
-    TRACE(F("BluetoothAudio::a2dpCallback(%d)\n"), event);
+    TRACE(F("BluetoothAudio::a2dpCallback(%d) [Core #%d]\n"), event, xPortGetCoreID());
 
     switch (event) 
     {
         case ESP_A2D_CONNECTION_STATE_EVT:
         {
             memcpy(_remoteDeviceAddress, param->conn_stat.remote_bda, sizeof(_remoteDeviceAddress));
-            uint8_t* bda = _remoteDeviceAddress;
-            TRACE(F("A2DP Connection state change: %s. Remote address: [%02X:%02X:%02X:%02X:%02X:%02X]\n"),
-                _a2dpConnectionState[param->conn_stat.state], bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+            const char* remoteDeviceAddress = formatDeviceAddress(_remoteDeviceAddress);
+            TRACE(F("A2DP Connection state change: %s. Remote device address: [%s]\n"),
+                _a2dpConnectionState[param->conn_stat.state], remoteDeviceAddress);
             switch (param->conn_stat.state)
             {
                 case ESP_A2D_CONNECTION_STATE_CONNECTING:
@@ -274,8 +447,16 @@ void BluetoothAudio::a2dpCallback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *
                     break;
 
                 case ESP_A2D_CONNECTION_STATE_CONNECTED:
-                    _state = BluetoothState::AudioConnected;
-                    esp_bt_gap_set_scan_mode(ESP_BT_SCAN_MODE_CONNECTABLE);
+                    if (_remoteDevice.length() == 0)
+                        _remoteDevice = remoteDeviceAddress;
+                    esp_bt_gap_set_scan_mode(ESP_BT_SCAN_MODE_NONE);
+                    if (_sourceEnabled)
+                    {
+                        _state = BluetoothState::AwaitingSource;
+                        mediaControl(ESP_A2D_MEDIA_CTRL_CHECK_SRC_RDY);
+                    }
+                    else
+                        _state = BluetoothState::AudioConnected;
                     break;
 
                 case ESP_A2D_CONNECTION_STATE_DISCONNECTING:
@@ -284,6 +465,7 @@ void BluetoothAudio::a2dpCallback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *
 
                 case ESP_A2D_CONNECTION_STATE_DISCONNECTED:
                     _state = BluetoothState::AudioDisconnected;
+                    _remoteDevice = String();
                     esp_bt_gap_set_scan_mode(ESP_BT_SCAN_MODE_CONNECTABLE_DISCOVERABLE);
                     break;
             }
@@ -304,7 +486,6 @@ void BluetoothAudio::a2dpCallback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *
 
                 case ESP_A2D_AUDIO_STATE_STARTED:
                     _state = BluetoothState::AudioStarted;
-                    _packetsReceived = 0;
                     break;
             }
             break;
@@ -335,15 +516,20 @@ void BluetoothAudio::a2dpCallback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *
                     );
             }
             break;
+
+        case ESP_A2D_MEDIA_CTRL_ACK_EVT:
+            TRACE(
+                F("Media control '%s' result: %d\n"),
+                _mediaControlCommands[param->media_ctrl_stat.cmd],
+                param->media_ctrl_stat.status
+                );
+            if (param->media_ctrl_stat.cmd == ESP_A2D_MEDIA_CTRL_CHECK_SRC_RDY)
+            {
+                if (param->media_ctrl_stat.status == ESP_A2D_MEDIA_CTRL_ACK_SUCCESS)
+                    _state = BluetoothState::AudioConnected;
+                else
+                    _state = BluetoothState::SourceNotReady;                
+            }
+            break;            
     }
-}
-
-
-void BluetoothAudio::a2dpDataSinkCallback(const uint8_t* data, uint32_t length)
-{
-    if (++_packetsReceived % 100 == 1)
-        TRACE(F("%d A2DP packets received. Length: %d\n"), _packetsReceived, length);
-    
-    if (_instancePtr->_sinkDataHandler != nullptr)
-        _instancePtr->_sinkDataHandler(data, length);
 }

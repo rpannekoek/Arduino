@@ -4,6 +4,7 @@
 #include <esp_bt_defs.h>
 #include <esp_gap_bt_api.h>
 #include <esp_a2dp_api.h>
+#include <Log.h>
 
 #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
     #error Bluetooth is not enabled!
@@ -13,8 +14,12 @@ enum struct BluetoothState
 {
     Uninitialized = 0,
     Initialized,
+    Discovering,
+    DiscoveryComplete,
     Authenticated,
     AuthenticationFailed,
+    AwaitingSource,
+    SourceNotReady,
     AudioConnecting,
     AudioConnected,
     AudioStarted,
@@ -24,10 +29,38 @@ enum struct BluetoothState
     AudioDisconnected
 };
 
+
+struct StereoData
+{
+    int16_t left;
+    int16_t right;
+} __attribute__((packed));
+
+
+struct BluetoothDeviceInfo
+{
+    esp_bd_addr_t deviceAddress;
+    String deviceName;
+    uint32_t cod;
+    uint32_t codMajorDevice;
+    uint32_t codServices;
+    int8_t rssi;
+    uint16_t eirLength; 
+    uint8_t* eirData = nullptr;
+
+    ~BluetoothDeviceInfo()
+    {
+        if (eirData != nullptr)
+            free(eirData);
+    }
+};
+
+
 class BluetoothAudio
 {
-
     public:
+        Log<BluetoothDeviceInfo> discoveredDevices;
+
         // Constructor
         BluetoothAudio();
 
@@ -36,9 +69,9 @@ class BluetoothAudio
             return _state;
         }
 
-        String inline getRemoteDeviceName()
+        String inline getRemoteDevice()
         {
-            return _remoteDeviceName;
+            return _remoteDevice;
         }
 
         esp_a2d_mct_t inline getCodecType()
@@ -51,34 +84,49 @@ class BluetoothAudio
             return _sampleRate;
         }
 
-        uint32_t inline getPacketsReceived()
+        bool inline startAudio()
         {
-            return _packetsReceived;
+            return mediaControl(ESP_A2D_MEDIA_CTRL_START);
         }
 
+        bool inline suspendAudio()
+        {
+            return mediaControl(ESP_A2D_MEDIA_CTRL_SUSPEND);
+        }
+
+        bool inline stopAudio()
+        {
+            return mediaControl(ESP_A2D_MEDIA_CTRL_STOP);
+        }
+
+        String getStateName();
+        static const char* formatDeviceAddress(esp_bd_addr_t bda);
+
         bool begin(const char* deviceName, const char* pinCode = nullptr);
-        bool startSink(void (*dataHandler)(const uint8_t* data, uint32_t length));
+        bool startDiscovery(uint8_t inquiryTime = 5);
+        bool startSink(esp_a2d_sink_data_cb_t dataCallback);
+        bool connectSource(esp_bd_addr_t sinkAddress, esp_a2d_source_data_cb_t dataCallback);
+        bool mediaControl(esp_a2d_media_ctrl_t ctrl);
 
     protected:
         const char* _deviceName;
         const char* _pinCode;
         BluetoothState _state = BluetoothState::Uninitialized;
-        String _remoteDeviceName;
+        String _remoteDevice;
         esp_bd_addr_t _remoteDeviceAddress;
         esp_a2d_mct_t _codecType = 0;
         uint16_t _sampleRate = 0;
-        uint32_t _packetsReceived = 0;
-        void (*_sinkDataHandler)(const uint8_t* data, uint32_t length);
+        bool _sourceEnabled = false;
 
         bool startBluetooth();
+        void addDiscoveredDevice(esp_bt_gap_cb_param_t* gapParam);
+
         void gapCallback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param);
         void a2dpCallback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param);
-        void a2dpDataSinkCallback(const uint8_t* data, uint32_t length);
 
     private:
         friend void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param);
         friend void bt_a2d_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param);
-        friend void bt_a2d_data_cb(const uint8_t* data, uint32_t length);
 };
 
 #endif
