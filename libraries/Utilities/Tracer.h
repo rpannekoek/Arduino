@@ -16,6 +16,7 @@ class Tracer
     static void traceTo(Print& dest);
     static void trace(String format, ...);
     static void traceFreeHeap();
+    static void hexDump(uint8_t* data, size_t length);
 
   private:
     String _name;

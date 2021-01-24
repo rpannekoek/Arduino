@@ -1,7 +1,6 @@
 #include <Soladin.h>
 #include <Arduino.h>
 #include <Tracer.h>
-#include <PrintHex.h>
 #include <PrintFlags.h>
 
 
@@ -115,7 +114,7 @@ bool SoladinComm::query(byte* cmd, byte* response, int responseSize)
 {
     Tracer tracer(F("SoladinComm::query"));
 
-    printHex(cmd, 9);
+    Tracer::hexDump(cmd, 9);
     TRACE(F("Response size: %d\n"), responseSize);
 
     int originalBaudRate = Serial.baudRate();
@@ -144,7 +143,7 @@ bool SoladinComm::query(byte* cmd, byte* response, int responseSize)
     Serial.begin(originalBaudRate);
     resetGpio(false);
 
-    printHex(response, bytesRead);
+    Tracer::hexDump(response, bytesRead);
     TRACE(F("%d bytes read\n%d bytes garbage\n"), bytesRead, garbageRead);
 
     return result;

@@ -59,14 +59,54 @@ void Tracer::traceHeapStats(const char* heapName, uint32_t total, uint32_t free,
 }
 
 
+void Tracer::hexDump(uint8_t* data, size_t length)
+{
+    for (int row = 0; row < length; row += 16)
+    {
+        // Output hex values
+        for (int col = 0; col < 16; col++ )
+        {
+            int index = row + col;
+            if (index < length)
+                _traceToPtr->printf("%02X ", data[index]);
+            else
+                _traceToPtr->print("   ");
+            if (col == 7)
+                _traceToPtr->print(" ");
+        }
+
+        // Output ASCII representation
+        for (int col = 0; col < 16; col++ )
+        {
+            int index = row + col;
+            char ascii = ' ';
+            if (index < length)
+                ascii = data[index];
+            if ((ascii < 32) || (ascii > 127)) ascii = '.';
+            _traceToPtr->printf("%c ", ascii);
+            if (col == 7)
+                _traceToPtr->print(" ");
+        }
+
+        _traceToPtr->println();
+    }
+}
+
 //Constructor
 Tracer::Tracer(String name, const char* arg)
 {
+    static char coreID[16];
+#ifdef ESP32    
+    snprintf(coreID, sizeof(coreID), "[Core #%d]", xPortGetCoreID());
+#else
+    coreID[0] = 0;
+#endif 
+
     _name = name;
     if (arg == nullptr)
-        trace(F("%s() entry\n"), _name.c_str());
+        trace(F("%s() entry %s\n"), _name.c_str(), coreID);
     else
-        trace(F("%s(\"%s\") entry\n"), _name.c_str(), arg);
+        trace(F("%s(\"%s\") entry %s\n"), _name.c_str(), arg, coreID);
     _startMicros = micros();
 }
 

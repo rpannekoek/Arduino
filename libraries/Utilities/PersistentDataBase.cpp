@@ -1,5 +1,4 @@
 #include "PersistentDataBase.h"
-#include "PrintHex.h"
 #include "Tracer.h"
 #include <EEPROM.h>
 
@@ -88,5 +87,5 @@ bool PersistentDataBase::readFromEEPROM()
 void PersistentDataBase::printData()
 {
     byte* dataPtr = ((byte*) &_dataSize) + sizeof(_dataSize);
-    printHex(dataPtr, _dataSize);
+    Tracer::hexDump(dataPtr, _dataSize);
 }
