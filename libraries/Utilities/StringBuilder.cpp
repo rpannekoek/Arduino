@@ -19,10 +19,10 @@ StringBuilder::StringBuilder(size_t size)
     : String((const char*)nullptr) // Minimal String init
 {
 #ifdef SSO
-    setBuffer((char*) ESP_MALLOC(size));
+    setBuffer((char*) malloc(size));
     setCapacity(size - 1);
 #else
-    buffer = (char*) ESP_MALLOC(size);
+    buffer = (char*) malloc(size);
     capacity = size - 1;
 #endif
     _space = CAPACITY;
