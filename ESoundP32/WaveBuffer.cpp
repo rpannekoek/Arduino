@@ -71,17 +71,19 @@ WaveStats WaveBuffer::getStatistics(size_t frameSize)
     if (frameSize == 0 || frameSize > _numSamples) frameSize = _numSamples;
     size_t segment2Size = (frameSize <= _index) ? frameSize : _index;
     size_t segment1Size = frameSize - segment2Size;
+    uint32_t segment1Start = _size - segment1Size; 
+    uint32_t segment2Start = _index - segment2Size; 
 
     int16_t peak = 0;
     float sum = 0;
-    for (int i = 0; i < segment2Size; i++)
+    for (uint32_t i = segment2Start; i < _index; i++)
     {
         int16_t sample = _buffer[i];
         if (sample < 0) sample = -sample; // abs(sample)
         if (sample > peak) peak = sample;
         sum += sample;
     }
-    for (int i = _size - segment1Size; i < _size; i++)
+    for (uint32_t i = segment1Start; i < _size; i++)
     {
         int16_t sample = _buffer[i];
         if (sample < 0) sample = -sample; // abs(sample)
