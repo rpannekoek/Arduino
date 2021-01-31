@@ -15,22 +15,25 @@
 #include <Log.h>
 #include <WiFiStateMachine.h>
 #include <BluetoothAudio.h>
-#include <PSRAM.h>
 #include "PersistentData.h"
 #include "DSP32.h"
+#include "WaveBuffer.h"
 
 #define SAMPLE_FREQUENCY 44100
 #define I2S_FRAME_SIZE 256
 #define DSP_FRAME_SIZE 2048
-#define SAMPLE_BUFFER_SIZE (DSP_FRAME_SIZE * sizeof(int16_t))
+#define WAVE_BUFFER_SAMPLES (15 * SAMPLE_FREQUENCY)
+
 #define I2S_PORT_MIC I2S_NUM_0
+#define FULL_SCALE 32768
+#define DB_MIN 32
+#define DISPLAY_WAVE_INFO_INTERVAL 500
 #define COD_AUDIO_RENDERING (ESP_BT_COD_SRVC_AUDIO | ESP_BT_COD_SRVC_RENDERING)
 
 #define ICON "/apple-touch-icon.png"
 #define CSS "/styles.css"
 
 #define REFRESH_INTERVAL 30
-#define FTP_RETRY_INTERVAL 3600
 
 #define LED_ON 0
 #define LED_OFF 1
@@ -53,8 +56,12 @@ HtmlWriter Html(HttpResponse, ICON, CSS, 60); // Max bar length: 60
 Log<const char> EventLog(50); // Max 50 log entries
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 BluetoothAudio BTAudio;
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C Display(U8G2_R0, /*RST*/ U8X8_PIN_NONE, /*SCL*/ GPIO_NUM_4, /*SDA*/ GPIO_NUM_5);   
-DSP32 DSP(true); // Trace DSP performance
+//U8G2_SSD1306_128X64_NONAME_F_HW_I2C Display(U8G2_R0, /*RST*/ U8X8_PIN_NONE, /*SCL*/ GPIO_NUM_4, /*SDA*/ GPIO_NUM_5);
+U8G2_SSD1327_MIDAS_128X128_F_HW_I2C Display(U8G2_R0, /* reset=*/ U8X8_PIN_NONE, /*SCL*/ GPIO_NUM_21, /*SDA*/ GPIO_NUM_22);
+//U8G2_SSD1327_MIDAS_128X128_F_SW_I2C Display(U8G2_R0, /*SCL*/ GPIO_NUM_21, /*SDA*/ GPIO_NUM_22, /* reset=*/ U8X8_PIN_NONE);
+DSP32 DSP(/* tracePerformance: */ false);
+WaveBuffer WaveBuffer;
+int16_t* dspBuffer;
 
 const i2s_config_t I2SMicConfig = 
 {
@@ -63,7 +70,7 @@ const i2s_config_t I2SMicConfig =
     .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
     .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
     .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S),
-    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1, // high interrupt priority
+    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1, // low interrupt priority
     .dma_buf_count = 2,
     .dma_buf_len = I2S_FRAME_SIZE, // samples
     .use_apll = true,
@@ -80,16 +87,16 @@ const i2s_pin_config_t I2SMicPinConfig =
 };
 
 time_t currentTime = 0;
-time_t syncFTPTime = 0;
-time_t lastFTPSyncTime = 0;
 bool isFTPEnabled = false;
 uint8_t displayWidth =0 ;
 uint8_t displayHeight =0;
-bool sampleBTAudio = false;
-size_t volatile btAudioBytes = 0;
-int16_t* sampleBufferPtr = nullptr;
-time_t btActionTime = 0;
-uint16_t a2dpPackets = 0;
+time_t actionPerformedTime = 0;
+uint32_t a2dpBytes = 0;
+TaskHandle_t micDataSinkTaskHandle;
+uint32_t displayWaveInfoMillis = 0;
+volatile bool recordMic = false;
+int16_t micScale = 4096;
+
 
 const char* formatTime(const char* format, time_t time)
 {
@@ -149,17 +156,26 @@ void setup()
     Html.setTitlePrefix(PersistentData.hostName);
     isFTPEnabled = PersistentData.ftpServer[0] != 0;
 
+    if (Display.begin())
+    {
+        Display.setBusClock(400000);
+        displayWidth = Display.getDisplayWidth();
+        displayHeight = Display.getDisplayHeight();
+        TRACE(F("Display size: %d x %d\n"), displayWidth, displayHeight);
+        bootDisplay();
+    }
+    else
+        TRACE(F("Display initialization failed!\n"));
+
     START_SPIFFS;
 
     const char* cacheControl = "max-age=86400, public";
     WebServer.on("/", handleHttpRootRequest);
     WebServer.on("/bt", handleHttpBluetoothRequest);
-    WebServer.on("/testdsp", handleHttpTestDSPRequest);
-    WebServer.on("/testmic", handleHttpTestMicRequest);
-    WebServer.on("/testa2dp", handleHttpTestA2DPRequest);
-    WebServer.on("/sync", handleHttpSyncFTPRequest);
+    WebServer.on("/wave", handleHttpWaveRequest);
+    WebServer.on("/wave/dsp", handleHttpWaveDspRequest);
+    WebServer.on("/wave/ftp", handleHttpWaveFtpRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
-    WebServer.on("/events/clear", handleHttpEventLogClearRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
     WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
     WebServer.serveStatic(ICON, SPIFFS, ICON, cacheControl);
@@ -181,25 +197,24 @@ void setup()
     if (i2s_result != ESP_OK)
         TRACE(F("Starting I2S failed: %X\n"), i2s_result);
 
-    //DSP.begin(DSP_FRAME_SIZE, WindowType::None, SAMPLE_FREQUENCY);
+    if (!BTAudio.begin(PersistentData.hostName))
+        TRACE(F("Starting Bluetooth failed\n"));
 
-    if (Display.begin())
-    {
-        displayWidth = Display.getDisplayWidth();
-        displayHeight = Display.getDisplayHeight();
-        TRACE(F("Display size: %d x %d\n"), displayWidth, displayHeight);
-        bootDisplay();
-    }
-    else
-        TRACE(F("Display initialization failed!\n"));
+    if (!WaveBuffer.begin(WAVE_BUFFER_SAMPLES))
+        TRACE(F("WaveBuffer.begin() failed\n"));
 
-    if (BTAudio.begin(PersistentData.hostName))
+    dspBuffer = (int16_t*) ps_malloc(DSP_FRAME_SIZE * sizeof(int16_t));
+    if (dspBuffer == nullptr)
+        TRACE(F("Allocating DSP buffer failed\n"));
+
+    if (!DSP.begin(DSP_FRAME_SIZE, WindowType::Hann, SAMPLE_FREQUENCY))
     {
-        //if (!BTAudio.startSink(a2dpDataSink))
-        //    TRACE(F("Failed starting Bluetooth A2DP Sink.\n"));
+        TRACE(F("DSP.begin() failed\n"));
+        return;
     }
 
-    sampleBufferPtr = (int16_t*) ESP_MALLOC(SAMPLE_BUFFER_SIZE);
+    if (!spawnMicDataSink())
+        TRACE(F("Spawning mic data sink failed\n"));
 
     Tracer::traceFreeHeap();
 
@@ -207,56 +222,19 @@ void setup()
 }
 
 
-// Called repeatedly
+// Called repeatedly (on Core #1)
 void loop() 
 {
     currentTime = WiFiSM.getCurrentTime();
     WiFiSM.run();
+
+    if ((displayWaveInfoMillis != 0) && (millis() >= displayWaveInfoMillis))
+    {
+        displayWaveInfoMillis = millis() + DISPLAY_WAVE_INFO_INTERVAL;
+        displayWaveInfo();
+    }
+
     delay(10);
-}
-
-
-void a2dpDataSink(const uint8_t* data, uint32_t length)
-{
-    if (sampleBTAudio)
-    {
-        btAudioBytes = std::min(length, SAMPLE_BUFFER_SIZE);
-        memcpy(sampleBufferPtr, data, btAudioBytes);
-        sampleBTAudio = false;
-    }
-}
-
-
-int32_t a2dpDataSource(uint8_t* data, int32_t length)
-{
-    if (length > 0)
-    {
-        StereoData* stereoData = (StereoData*)data;
-        // Find integer number of cycles approx. 1 kHz:
-        uint32_t samples = length / sizeof(StereoData);
-        uint32_t cycles = samples / 44;
-        int period1 = samples / cycles;
-        int period2 = period1 / 2;
-        for (int i = 0; i < samples ; i++)
-        {
-            int squareWave1 = (i % period1) < (period1/2) ? 512 : -512;
-            int squareWave2 = (i % period2) < (period2/2) ? 256 : -256;
-            stereoData[i].left = squareWave1;
-            stereoData[i].right = squareWave2;
-        }
-
-        if (++a2dpPackets % 100 == 1)
-            TRACE(
-                F("a2dpDataSource(%d) called %u times. %d samples. Periods: %d, %d\n"), 
-                length,
-                a2dpPackets,
-                samples,
-                period1,
-                period2
-                );
-    }
-
-    return length;
 }
 
 
@@ -268,57 +246,180 @@ void onTimeServerSynced()
 }
 
 
+// Called repeatedly after WiFi is initialized (on Core #1)
 void onWiFiInitialized()
 {
-    if (Serial.available())
-    {
-        // TODO
-    }
-
-    if ((syncFTPTime != 0) && (currentTime >= syncFTPTime))
-    {
-        if (trySyncFTP(nullptr))
-        {
-            logEvent(F("FTP synchronized"));
-            syncFTPTime = 0;
-        }
-        else
-        {
-            String event = F("FTP sync failed: ");
-            event += FTPClient.getLastResponse();
-            logEvent(event);
-            syncFTPTime += FTP_RETRY_INTERVAL;
-        }
-    }
 }
 
 
-void drawVUMeter(float* octavePower, uint8_t octaves, uint8_t width, uint8_t height)
+
+void micDataSink(void* taskParams)
 {
     Tracer tracer(F(__func__));
 
-    uint8_t barWidth = (width - 2) / octaves;
-    uint8_t segments = (height - 2) / 3;
-    const float minDb = -20;
-    const float maxDb = 0;
-
-    Display.drawFrame(0, 0, width, height);
-
-    for (uint8_t o = 0; o < octaves; o++)
+    while (true)
     {
-        int barX = 1 + o * barWidth;
-
-        float dB = std::min(std::max(10 * log10f(octavePower[o]), minDb), maxDb);
-        uint8_t barSegments = roundf(segments * (dB - minDb) / (maxDb - minDb));
-        for (int s = 0; s < barSegments; s++)
+        int32_t micSample;
+        size_t bytesRead;
+        esp_err_t err = i2s_read(I2S_PORT_MIC, &micSample, sizeof(int32_t), &bytesRead, 1);
+        if (err != ESP_OK)
         {
-            int segmentY = height - 3 - (s * 3);
-            Display.drawBox(barX, segmentY, barWidth - 1, 2);
+            String message = F("i2s_read() returned error ");
+            message += err;
+            logEvent(message);
+            break;
+        }
+
+        if (recordMic)
+        {
+            micSample /= micScale; // 32->16 bits
+            WaveBuffer.addSample(micSample);
         }
     }
 }
 
-bool trySyncFTP(Print* printTo)
+
+bool spawnMicDataSink()
+{
+    Tracer tracer(F(__func__));
+
+    xTaskCreatePinnedToCore(
+        micDataSink,
+        "Mic Data Sink",
+        8192, // Stack Size (words)
+        nullptr, // taskParams
+        3, // Priority
+        &micDataSinkTaskHandle,
+        PRO_CPU_NUM // Core ID
+        );
+
+    delay(100);
+
+    return (micDataSinkTaskHandle != nullptr);
+}
+
+
+void a2dpDataSink(const uint8_t* data, uint32_t length)
+{   
+    StereoData* stereoData = (StereoData*)data;
+    uint32_t samples = length / sizeof(StereoData);
+    for (int i = 0; i < samples; i++)
+    {
+        int32_t monoData = stereoData[i].right;
+        monoData +=  stereoData[i].left;
+        monoData /= 2;
+
+        if (WaveBuffer.isFull()) break;
+        WaveBuffer.addSample(monoData);
+    }
+
+    a2dpBytes += length;
+}
+
+
+int32_t a2dpDataSource(uint8_t* data, int32_t length)
+{
+    if (length < 0)
+    {
+        TRACE(F("A2DP flush buffer requested.\n"));
+        return -1;
+    }
+
+    int samples = length / sizeof(StereoData);
+    StereoData* stereoData = (StereoData*)data;
+    int16_t* monoData = (int16_t*)data;
+
+    samples = WaveBuffer.getSamples(monoData, samples);
+
+    for (int i = samples - 1; i >= 0; i--)
+    {
+        stereoData[i].right = monoData[i];
+        stereoData[i].left = monoData[i];
+    }
+
+    length = samples * sizeof(StereoData);
+    a2dpBytes += length;
+    return length;
+}
+
+
+void displayWaveInfo()
+{
+    Tracer tracer(F(__func__));
+
+    float* octavePower = nullptr;
+    uint8_t octaves = 0;
+    BinInfo fundamental;
+    if (WaveBuffer.getNumSamples() >= DSP_FRAME_SIZE)
+    {
+        WaveBuffer.getSamples(dspBuffer, DSP_FRAME_SIZE);
+        complex_t* complexSpectrum = DSP.runFFT(dspBuffer);
+        float* spectralPower = DSP.getSpectralPower(complexSpectrum);
+        octavePower = DSP.getOctavePower(spectralPower);
+        octaves = DSP.getOctaves();
+        fundamental = DSP.getFundamental(spectralPower);
+    }
+
+    WaveStats waveStats = WaveBuffer.getStatistics(SAMPLE_FREQUENCY / 2); // last 0.5s
+    float dBFS = 20 * log10f(float(waveStats.peak) / FULL_SCALE);
+
+    Display.clearBuffer();
+    drawVUMeter(dBFS, octavePower, octaves, displayWidth, displayHeight - 22);
+    Display.setFont(u8g2_font_9x15_tf);
+    Display.setCursor(0, displayHeight - 1);
+    Display.printf(
+        "%0.0f dB  %0.0f Hz  %d %%",
+        dBFS,
+        fundamental.getCenterFrequency(),
+        WaveBuffer.getFillPercentage()
+        );
+    Display.sendBuffer();
+}
+
+
+void drawVUMeter(float vu, float* octavePower, uint8_t octaves, uint8_t width, uint8_t height)
+{
+    int vuBarSegments = width / 4;
+    int vuBarWidth = 8;
+    int vuSegments = vuBarSegments * (vu + DB_MIN) / DB_MIN;
+    for (int s = 0; s < vuSegments; s++)
+    {
+        Display.drawBox(s * 4, 0, 3, vuBarWidth - 2);
+    }
+    for (int s = vuSegments; s < vuBarSegments; s++)
+    {
+        Display.drawPixel(s * 4 + 1, (vuBarWidth / 2 - 1));
+    }
+
+    // Octave bars
+    if (octaves > 0)
+    {
+        Display.drawFrame(0, vuBarWidth, width, height - vuBarWidth);
+
+        int octaveBarWidth = (width - 2) / octaves;
+        int octaveBarSegments = (height - vuBarWidth - 2) / 3;
+        for (int o = 0; o < octaves; o++)
+        {
+            int barX = 1 + o * octaveBarWidth;
+
+            float dBoctave = 10 * log10f(octavePower[o]);
+            int dBoctaveSegments = octaveBarSegments * (dBoctave + DB_MIN) / DB_MIN;
+            for (int s = 0; s < dBoctaveSegments; s++)
+            {
+                int segmentY = height - 3 - (s * 3);
+                Display.drawBox(barX, segmentY, octaveBarWidth - 1, 2);
+            }
+            for (int s = dBoctaveSegments; s < octaveBarSegments; s++)
+            {
+                int segmentY = height - 4 - (s * 3);
+                Display.drawPixel(barX + octaveBarWidth / 2, segmentY);
+            }
+        }
+    }
+}
+
+
+bool ftpWaveFile(Print* printTo)
 {
     Tracer tracer(F(__func__));
 
@@ -329,7 +430,7 @@ bool trySyncFTP(Print* printTo)
     }
 
     char filename[32];
-    snprintf(filename, sizeof(filename), "%s.csv", PersistentData.hostName);
+    snprintf(filename, sizeof(filename), "%s.wav", PersistentData.hostName);
 
     if (!FTPClient.begin(PersistentData.ftpServer, PersistentData.ftpUser, PersistentData.ftpPassword, FTP_DEFAULT_CONTROL_PORT, printTo))
     {
@@ -338,23 +439,42 @@ bool trySyncFTP(Print* printTo)
     }
 
     bool success = false;
-    WiFiClient& dataClient = FTPClient.append(filename);
-    if (dataClient.connected())
+    int responseCode = FTPClient.sendCommand("TYPE", "I", true);
+    if (responseCode == 200)
     {
-        dataClient.stop();
-
-        if (FTPClient.readServerResponse() == 226)
+        WiFiClient& dataClient = FTPClient.store(filename);
+        if (dataClient.connected())
         {
-            lastFTPSyncTime = currentTime;
-            success = true;
+            WaveBuffer.writeWaveFile(dataClient, SAMPLE_FREQUENCY);
+            dataClient.stop();
+
+            if (FTPClient.readServerResponse() == 226)
+                success = true;
+            else
+                TRACE(F("FTP Store command failed: %s\n"), FTPClient.getLastResponse());
         }
-        else
-            TRACE(F("FTP Append command failed: %s\n"), FTPClient.getLastResponse());
     }
+    else
+        TRACE(F("FTP Type command failed: %s\n"), FTPClient.getLastResponse());
 
     FTPClient.end();
 
     return success;
+}
+
+
+bool shouldPerformAction(String name)
+{
+    if (!WebServer.hasArg(name))
+        return false; // Action not requested
+
+    time_t actionTime = WebServer.arg(name).toInt();
+
+    if (actionTime == actionPerformedTime)
+        return false; // Action already performed
+
+    actionPerformedTime = actionTime;
+    return true;
 }
 
 
@@ -372,16 +492,14 @@ void handleHttpRootRequest()
 
     HttpResponse.println(F("<h1>Device Status</h1>"));
     HttpResponse.println(F("<table class=\"status\">"));
-    HttpResponse.printf(F("<tr><td>Free Heap</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><td>Uptime</td><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
-    if (isFTPEnabled)
-    {
-        HttpResponse.printf(F("<tr><td>FTP Sync Time</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastFTPSyncTime));
-    }
-    else
-    {
-        HttpResponse.println(F("<tr><td>FTP Sync</td><td>Disabled</td></tr>"));
-    }
+    HttpResponse.printf(F("<tr><td>Free IRAM</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
+    HttpResponse.printf(F("<tr><td>Free PSRAM</td><td>%u</td></tr>\r\n"), ESP.getFreePsram());
+    HttpResponse.printf(
+        F("<tr><td><a href=\"/wave\">Wave buffer</a></td><td>%u (%d %%)</td></tr>\r\n"),
+        WaveBuffer.getNumSamples(),
+        WaveBuffer.getFillPercentage()
+        );
+    HttpResponse.printf(F("<tr><td>A2DP bytes</td><td>%u</td></tr>\r\n"), a2dpBytes);
     HttpResponse.printf(F("<tr><td><a href=\"/events\">Events logged</a></td><td>%d</td></tr>\r\n"), EventLog.count());
     HttpResponse.println(F("</table>"));
 
@@ -393,29 +511,29 @@ void handleHttpRootRequest()
     HttpResponse.println(F("</table>"));
 
     HttpResponse.println(F("<p><a href=\"/bt\">Bluetooth</a></p>"));
-    HttpResponse.println(F("<p><a href=\"/testdsp\">Test DSP</a></p>"));
-    HttpResponse.println(F("<p><a href=\"/testmic\">Test Microphone</a></p>"));
-    HttpResponse.println(F("<p><a href=\"/testa2dp\">Test Bluetooth Audio</a></p>"));
-
+    
     Html.writeFooter();
 
     WebServer.send(200, "text/html", HttpResponse);
 }
 
 
-bool shouldPerformAction(String name)
+bool handleBluetoothConnection(esp_bd_addr_t deviceAddress, int deviceIndex, int connIndex, bool allowConnect)
 {
-    
-    if (!WebServer.hasArg(name))
-        return false; // Action not requested
+    if (deviceIndex == connIndex)
+    {
+        if (BTAudio.connectSource(deviceAddress, a2dpDataSource))
+        {
+            HttpResponse.println(F("Connecting..."));
+            return true;
+        }
+        else
+            HttpResponse.println(F("Failed."));
+    }
+    else if (allowConnect)
+        HttpResponse.printf(F("<a href=\"?conn=%u&connIndex=%d\">Connect</a>\r\n"), currentTime, deviceIndex);
 
-    time_t actionTime = WebServer.arg(name).toInt();
-
-    if (btActionTime == actionTime)
-        return false; // Action already performed
-
-    btActionTime = actionTime;
-    return true;
+    return false;
 }
 
 
@@ -424,24 +542,13 @@ void handleHttpBluetoothRequest()
     Tracer tracer(F(__func__));
 
     Html.writeHeader(F("Bluetooth"), true, true, 5);
-    HttpResponse.printf(F("<p>State: %s</p>\r\n"), BTAudio.getStateName().c_str());
 
-    if (BTAudio.getState() != BluetoothState::Discovering)
-    {
-        bool discoStarted = false;
-        if (shouldPerformAction(F("disco")))
-        {
-            if (BTAudio.startDiscovery())
-            {
-                discoStarted = true;
-                HttpResponse.println(F("<p>Discovery started...</p>"));
-            }
-            else
-                HttpResponse.println(F("<p>Starting discovery failed.</p>"));
-        }
-        if (!discoStarted)
-            HttpResponse.printf(F("<p><a href=\"?disco=%u\">Start discovery</a></p>"), currentTime);
-    }
+    HttpResponse.println(F("<table class=\"status\">"));
+    HttpResponse.printf(F("<tr><td>State</td><td>%s</td></tr>\r\n"), BTAudio.getStateName().c_str());
+    HttpResponse.printf(F("<tr><td>Remote device</td><td>%s</td></tr>\r\n"), BTAudio.getRemoteDevice().c_str());
+    HttpResponse.printf(F("<tr><td>Sample rate</td><td>%d</td></tr>\r\n"), BTAudio.getSampleRate());
+    HttpResponse.printf(F("<tr><td>A2DP Bytes</td><td>%u</td></tr>\r\n"), a2dpBytes);
+    HttpResponse.println(F("</table>"));
 
     if (shouldPerformAction(F("audio")))
     {
@@ -475,12 +582,68 @@ void handleHttpBluetoothRequest()
         }
     }
 
-    int connIndex = shouldPerformAction(F("conn")) ? WebServer.arg(F("connIndex")).toInt() : -1;
+    int connIndex = shouldPerformAction(F("conn")) ? WebServer.arg(F("connIndex")).toInt() : 0;
+    bool allowConnect = (BTAudio.isSinkStarted() || BTAudio.isSourceStarted()) ? false :
+        (BTAudio.getState() == BluetoothState::Initialized) || 
+        (BTAudio.getState() == BluetoothState::DiscoveryComplete) ||
+        (BTAudio.getState() == BluetoothState::AudioDisconnected); 
+
+    if (shouldPerformAction(F("startSink")))
+    {
+        if (BTAudio.startSink(a2dpDataSink))
+        {
+            allowConnect = false;
+            HttpResponse.println(F("<p>Sink started.</p>\r\n"));
+        }
+        else
+            HttpResponse.println(F("<p>Starting sink failed.</p>\r\n"));
+    }
+    else if (allowConnect)
+        HttpResponse.printf(F("<p><a href=\"?startSink=%u\">Start sink</a></p>\r\n"), currentTime);
+
+    if (shouldPerformAction(F("stopSink")))
+    {
+        if (BTAudio.stopSink())
+        {
+            HttpResponse.println(F("<p>Sink stopped.</p>\r\n"));
+        }
+        else
+            HttpResponse.println(F("<p>Stopping sink failed.</p>\r\n"));
+    }
+    else if (BTAudio.isSinkStarted())
+        HttpResponse.printf(F("<p><a href=\"?stopSink=%u\">Stop sink</a></p>\r\n"), currentTime);
+
+    if (shouldPerformAction(F("disconnect")))
+    {
+        if (BTAudio.disconnectSource())
+        {
+            HttpResponse.println(F("<p>Disconnecting...</p>\r\n"));
+        }
+        else
+            HttpResponse.println(F("<p>Disconnect failed.</p>\r\n"));
+    }
+    else if (BTAudio.isSourceStarted())
+        HttpResponse.printf(F("<p><a href=\"?disconnect=%u\">Disconnect</a></p>\r\n"), currentTime);
+
+    HttpResponse.println(F("<h2>Stored devices</h2>"));
+    HttpResponse.println(F("<table class=\"btDevices\""));
+    HttpResponse.println(F("<tr><th>Name</th><th>Address</th><th></th></tr>"));
+    if (PersistentData.btSinkName[0] != 0)
+    {
+        HttpResponse.printf(
+            F("<tr><td>%s</td><td>%s</td><td>"),
+            PersistentData.btSinkName,
+            BluetoothAudio::formatDeviceAddress(PersistentData.btSinkAddress)
+            );
+        handleBluetoothConnection(PersistentData.btSinkAddress, -1, connIndex, allowConnect);
+        HttpResponse.println(F("</td></tr>"));
+    }
+    HttpResponse.println("</table>");
 
     HttpResponse.println(F("<h2>Discovered devices</h2>"));
     HttpResponse.println(F("<table class=\"btDevices\""));
     HttpResponse.println(F("<tr><th>Name</th><th>Address</th><th>COD</th><th>Device</th><th>Service</th><th>RSSI</th><th></th></tr>"));
-    int i = 0;
+    int i = 1;
     BluetoothDeviceInfo* devInfoPtr = BTAudio.discoveredDevices.getFirstEntry();
     while (devInfoPtr != nullptr)
     {
@@ -493,18 +656,18 @@ void handleHttpBluetoothRequest()
             devInfoPtr->codServices,
             devInfoPtr->rssi
             );
-
-        if (i == connIndex)
+        if (handleBluetoothConnection(
+            devInfoPtr->deviceAddress,
+            i,
+            connIndex,
+            allowConnect && ((devInfoPtr->codServices & COD_AUDIO_RENDERING) == COD_AUDIO_RENDERING))
+            )
         {
-            if (BTAudio.connectSource(devInfoPtr->deviceAddress, a2dpDataSource))
-                HttpResponse.print(F("Connecting..."));
-            else
-                HttpResponse.print(F("Connect failed."));
+            memcpy(PersistentData.btSinkAddress, devInfoPtr->deviceAddress, sizeof(esp_bd_addr_t));
+            strncpy(PersistentData.btSinkName, devInfoPtr->deviceName.c_str(), sizeof(PersistentData.btSinkName));
+            PersistentData.validate();
+            PersistentData.writeToEEPROM();
         }
-        else if ((BTAudio.getState() == BluetoothState::DiscoveryComplete) &&
-            ((devInfoPtr->codServices & COD_AUDIO_RENDERING) == COD_AUDIO_RENDERING))
-            HttpResponse.printf(F("<a href=\"?conn=%u&connIndex=%d\">Connect</a>"), currentTime, i);
-
         HttpResponse.println(F("</td></tr>"));
 
         devInfoPtr = BTAudio.discoveredDevices.getNextEntry();
@@ -512,224 +675,230 @@ void handleHttpBluetoothRequest()
     }
     HttpResponse.println("</table>");
 
+    if (!BTAudio.isSinkStarted() && !BTAudio.isSourceStarted() && BTAudio.getState() != BluetoothState::Discovering)
+    {
+        if (shouldPerformAction(F("disco")))
+        {
+            if (BTAudio.startDiscovery(4))
+                HttpResponse.println(F("<p>Discovery started...</p>"));
+            else
+                HttpResponse.println(F("<p>Starting discovery failed.</p>"));
+        }
+        else
+            HttpResponse.printf(F("<p><a href=\"?disco=%u\">Start discovery</a></p>"), currentTime);
+    }
+
     Html.writeFooter();
 
     WebServer.send(200, "text/html", HttpResponse);
 }
 
 
-void handleHttpTestDSPRequest()
+void writeHtmlSampleDump(const int16_t* buffer, size_t size)
 {
-    Tracer tracer(F(__func__));
-
-    String frameSizeString = WebServer.arg("frameSize");
-    String windowTypeString = WebServer.arg("windowType");
-    String sampleFrequencyString = WebServer.arg("fs");
-
-    int frameSize = DSP_FRAME_SIZE;
-    WindowType windowType = WindowType::None;
-    int sampleFrequency = 44100;
-
-    if (frameSizeString.length() > 0)
-        frameSize = frameSizeString.toInt();
-    if (windowTypeString.length() > 0)
-        windowType = static_cast<WindowType>(windowTypeString.toInt());
-    if (sampleFrequencyString.length() > 0)
-        sampleFrequency = sampleFrequencyString.toInt();
-
-    Html.writeHeader(F("DSP Test"), true, true);
-
-    HttpResponse.println(F("<table>"));
-    HttpResponse.printf(F("<tr><th>Frame size</th><td>%i</td></tr>\r\n"), frameSize);
-    HttpResponse.printf(F("<tr><th>Window type</th><td>%i</td></tr>\r\n"), windowType);
-    HttpResponse.printf(F("<tr><th>Sample frequency</th><td>%i</td></tr>\r\n"), sampleFrequency);
-    HttpResponse.println(F("</table>"));
-
-    if (DSP.begin(frameSize, windowType, sampleFrequency))
-    {
-        // Generate square wave signal @ Fs/64 with small DC offset
-        int16_t* signal = new int16_t[frameSize];
-        for (int i = 0; i < frameSize; i++)
-        {
-            signal[i] = ((i % 64) < 32) ? 32000 : -32000;
-            signal[i] += 700; 
-        }
-
-        complex_t* complexSpectrum = DSP.runFFT(signal);
-        float* spectralPower = DSP.getSpectralPower(complexSpectrum);
-        float* octavePower = DSP.getOctavePower(spectralPower);
-        BinInfo fundamental = DSP.getFundamental(spectralPower);
-        String note = DSP.getNote(fundamental.getCenterFrequency());
-
-        if (displayWidth != 0)
-        {
-            // Show info on OLED Display
-            Display.clearBuffer();
-            drawVUMeter(octavePower, DSP.getOctaves(), displayWidth, 48);
-            Display.setFont(u8g2_font_9x15_tf);
-            Display.setCursor(0, 63);
-            Display.printf("%0.0f Hz ~ %s", fundamental.getCenterFrequency(), note.c_str());
-            Display.sendBuffer();
-        }
-
-        // Output fundamental info
-        HttpResponse.println(F("<h2>Fundamental analysis</h2>"));
-        HttpResponse.printf(
-            F("<p>bin #%i => %0.0f - %0.0f Hz, Center = %0.0f Hz</p>\r\n"),
-            fundamental.index,
-            fundamental.minFrequency,
-            fundamental.maxFrequency,
-            fundamental.getCenterFrequency()
-            );
-        HttpResponse.printf(
-            F("<p>Note: %s - %s, Center = %s</p>\r\n"),
-            DSP.getNote(fundamental.minFrequency).c_str(),
-            DSP.getNote(fundamental.maxFrequency).c_str(),
-            note.c_str()
-            );
-
-        // Output octave bins
-        HttpResponse.println(F("<h2>Octaves<h2>"));
-        HttpResponse.println(F("<table>"));
-        HttpResponse.println(F("<tr><th>#</th><th>Range (Hz)</th><th>Center (Hz)</th><th>Power</th><th>dB</th></tr>"));
-        for (int i = 0; i < DSP.getOctaves(); i++)
-        {
-            BinInfo octaveBin = DSP.getOctaveInfo(i);
-            float dB = 10 * log10f(octavePower[i]); 
-            HttpResponse.printf(
-                F("<tr><th>%i</th><td>%0.0f-%0.0f</td><td>%0.0f</td><td>%g</td><td>%0.1f dB</td><td class=\"graph\">"),
-                i + 1,
-                octaveBin.minFrequency,
-                octaveBin.maxFrequency,
-                octaveBin.getCenterFrequency(),
-                octavePower[i],
-                dB
-                );
-
-            float bar = (dB + 20) / 20;
-            if (bar < 0) bar = 0;
-            Html.writeBar(bar, F("deliveredBar"), true);
-
-            HttpResponse.println(F("</td></tr>"));
-        }
-        HttpResponse.println(F("</table>"));
-
-        // Output (complex) spectrum and octaves
-        HttpResponse.println(F("<h2>Complex spectrum</h2>"));
-        HttpResponse.println(F("<table>"));
-        HttpResponse.println(F("<tr><th>Bin</th><th>Complex</th><th>Magnitude</th><th>Phase</th><th>Power</th><th>Octave</th></tr>\r\n"));
-        int octave = 0;
-        int octaveLength = 1;
-        int nextOctaveIndex = 1;
-        for (int i = 0; i < 100; i++)
-        {
-            if (i == nextOctaveIndex)
-            {
-                octave++;
-                nextOctaveIndex += octaveLength;
-                octaveLength *= 2;
-            }
-
-            HttpResponse.printf(
-                F("<tr><td>%i</td><td>%g + %g i</td><td>%g</td><td>%0.0f deg</td><td>%g</td><td>%i</td></tr>\r\n"),
-                i,
-                complexSpectrum[i].re,
-                complexSpectrum[i].im,
-                complexSpectrum[i].getMagnitude(),
-                complexSpectrum[i].getPhase(),
-                spectralPower[i],
-                octave
-                );
-        }
-        HttpResponse.println(F("</table>"));
-
-        delete[] signal;
-        DSP.end();
-    }
-    else
-        HttpResponse.println(F("DSP.begin failed!"));
-
-    Html.writeFooter();
-    WebServer.send(200, F("text/html"), HttpResponse);
-}
-
-
-void writeHtmlHexDump(uint8_t* buffer, size_t size)
-{
-    HttpResponse.print(F("<pre class=\"hexDump\">"));
+    HttpResponse.print(F("<pre class=\"sampleDump\">"));
     for (int i = 0; i < size; i++)
     {
-        if ((i % 8) == 0) HttpResponse.print(" ");
         if ((i % 16) == 0) HttpResponse.println("");
-        HttpResponse.printf(F("%2X "), buffer[i]);
+        HttpResponse.printf(F("%06d "), buffer[i]);
     }
     HttpResponse.println(F("</pre>"));
 }
 
 
-void handleHttpTestMicRequest()
+void testFillWaveBuffer()
 {
     Tracer tracer(F(__func__));
 
-    Html.writeHeader(F("I2S Microphone Test"), true, true);
+    // Generate square wave signal @ Fs/64 with small DC offset
+    WaveBuffer.clear();
+    for (int i = 0; i < SAMPLE_FREQUENCY; i++)
+    {
+        int16_t squarewave = ((i % 64) < 32) ? 32000 : -32000;
+        squarewave += 700;
+        WaveBuffer.addSample(squarewave);
+    }
+}
 
-    size_t bytesToRead = I2S_FRAME_SIZE * sizeof(int32_t);
-    size_t bytesRead;
-    esp_err_t i2s_result = i2s_read(I2S_PORT_MIC, sampleBufferPtr, bytesToRead, &bytesRead, 100);
-    if (i2s_result == ESP_OK)
+void handleHttpWaveRequest()
+{
+    Tracer tracer(F(__func__));
+
+    if (shouldPerformAction(F("clear")))
+        WaveBuffer.clear();
+
+    if (shouldPerformAction(F("startMic")))
     {
-        HttpResponse.println(F("<h2>I2S buffer</h2>"));
-        HttpResponse.printf(F("Read %d of %d bytes:\r\n"), bytesRead, bytesToRead);
-        writeHtmlHexDump((uint8_t*)sampleBufferPtr, bytesRead);
+        WaveBuffer.clear();
+        recordMic = true;
+        displayWaveInfoMillis = millis();
     }
-    else
+
+    if (shouldPerformAction(F("stopMic")))
+        recordMic = false;
+
+    if (shouldPerformAction(F("test")))
+        testFillWaveBuffer();
+
+    bool isRecording = recordMic || BTAudio.isSinkStarted();
+    uint16_t refreshInterval = isRecording ? 2 : 0;
+
+    Html.writeHeader(F("Wave Buffer"), true, true, refreshInterval);
+
+    if (WaveBuffer.getNumSamples() != 0)
+        HttpResponse.printf(F("<p><a href=\"?clear=%u\">Clear buffer</a></p>\r\n"), currentTime);
+
+    if (recordMic)
+        HttpResponse.printf(F("<p><a href=\"?stopMic=%u\">Stop microphone</a></p>\r\n"), currentTime);
+
+    if (!isRecording)
     {
-        HttpResponse.printf(F("i2s_read returned an error: %X\r\n"), i2s_result);
+        HttpResponse.printf(F("<p><a href=\"?startMic=%u\">Start microphone</a></p>\r\n"), currentTime);
+        HttpResponse.printf(F("<p><a href=\"?test=%u\">Test fill wih squarewave</a></p>\r\n"), currentTime);
+        HttpResponse.println(F("<p><a href=\"/wave/dsp\">DSP</a></p>"));
+        if (isFTPEnabled)
+            HttpResponse.println(F("<p><a href=\"/wave/ftp\">Write to FTP Server</a></p>"));
     }
+
+    WaveStats waveStats = WaveBuffer.getStatistics(); // Get stats for whole buffer
+
+    HttpResponse.println(F("<table class=\"waveStats\">"));
+    HttpResponse.printf(
+        F("<tr><th>Samples</th><td>%u (%d %%)</td></tr>\r\n"),
+        WaveBuffer.getNumSamples(),
+        WaveBuffer.getFillPercentage()
+        );
+    HttpResponse.printf(
+        F("<tr><th>Peak</th><td>%d (%0.0f dBFS)</td></tr>\r\n"),
+        waveStats.peak,
+        20 * log10f(float(waveStats.peak) / FULL_SCALE)
+        );
+    HttpResponse.printf(
+        F("<tr><th>Average</th><td>%0.0f (%0.0f dBFS)</td></tr>\r\n"),
+        waveStats.average,
+        20 * log10f(waveStats.average / FULL_SCALE)
+        );
+    HttpResponse.println(F("</table>"));
+
+    HttpResponse.println(F("<h2>Hex dump (last 128 samples)</h2>"));
+    size_t numSamples = WaveBuffer.getSamples(dspBuffer, 128);
+    writeHtmlSampleDump(dspBuffer, numSamples);
 
     Html.writeFooter();
     WebServer.send(200, F("text/html"), HttpResponse);
 }
 
 
-void handleHttpTestA2DPRequest()
+void writeHtmlDspResult()
 {
     Tracer tracer(F(__func__));
 
-    Html.writeHeader(F("Bluetooth Audio Test"), true, true);
+    WaveBuffer.getSamples(dspBuffer, DSP_FRAME_SIZE);
+    complex_t* complexSpectrum = DSP.runFFT(dspBuffer);
+    float* spectralPower = DSP.getSpectralPower(complexSpectrum);
+    float* octavePower = DSP.getOctavePower(spectralPower);
+    BinInfo fundamental = DSP.getFundamental(spectralPower);
+    String note = DSP.getNote(fundamental.getCenterFrequency());
 
-    sampleBTAudio = true;
-    int timeout = 0;
-    while ((sampleBTAudio == true) && timeout++ < 10)
-    {
-        delay(10);
-    }
+    // Output fundamental info
+    HttpResponse.println(F("<h2>Fundamental analysis</h2>"));
+    HttpResponse.printf(
+        F("<p>bin #%i => %0.0f - %0.0f Hz, Center = %0.0f Hz</p>\r\n"),
+        fundamental.index,
+        fundamental.minFrequency,
+        fundamental.maxFrequency,
+        fundamental.getCenterFrequency()
+        );
+    HttpResponse.printf(
+        F("<p>Note: %s - %s, Center = %s</p>\r\n"),
+        DSP.getNote(fundamental.minFrequency).c_str(),
+        DSP.getNote(fundamental.maxFrequency).c_str(),
+        note.c_str()
+        );
 
-    if (sampleBTAudio == false)
+    // Output octave bins
+    HttpResponse.println(F("<h2>Octaves<h2>"));
+    HttpResponse.println(F("<table>"));
+    HttpResponse.println(F("<tr><th>#</th><th>Range (Hz)</th><th>Center (Hz)</th><th>Power</th><th>dB</th></tr>"));
+    for (int i = 0; i < DSP.getOctaves(); i++)
     {
-        HttpResponse.println(F("<h2>A2DP data</h2>"));
-        HttpResponse.printf(F("Read %d bytes:\r\n"), btAudioBytes);
-        writeHtmlHexDump((uint8_t*)sampleBufferPtr, btAudioBytes);
+        BinInfo octaveBin = DSP.getOctaveInfo(i);
+        float dB = 10 * log10f(octavePower[i]); 
+        HttpResponse.printf(
+            F("<tr><th>%i</th><td>%0.0f-%0.0f</td><td>%0.0f</td><td>%g</td><td>%0.1f dB</td><td class=\"graph\">"),
+            i + 1,
+            octaveBin.minFrequency,
+            octaveBin.maxFrequency,
+            octaveBin.getCenterFrequency(),
+            octavePower[i],
+            dB
+            );
+
+        float bar = (dB + 60) / 60;
+        if (bar < 0) bar = 0;
+        Html.writeBar(bar, F("deliveredBar"), true);
+
+        HttpResponse.println(F("</td></tr>"));
     }
+    HttpResponse.println(F("</table>"));
+
+    // Output (complex) spectrum and octaves
+    HttpResponse.println(F("<h2>Complex spectrum</h2>"));
+    HttpResponse.println(F("<table>"));
+    HttpResponse.println(F("<tr><th>Bin</th><th>Complex</th><th>Magnitude</th><th>Phase</th><th>Power</th><th>Octave</th></tr>\r\n"));
+    int octave = 0;
+    int octaveLength = 1;
+    int nextOctaveIndex = 1;
+    for (int i = 0; i < 100; i++)
+    {
+        if (i == nextOctaveIndex)
+        {
+            octave++;
+            nextOctaveIndex += octaveLength;
+            octaveLength *= 2;
+        }
+
+        HttpResponse.printf(
+            F("<tr><td>%i</td><td>%g + %g i</td><td>%g</td><td>%0.0f deg</td><td>%g</td><td>%i</td></tr>\r\n"),
+            i,
+            complexSpectrum[i].re,
+            complexSpectrum[i].im,
+            complexSpectrum[i].getMagnitude(),
+            complexSpectrum[i].getPhase(),
+            spectralPower[i],
+            octave
+            );
+    }
+    HttpResponse.println(F("</table>"));
+
+    DSP.end();
+}
+
+
+void handleHttpWaveDspRequest()
+{
+    Tracer tracer(F(__func__));
+
+    Html.writeHeader(F("Wave DSP"), true, true);
+
+    if (WaveBuffer.getNumSamples() < DSP_FRAME_SIZE)
+        HttpResponse.println(F("Not enough data in wave buffer."));
     else
-    {
-        sampleBTAudio = false;
-        HttpResponse.printf(F("Timeout receiving Bluetooth audio\r\n"));
-    }
+        writeHtmlDspResult();
 
     Html.writeFooter();
     WebServer.send(200, F("text/html"), HttpResponse);
 }
 
 
-void handleHttpSyncFTPRequest()
+void handleHttpWaveFtpRequest()
 {
     Tracer tracer(F(__func__));
 
-    Html.writeHeader(F("FTP Sync"), true, true);
+    Html.writeHeader(F("FTP Wave File"), true, true);
 
     HttpResponse.println(F("<div><pre class=\"ftplog\">"));
-    bool success = trySyncFTP(&HttpResponse); 
+    bool success = ftpWaveFile(&HttpResponse); 
     HttpResponse.println(F("</pre></div>"));
 
     if (success)
@@ -749,6 +918,12 @@ void handleHttpEventLogRequest()
 
     Html.writeHeader(F("Event log"), true, true, REFRESH_INTERVAL);
 
+    if (shouldPerformAction(F("clear")))
+    {
+        EventLog.clear();
+        logEvent(F("Event log cleared."));
+    }
+
     const char* event = EventLog.getFirstEntry();
     while (event != nullptr)
     {
@@ -756,22 +931,11 @@ void handleHttpEventLogRequest()
         event = EventLog.getNextEntry();
     }
 
-    HttpResponse.println(F("<p><a href=\"/events/clear\">Clear event log</a></p>"));
+    HttpResponse.printf(F("<p><a href=\"?clear=%u\">Clear event log</a></p>\r\n"), currentTime);
 
     Html.writeFooter();
 
     WebServer.send(200, F("text/html"), HttpResponse);
-}
-
-
-void handleHttpEventLogClearRequest()
-{
-    Tracer tracer(F(__func__));
-
-    EventLog.clear();
-    logEvent(F("Event log cleared."));
-
-    handleHttpEventLogRequest();
 }
 
 
@@ -799,6 +963,7 @@ void handleHttpConfigFormRequest()
 
     WebServer.send(200, F("text/html"), HttpResponse);
 }
+
 
 void copyString(const String& input, char* buffer, size_t bufferSize)
 {

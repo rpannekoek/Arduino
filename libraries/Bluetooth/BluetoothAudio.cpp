@@ -16,6 +16,7 @@ static const char* _stateNames[] = {
     "Initialized",
     "Discovering",
     "Discovery Complete",
+    "Awaiting Connection",
     "Authenticated",
     "Authentication Failed",
     "Awaiting Source",
@@ -68,10 +69,10 @@ BluetoothAudio::BluetoothAudio()
 String BluetoothAudio::getStateName()
 {
     uint16_t stateIndex = static_cast<uint16_t>(_state);
-    if (stateIndex <= 14) 
+    if (stateIndex <= 15) 
         return _stateNames[stateIndex];
     else
-        return String(F("[Out of range]"));
+        return String(stateIndex);
 }
 
 
@@ -222,6 +223,12 @@ bool BluetoothAudio::startDiscovery(uint8_t inquiryTime)
 {
     Tracer tracer(F("BluetoothAudio::startDiscovery"));
 
+    if (_sinkStarted || _sourceStarted)
+    {
+        TRACE(F("Cannot start discovery if Sink or Source is started.\n"));
+        return false;
+    }
+
     if (inquiryTime > 48) inquiryTime = 48;
 
     esp_err_t err = esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, inquiryTime, 0);
@@ -316,6 +323,12 @@ bool BluetoothAudio::startSink(esp_a2d_sink_data_cb_t dataCallback)
 {
     Tracer tracer(F("BluetoothAudio::startSink"));
 
+    if (_sourceStarted)
+    {
+        TRACE(F("Cannot start Sink because Source is started already.\n"));
+        return false;
+    }
+
     esp_err_t err = esp_a2d_sink_init();
     if (err != ESP_OK)
     {
@@ -330,6 +343,72 @@ bool BluetoothAudio::startSink(esp_a2d_sink_data_cb_t dataCallback)
         return false;
     }
 
+    _sinkStarted = true;
+    _state = BluetoothState::AwaitingConnection;
+    return true;
+}
+
+
+bool BluetoothAudio::awaitAudioDisconnect()
+{
+    Tracer tracer(F("BluetoothAudio::awaitAudioDisconnect"));
+
+    int timeout = 50;
+    while (_state != BluetoothState::AudioDisconnected)
+    {
+        if (timeout-- == 0)
+        {
+            TRACE(F("Timeout waiting for audio disconnect.\n"));
+            _state = BluetoothState::AudioDisconnected;
+            _remoteDevice = String();
+            esp_bt_gap_set_scan_mode(ESP_BT_SCAN_MODE_CONNECTABLE_DISCOVERABLE);
+            return false;
+        }
+        delay(10);
+    }
+
+    return true;
+}
+
+
+bool BluetoothAudio::stopSink()
+{
+    Tracer tracer(F("BluetoothAudio::stopSink"));
+
+    if (!_sinkStarted)
+    {
+        TRACE(F("Sink was not started.\n"));
+        return false;
+    }
+
+    esp_err_t err;
+    switch (_state)
+    {
+        case BluetoothState::AwaitingConnection:
+            _state = BluetoothState::Initialized;
+            break;
+
+        case BluetoothState::AudioConnected:
+        case BluetoothState::AudioStarted:
+        case BluetoothState::AudioSuspended:
+        case BluetoothState::AudioStopped:
+            err = esp_a2d_sink_disconnect(_remoteDeviceAddress);
+            if (err != ESP_OK)
+            {
+                TRACE(F("esp_a2d_sink_disconnect() returned %X\n"), err);
+                return false;
+            }
+            awaitAudioDisconnect();
+    }
+
+    err = esp_a2d_sink_deinit();
+    if (err != ESP_OK)
+    {
+        TRACE(F("esp_a2d_sink_deinit() returned %X\n"), err);
+        return false;
+    }
+
+    _sinkStarted = false;
     return true;
 }
 
@@ -337,6 +416,12 @@ bool BluetoothAudio::startSink(esp_a2d_sink_data_cb_t dataCallback)
 bool BluetoothAudio::connectSource(esp_bd_addr_t sinkAddress, esp_a2d_source_data_cb_t dataCallback)
 {
     Tracer tracer(F("BluetoothAudio::connectSource"));
+
+    if (_sinkStarted)
+    {
+        TRACE(F("Cannot start Source because Sink is started already.\n"));
+        return false;
+    }
 
     esp_err_t err = esp_a2d_source_init();
     if (err != ESP_OK)
@@ -359,9 +444,42 @@ bool BluetoothAudio::connectSource(esp_bd_addr_t sinkAddress, esp_a2d_source_dat
         return false;
     }
 
+    memcpy(_remoteDeviceAddress, sinkAddress, sizeof(esp_bd_addr_t));
+
     _sampleRate = 44100; // Currently hard-coded in ESP IDF
-    _sourceEnabled = true;
+    _sourceStarted = true;
     _state = BluetoothState::AudioConnecting;
+    return true;
+}
+
+
+bool BluetoothAudio::disconnectSource()
+{
+    Tracer tracer(F("BluetoothAudio::disconnectSource"));
+
+    if (!_sourceStarted)
+    {
+        TRACE(F("Source was not connected.\n"));
+        return false;
+    }
+
+    esp_err_t err = esp_a2d_source_disconnect(_remoteDeviceAddress);
+    if (err != ESP_OK)
+    {
+        TRACE(F("esp_a2d_source_disconnect() returned %X\n"), err);
+        return false;
+    }
+
+    awaitAudioDisconnect();
+
+    err = esp_a2d_source_deinit();
+    if (err != ESP_OK)
+    {
+        TRACE(F("esp_a2d_source_deinit() returned %X\n"), err);
+        return false;
+    }
+
+    _sourceStarted = false;
     return true;
 }
 
@@ -450,7 +568,7 @@ void BluetoothAudio::a2dpCallback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *
                     if (_remoteDevice.length() == 0)
                         _remoteDevice = remoteDeviceAddress;
                     esp_bt_gap_set_scan_mode(ESP_BT_SCAN_MODE_NONE);
-                    if (_sourceEnabled)
+                    if (_sourceStarted)
                     {
                         _state = BluetoothState::AwaitingSource;
                         mediaControl(ESP_A2D_MEDIA_CTRL_CHECK_SRC_RDY);
@@ -528,7 +646,7 @@ void BluetoothAudio::a2dpCallback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *
                 if (param->media_ctrl_stat.status == ESP_A2D_MEDIA_CTRL_ACK_SUCCESS)
                     _state = BluetoothState::AudioConnected;
                 else
-                    _state = BluetoothState::SourceNotReady;                
+                    _state = BluetoothState::SourceNotReady;
             }
             break;            
     }
