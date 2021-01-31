@@ -10,6 +10,8 @@ struct PersistentDataStruct : PersistentDataBase
     char ftpUser[32];
     char ftpPassword[32];
     int16_t timeZoneOffset; // hours
+    esp_bd_addr_t btSinkAddress;
+    char btSinkName[32];
 
     PersistentDataStruct() : PersistentDataBase(
         sizeof(wifiSSID) +
@@ -19,7 +21,9 @@ struct PersistentDataStruct : PersistentDataBase
         sizeof(ftpServer) + 
         sizeof(ftpUser) + 
         sizeof(ftpPassword) + 
-        sizeof(timeZoneOffset)
+        sizeof(timeZoneOffset) +
+        sizeof(btSinkAddress) +
+        sizeof(btSinkName)
         ) {}
 
     virtual void initialize()
@@ -32,6 +36,8 @@ struct PersistentDataStruct : PersistentDataBase
         ftpUser[0] = 0;
         ftpPassword[0] = 0;
         timeZoneOffset = 1;
+        memset(btSinkAddress, 0, sizeof(btSinkAddress));
+        btSinkName[0] = 0;
     }
 
     virtual void validate()
@@ -44,10 +50,11 @@ struct PersistentDataStruct : PersistentDataBase
         ftpServer[sizeof(ftpServer) - 1] = 0;
         ftpUser[sizeof(ftpUser) - 1] = 0;
         ftpPassword[sizeof(ftpPassword) - 1] = 0;
+        btSinkName[sizeof(btSinkName) - 1] = 0;
 
         if (timeZoneOffset < -12) timeZoneOffset = -12;
         if (timeZoneOffset > 14) timeZoneOffset = 14;
     }
-};
+} __attribute__((packed));
 
 PersistentDataStruct PersistentData;
