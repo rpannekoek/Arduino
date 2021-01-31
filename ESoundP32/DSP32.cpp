@@ -15,7 +15,14 @@ bool DSP32::begin(uint16_t frameSize, WindowType windowType, float sampleFrequen
 {
     Tracer tracer(F("DSP32::begin"));
 
-    esp_err_t dsps_result = dsps_fft2r_init_fc32(NULL, frameSize);
+    _fftTableBuffer = (float*) ps_malloc(frameSize * sizeof(float));
+    if (_fftTableBuffer == nullptr)
+    {
+        TRACE(F("Allocating FFT table buffer failed\n"));
+        return false;
+    }
+
+    esp_err_t dsps_result = dsps_fft2r_init_fc32(_fftTableBuffer, frameSize);
     if (dsps_result  != ESP_OK)
     {
         TRACE(F("Not possible to initialize FFT. Error = %i\n"), dsps_result);
@@ -26,8 +33,8 @@ bool DSP32::begin(uint16_t frameSize, WindowType windowType, float sampleFrequen
     _frameSize = frameSize;
     _octaves = log2l(frameSize) - 1;
 
-    _fftBuffer = new complex_t[frameSize];
-    _spectralPower = new float[frameSize/2 + 1];
+    _fftBuffer = (complex_t*) ps_malloc(frameSize * sizeof(complex_t));
+    _spectralPower = (float*) ps_malloc((frameSize/2 + 1) * sizeof(complex_t));
     _octavePower = new float[_octaves];
     _octaveStartIndex = new uint16_t[_octaves];
 
@@ -40,7 +47,7 @@ bool DSP32::begin(uint16_t frameSize, WindowType windowType, float sampleFrequen
         octaveWidth *= 2;
     }
 
-    _window = new float[frameSize];
+    _window = (float*) ps_malloc(frameSize * sizeof(float));
     switch (windowType)
     {
         case WindowType::None:
@@ -89,11 +96,12 @@ void DSP32::end()
 {
     Tracer tracer(F("DSP32::end"));
 
-    delete[] _fftBuffer;
-    delete[] _spectralPower;
+    free(_fftTableBuffer);
+    free(_fftBuffer);
+    free(_spectralPower);
     delete[] _octavePower;
     delete[] _octaveStartIndex;
-    delete[] _window;
+    free(_window);
 
     _fftBuffer = nullptr;
     _spectralPower = nullptr;
@@ -105,7 +113,7 @@ void DSP32::end()
 }
 
 
-complex_t* DSP32::runFFT(int16_t* signal)
+complex_t* DSP32::runFFT(const int16_t* signal)
 {
     // Load real integer signal into complex float array
     // Apply Window function and rescale to 1.0 full scale
@@ -261,6 +269,8 @@ String DSP32::getNote(float frequency)
 {
     static const char* notes[] = { "A", "Bb", "B", "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab" };
     const float a0Frequency = 27.5;
+
+    return "?";
 
     int noteIndex = roundf(log2f(frequency / a0Frequency) * 12);
     int octave = noteIndex / 12;

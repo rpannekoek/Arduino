@@ -55,12 +55,12 @@ class DSP32
         bool begin(uint16_t frameSize, WindowType windowType, float sampleFrequency = 1);
         void end();
 
-        uint16_t inline getOctaves()
+        inline uint16_t getOctaves()
         {
             return _octaves;
         }
 
-        complex_t* runFFT(int16_t* signal);
+        complex_t* runFFT(const int16_t* signal);
         float* getSpectralPower(complex_t* complexSpectrum);
         float* getOctavePower(float* spectralPower);
         BinInfo getFundamental(float* spectralPower);
@@ -76,6 +76,7 @@ class DSP32
         uint16_t* _octaveStartIndex;
         float* _window;
         complex_t* _fftBuffer;
+        float* _fftTableBuffer;
         float* _spectralPower;
         float* _octavePower;
 };
