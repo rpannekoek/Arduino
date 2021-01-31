@@ -22,7 +22,8 @@ class WiFiFTPClient
         int sendCommand(const char* cmd, const char* arg = nullptr, bool awaitResponse = true);
         int readServerResponse(char* responseBuffer = nullptr, size_t responseBufferSize = 0);
         WiFiClient& getDataClient();
-        
+
+        WiFiClient& store(const char* filename);
         WiFiClient& append(const char* filename);
 
         const char* getLastResponse()

@@ -173,6 +173,23 @@ WiFiClient& WiFiFTPClient::getDataClient()
 }
 
 
+WiFiClient& WiFiFTPClient::store(const char* filename)
+{
+    Tracer tracer(F("WiFiFTPClient::store"), filename);
+
+    sendCommand("STOR", filename, false);
+
+    WiFiClient& dataClient = getDataClient();
+    if (dataClient.connected())
+    {
+        if (readServerResponse() != 150)
+            dataClient.stop();
+    }
+
+    return dataClient;
+}
+
+
 WiFiClient& WiFiFTPClient::append(const char* filename)
 {
     Tracer tracer(F("WiFiFTPClient::append"), filename);
