@@ -1,9 +1,32 @@
 #include <Arduino.h>
+#include <Tracer.h>
 #include "WaveBuffer.h"
+
+
+struct WaveHeader
+{
+    char chunkID[4];
+    uint32_t chunkSize;
+    char format[4];
+
+    char subChunk1ID[4];
+    uint32_t subChunk1Size;
+    uint16_t audioFormat;
+    uint16_t numChannels;
+    uint32_t sampleRate;
+    uint32_t byteRate;
+    uint16_t blockAlign;
+    uint16_t bitsPerSample;
+
+    char subChunk2ID[4];
+    uint32_t subChunk2Size;
+} __attribute__((packed));
 
 
 bool WaveBuffer::begin(size_t size)
 {
+    Tracer tracer(F("WaveBuffer::begin"));
+
     _size = size;
     _buffer = (int16_t*) ps_malloc(size * sizeof(int16_t));
 
@@ -13,9 +36,37 @@ bool WaveBuffer::begin(size_t size)
 
 void WaveBuffer::clear()
 {
+    Tracer tracer(F("WaveBuffer::clear"));
+
     _index = 0;
     _numSamples = 0;
+    _numNewSamples = 0;
+    _numClippedSamples = 0;
     memset(_buffer, 0, _size * sizeof(int16_t));
+}
+
+
+void WaveBuffer::addSample(int32_t sample)
+{
+    _fxEngine.filter(sample, _buffer, _index, _size);
+
+    // Ensure the sample fits in 16 bits
+    if (sample > 32767) 
+    {
+        sample = 32767;
+        _numClippedSamples++;
+    }
+    if (sample < -32768)
+    {
+        sample = -32768;
+        _numClippedSamples++;
+    }
+
+    if (_index == _size) _index = 0;
+    _buffer[_index++] = sample;
+
+    if (_numSamples < _size) _numSamples++;
+    if (_numNewSamples < _size) _numNewSamples++;
 }
 
 
@@ -29,6 +80,50 @@ size_t WaveBuffer::getSamples(int16_t* sampleBuffer, size_t numSamples)
     if (segment2Size > 0)
         memcpy(sampleBuffer + segment1Size, _buffer + _index - segment2Size, segment2Size * sizeof(int16_t));
     return numSamples;
+}
+
+
+void WaveBuffer::getNewSamples(int16_t* sampleBuffer, size_t numSamples, size_t minDistance)
+{
+    if (numSamples + minDistance > _numNewSamples)
+    {
+        // Reached the minimum distance: return zeroes
+        memset(sampleBuffer, 0, numSamples * sizeof(int16_t));
+        return;
+    }
+
+    // Slipping buffer implementation
+    _upsampleFactor = 0;
+    int distanceFactor = (_numNewSamples - minDistance) / numSamples;
+    if (distanceFactor < 8)
+    {
+        _upsampleFactor = 1 << distanceFactor;
+        numSamples -= numSamples / _upsampleFactor;
+    }
+
+    int32_t index = _index - _numNewSamples;
+    if (index < 0) index += _size;
+
+    int j = 0;
+    int16_t previousSample = 0;
+    for (int i = 0; i < numSamples; i++)
+    {
+        int16_t sample = _buffer[index];
+        if ((_upsampleFactor != 0) && ((i % _upsampleFactor) == 1)) 
+        {
+            // Add an interpolated sample
+            int32_t interpolatedSample = sample;
+            interpolatedSample += previousSample;
+            interpolatedSample /= 2;
+            sampleBuffer[j++] = interpolatedSample;
+        }
+        sampleBuffer[j++] = sample;
+
+        previousSample = sample;
+        if (++index == _size) index = 0;
+    }
+
+    _numNewSamples -= numSamples;
 }
 
 

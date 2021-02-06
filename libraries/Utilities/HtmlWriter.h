@@ -16,10 +16,10 @@ class HtmlWriter
 
         void writeHeader(String title, bool includeHomePageLink, bool includeHeading, uint16_t refreshInterval = 0);
         void writeFooter();
-        void writeBar(float value, String cssClass, bool fill);
+        void writeBar(float value, String cssClass, bool fill, bool useDiv = true);
         void writeTextBox(String name, String label, String value, uint16_t maxLength);
         void writeCheckbox(String name, String label, bool value);
-
+        void writeSlider(String name, String label, String unitOfMeasure, int value, int minValue, int maxValue);
 
     private:
         StringBuilder& _output;

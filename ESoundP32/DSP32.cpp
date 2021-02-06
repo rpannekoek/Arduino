@@ -25,7 +25,7 @@ bool DSP32::begin(uint16_t frameSize, WindowType windowType, float sampleFrequen
     esp_err_t dsps_result = dsps_fft2r_init_fc32(_fftTableBuffer, frameSize);
     if (dsps_result  != ESP_OK)
     {
-        TRACE(F("Not possible to initialize FFT. Error = %i\n"), dsps_result);
+        TRACE(F("dsps_fft2r_init_fc32() returned %X\n"), dsps_result);
         return false;
     }
 
@@ -265,14 +265,14 @@ BinInfo DSP32::getOctaveInfo(uint16_t index)
     return result;
 }
 
+
 String DSP32::getNote(float frequency)
 {
     static const char* notes[] = { "A", "Bb", "B", "C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab" };
     const float a0Frequency = 27.5;
 
-    return "?";
-
     int noteIndex = roundf(log2f(frequency / a0Frequency) * 12);
+    if (noteIndex < 0) noteIndex = 0;
     int octave = noteIndex / 12;
 
     String result = String(notes[noteIndex % 12]);

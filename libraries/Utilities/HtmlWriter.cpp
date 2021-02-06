@@ -51,7 +51,7 @@ void HtmlWriter::writeFooter()
 }
 
 
-void HtmlWriter::writeBar(float value, String cssClass, bool fill)
+void HtmlWriter::writeBar(float value, String cssClass, bool fill, bool useDiv)
 {
     int barLength = round(value * _maxBarLength);
     if (barLength > _maxBarLength) barLength = _maxBarLength;
@@ -59,7 +59,9 @@ void HtmlWriter::writeBar(float value, String cssClass, bool fill)
     memset(_bar, 'o', barLength);
     _bar[barLength] = 0;
 
-    _output.printf(F("<div><span class=\"%s\">%s</span>"), cssClass.c_str(), _bar);
+    if (useDiv) _output.print(F("<div>"));
+
+    _output.printf(F("<span class=\"%s\">%s</span>"), cssClass.c_str(), _bar);
 
     if (fill)
     {
@@ -74,7 +76,7 @@ void HtmlWriter::writeBar(float value, String cssClass, bool fill)
         _output.print(F("<span class=\"emptyBar\">o</span>"));
     }
 
-    _output.print("</div>");
+    if (useDiv) _output.print("</div>");
 }
 
 
@@ -104,3 +106,16 @@ void HtmlWriter::writeCheckbox(String name, String label, bool value)
         );
 }
 
+
+void HtmlWriter::writeSlider(String name, String label, String unitOfMeasure, int value, int minValue, int maxValue)
+{
+    _output.printf(F("<tr><td><label for=\"%s\">%s</label></td><td>"), name.c_str(), label.c_str());
+    _output.printf(
+        F("<div><input name=\"%s\" type=\"range\" min=\"%d\" max=\"%d\" value=\"%d\"></div>"),
+        name.c_str(),
+        minValue,
+        maxValue,
+        value
+        );
+    _output.printf(F("<div>%d %s</div></td></tr>\r\n"), value, unitOfMeasure.c_str());   
+}
