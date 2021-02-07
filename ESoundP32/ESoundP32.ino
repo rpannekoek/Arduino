@@ -20,6 +20,7 @@
 #include "I2SMicrophone.h"
 #include "FX.h"
 #include "FXReverb.h"
+#include "FXFlanger.h"
 #include "WaveBuffer.h"
 
 #define SAMPLE_FREQUENCY 44100
@@ -215,6 +216,7 @@ void setup()
         logError(F("Starting microphone failed"));
 
     SoundEffects.registerFX(new FXReverb(SAMPLE_FREQUENCY));
+    SoundEffects.registerFX(new FXFlanger(SAMPLE_FREQUENCY));
 
     Tracer::traceFreeHeap();
 

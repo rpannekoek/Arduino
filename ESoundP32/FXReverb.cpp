@@ -19,7 +19,7 @@ void FXReverb::writeConfigForm(HtmlWriter& html)
     int msDelay = roundf(1000.0 * _delay / _sampleRate); 
 
     html.writeSlider(CFG_DELAY, F("Delay"), F("ms"), msDelay, 2, 2000);
-    html.writeSlider(CFG_ATTENUATION, F("Attenuation"), F("x"), _attenuation, 10, 80);
+    html.writeSlider(CFG_ATTENUATION, F("Attenuation"), F("/8"), _attenuation, 10, 80);
 }
 
 
@@ -41,15 +41,4 @@ void FXReverb::filter(int32_t& newSample, const int16_t* buffer, uint32_t index,
     int32_t delayedSample = buffer[delayIndex];
     
     newSample += (8 * delayedSample / _attenuation);
-
-    /*
-    TRACE(
-        F("newSample: %d, delayedSample: %d, delayIndex: %u, index: %u, size: %u\n"),
-        newSample,
-        delayedSample,
-        delayIndex,
-        index,
-        size
-        );
-    */
 }
