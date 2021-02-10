@@ -9,14 +9,13 @@
 #define CFG_MOD_FREQ F("Flanger_ModFreq")
 #define CFG_MOD_DEPTH F("Flanger_ModDepth")
 
-// Constructor
-FXFlanger::FXFlanger(uint16_t sampleRate)
+void FXFlanger::initialize()
 {
-    _sampleRate = sampleRate;
-    _delay = sampleRate / 10; // 100 ms
+    _delay = _sampleRate / 100; // 10 ms
     _attenuation = 40;
-    _modulationPeriod = sampleRate; // 1 s
+    _modulationPeriod = _sampleRate; // 1 s
     _modulationDepth = _delay / 2;
+    _modulationIndex = 0;
     _sineTable = (float*) ps_malloc(SINE_SAMPLES * sizeof(float));
 
     for (int i = 0; i < SINE_SAMPLES; i++)
@@ -33,8 +32,8 @@ void FXFlanger::writeConfigForm(HtmlWriter& html)
     int modFreq = _sampleRate / _modulationPeriod;
     int modPercent = 100 * _modulationDepth / _delay;
 
-    html.writeSlider(CFG_DELAY, F("Delay"), F("ms"), msDelay, 2, 200);
-    html.writeSlider(CFG_ATTENUATION, F("Attenuation"), F("/8"), _attenuation, 10, 40);
+    html.writeSlider(CFG_DELAY, F("Delay"), F("ms"), msDelay, 1, 50);
+    html.writeSlider(CFG_ATTENUATION, F("Attenuation"), F("x"), _attenuation, 8, 40, 8);
     html.writeSlider(CFG_MOD_FREQ, F("Modulation Freq"), F("Hz"), modFreq, 1, 10);
     html.writeSlider(CFG_MOD_DEPTH, F("Modulation Depth"), F("%"), modPercent, 1, 99);
 }
@@ -68,16 +67,10 @@ void FXFlanger::handleConfigPost(WebServer& webServer)
         );
 }
 
-
-void FXFlanger::filter(int32_t& newSample, const int16_t* buffer, uint32_t index, size_t size)
+int32_t FXFlanger::filter(int32_t sample, WaveBuffer& inputBuffer, WaveBuffer& outputBuffer)
 {
-    int32_t modulationIndex = index % _modulationPeriod;
-    float modulation = _sineTable[SINE_SAMPLES * modulationIndex / _modulationPeriod] * _modulationDepth;
-
-    int32_t delayIndex = index - _delay + modulation;
-    if (delayIndex < 0) delayIndex += size;
-
-    int32_t delayedSample = buffer[delayIndex];
-    
-    newSample += (8 * delayedSample / _attenuation);
+    if (++_modulationIndex == _modulationPeriod) _modulationIndex = 0;
+    float modulation = _sineTable[SINE_SAMPLES * _modulationIndex / _modulationPeriod] * _modulationDepth;
+    int32_t delayedSample = inputBuffer.getSample(_delay + modulation);
+    return sample + (8 * delayedSample / _attenuation);
 }

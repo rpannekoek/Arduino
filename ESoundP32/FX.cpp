@@ -2,17 +2,28 @@
 #include "FX.h"
 
 
-bool FXEngine::registerFX(SoundEffect* fx)
+bool FXEngine::begin(uint16_t sampleRate)
+{
+    _sampleRate = sampleRate;
+    _inputBuffer.begin(sampleRate / 10); // 100 ms input buffer
+}
+
+
+bool FXEngine::add(SoundEffect* fx)
 {
     if (_numRegisteredFX == MAX_FX) return false;
+
+    fx->_sampleRate = _sampleRate;
+    fx->initialize();
+
     _registeredFX[_numRegisteredFX++] = fx;
     return true;
 }
 
 
-bool FXEngine::enableFX(SoundEffect* fx)
+bool FXEngine::enable(SoundEffect* fx)
 {
-    Tracer tracer(F("FXEngine::enableFX"), fx->getName().c_str());
+    Tracer tracer(F("FXEngine::enable"), fx->getName().c_str());
 
     if (fx->_isEnabled)
     {
@@ -26,7 +37,7 @@ bool FXEngine::enableFX(SoundEffect* fx)
 }
 
 
-bool FXEngine::resetFX()
+bool FXEngine::reset()
 {
     _numEnabledFX = 0;
 

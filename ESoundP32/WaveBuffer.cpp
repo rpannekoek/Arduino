@@ -48,8 +48,6 @@ void WaveBuffer::clear()
 
 void WaveBuffer::addSample(int32_t sample)
 {
-    _fxEngine.filter(sample, _buffer, _index, _size);
-
     // Ensure the sample fits in 16 bits
     if (sample > 32767) 
     {

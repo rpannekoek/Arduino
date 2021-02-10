@@ -4,6 +4,7 @@
 #include <StringBuilder.h>
 #include <HtmlWriter.h>
 #include <ESPWebServer.h>
+#include "WaveBuffer.h"
 
 #define MAX_FX 8
 
@@ -16,9 +17,13 @@ class SoundEffect
         }
 
         virtual String getName() = 0;
+        virtual void initialize() = 0;
         virtual void writeConfigForm(HtmlWriter& html) = 0;
         virtual void handleConfigPost(WebServer& webServer) = 0;
-        virtual void filter(int32_t& newSample, const int16_t* buffer, uint32_t index, size_t size) = 0;
+        virtual int32_t filter(int32_t sample, WaveBuffer& inputBuffer, WaveBuffer& outputBuffer) = 0;
+
+    protected:
+        uint16_t _sampleRate;
 
     private:
         bool _isEnabled = false;
@@ -30,6 +35,10 @@ class SoundEffect
 class FXEngine
 {
     public:
+        FXEngine(WaveBuffer& outputBuffer) : _outputBuffer(outputBuffer)
+        {
+        }
+
         inline SoundEffect* getSoundEffect(uint16_t id)
         {
             if (id >= _numRegisteredFX) return nullptr;
@@ -41,23 +50,33 @@ class FXEngine
             return _numRegisteredFX;
         }
 
-        inline void filter(int32_t& newSample, const int16_t* buffer, uint32_t index, size_t size)
+        inline void addSample(int32_t sample)
         {
-            for (int i = 0; i < _numEnabledFX; i++)
+            int32_t filteredSample = sample;
+            if (_numEnabledFX > 0)
             {
-                _enabledFX[i]->filter(newSample, buffer, index, size);
+                for (int i = 0; i < _numEnabledFX; i++)
+                {
+                    filteredSample = _enabledFX[i]->filter(filteredSample, _inputBuffer, _outputBuffer);
+                }
+                _inputBuffer.addSample(sample);
             }
+            _outputBuffer.addSample(filteredSample);
         }
 
-        bool registerFX(SoundEffect* fx);
-        bool enableFX(SoundEffect* fx);
-        bool resetFX();
+        bool begin(uint16_t sampleRate);
+        bool add(SoundEffect* fx);
+        bool enable(SoundEffect* fx);
+        bool reset();
 
     private:
+        WaveBuffer& _outputBuffer;
+        WaveBuffer _inputBuffer;
         SoundEffect* _registeredFX[MAX_FX];
         SoundEffect* _enabledFX[MAX_FX];
         int _numRegisteredFX = 0;
         int _numEnabledFX = 0;
+        uint16_t _sampleRate;
 };
 
 #endif

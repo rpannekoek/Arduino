@@ -107,7 +107,7 @@ void HtmlWriter::writeCheckbox(String name, String label, bool value)
 }
 
 
-void HtmlWriter::writeSlider(String name, String label, String unitOfMeasure, int value, int minValue, int maxValue)
+void HtmlWriter::writeSlider(String name, String label, String unitOfMeasure, int value, int minValue, int maxValue, int denominator)
 {
     _output.printf(F("<tr><td><label for=\"%s\">%s</label></td><td>"), name.c_str(), label.c_str());
     _output.printf(
@@ -117,5 +117,9 @@ void HtmlWriter::writeSlider(String name, String label, String unitOfMeasure, in
         maxValue,
         value
         );
-    _output.printf(F("<div>%d %s</div></td></tr>\r\n"), value, unitOfMeasure.c_str());   
+    
+    if (denominator == 1)
+        _output.printf(F("<div>%d %s</div></td></tr>\r\n"), value, unitOfMeasure.c_str());
+    else
+        _output.printf(F("<div>%0.1f %s</div></td></tr>\r\n"), float(value) / denominator, unitOfMeasure.c_str());
 }

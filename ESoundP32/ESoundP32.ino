@@ -18,10 +18,11 @@
 #include "PersistentData.h"
 #include "DSP32.h"
 #include "I2SMicrophone.h"
+#include "WaveBuffer.h"
 #include "FX.h"
 #include "FXReverb.h"
 #include "FXFlanger.h"
-#include "WaveBuffer.h"
+#include "FXModulation.h"
 
 #define SAMPLE_FREQUENCY 44100
 #define DSP_FRAME_SIZE 2048
@@ -61,9 +62,9 @@ BluetoothAudio BTAudio;
 //U8G2_SSD1306_128X64_NONAME_F_HW_I2C Display(U8G2_R0, /*RST*/ U8X8_PIN_NONE, /*SCL*/ GPIO_NUM_4, /*SDA*/ GPIO_NUM_5);
 U8G2_SSD1327_MIDAS_128X128_F_HW_I2C Display(U8G2_R0, /*RST*/ U8X8_PIN_NONE, /*SCL*/ GPIO_NUM_21, /*SDA*/ GPIO_NUM_22);
 DSP32 DSP(/*tracePerformance*/ false);
-FXEngine SoundEffects;
-WaveBuffer WaveBuffer(SoundEffects);
-I2SMicrophone Mic(WaveBuffer);
+WaveBuffer WaveBuffer;
+FXEngine SoundEffects(WaveBuffer);
+I2SMicrophone Mic(SoundEffects);
 
 WaveStats lastWaveStats;
 float* lastOctavePower;
@@ -215,8 +216,10 @@ void setup()
     if (!Mic.begin(I2S_NUM_0, SAMPLE_FREQUENCY, /*bck*/GPIO_NUM_12, /*ws*/GPIO_NUM_13, /*data*/GPIO_NUM_14 ))
         logError(F("Starting microphone failed"));
 
-    SoundEffects.registerFX(new FXReverb(SAMPLE_FREQUENCY));
-    SoundEffects.registerFX(new FXFlanger(SAMPLE_FREQUENCY));
+    SoundEffects.begin(SAMPLE_FREQUENCY);
+    SoundEffects.add(new FXReverb());
+    SoundEffects.add(new FXFlanger());
+    SoundEffects.add(new FXModulation());
 
     Tracer::traceFreeHeap();
 
@@ -717,9 +720,14 @@ void handleHttpMicRequest()
 
     Html.writeCheckbox(F("AGC"), F("AGC"), useMicAGC);
 
-    HttpResponse.printf(F("<tr><td>Sample rate</td><td>%0.1f kHz</td></tr>\r\n"), micSampleRateKHz);
-
     Html.writeSlider(F("Delay"), F("Delay"), F("ms"), msDelay, 10, 1000);
+
+    HttpResponse.printf(F("<tr><td>Sample rate</td><td>%0.1f kHz</td></tr>\r\n"), micSampleRateKHz);
+    HttpResponse.printf(
+        F("<tr><td>Cycles</td><td>%u (%0.1f us)</td></tr>\r\n"), 
+        Mic.getCycles(),
+        float(Mic.getCycles()) / ESP.getCpuFreqMHz()
+        );
 
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
@@ -759,9 +767,10 @@ void handleHttpFxRequest()
  
     for (int i = 0; i < SoundEffects.getNumRegisteredFX(); i++)
     {
-        HttpResponse.println(F("<table>"));
         SoundEffect* fxPtr = SoundEffects.getSoundEffect(i);
-        Html.writeCheckbox(fxPtr->getName(), fxPtr->getName(), fxPtr->isEnabled());
+        HttpResponse.printf(F("<h2>%s</h2>\r\n"), fxPtr->getName().c_str());
+        HttpResponse.println(F("<table>"));
+        Html.writeCheckbox(fxPtr->getName(), F("Enable"), fxPtr->isEnabled());
         fxPtr->writeConfigForm(Html);
         HttpResponse.println(F("</table>"));
     }
@@ -779,14 +788,14 @@ void handleHttpFxPostRequest()
 {
     Tracer tracer(F(__func__));
 
-    SoundEffects.resetFX();
+    SoundEffects.reset();
 
     for (int i = 0; i < SoundEffects.getNumRegisteredFX(); i++)
     {
         SoundEffect* fxPtr = SoundEffects.getSoundEffect(i);
         fxPtr->handleConfigPost(WebServer);
         if (WebServer.hasArg(fxPtr->getName()))
-            SoundEffects.enableFX(fxPtr);
+            SoundEffects.enable(fxPtr);
     }
 
     handleHttpFxRequest();

@@ -2,13 +2,15 @@
 #define I2S_MICROPHONE_H
 
 #include <driver/i2s.h>
-#include "WaveBuffer.h"
+#include "FX.h"
 
 class I2SMicrophone
 {
     public:
         // Constructor
-        I2SMicrophone(WaveBuffer& waveBuffer);
+        I2SMicrophone(FXEngine& fxEngine) : _fxEngine(fxEngine)
+        {
+        }
 
         inline bool isRecording()
         {
@@ -20,6 +22,11 @@ class I2SMicrophone
             return _recordedSamples;
         }
 
+        inline uint32_t getCycles()
+        {
+            return _cycles;
+        }
+
         bool begin(i2s_port_t i2sPort, int sampleRate, int bckPin, int wsPin, int dataPin);
         bool startRecording();
         bool stopRecording();
@@ -29,11 +36,12 @@ class I2SMicrophone
 
     protected:
         i2s_port_t _i2sPort;
-        WaveBuffer& _waveBuffer;
+        FXEngine& _fxEngine;
         TaskHandle_t _dataSinkTaskHandle;
         volatile bool _isRecording = false;
         volatile int32_t _scale = 4096;
         uint32_t _recordedSamples = 0;
+        uint32_t _cycles = 0;
 
         void dataSink();
 

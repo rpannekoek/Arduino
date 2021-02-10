@@ -2,7 +2,6 @@
 #define WAVE_BUFFER_H
 
 #include <Stream.h>
-#include "FX.h"
 
 struct WaveStats
 {
@@ -14,11 +13,6 @@ struct WaveStats
 class WaveBuffer
 {
     public:
-        // Constructor
-        WaveBuffer(FXEngine& fxEngine) : _fxEngine(fxEngine)
-        {
-        }
-
         inline size_t getNumSamples()
         {
             return _numSamples;
@@ -49,6 +43,14 @@ class WaveBuffer
             return _upsampleFactor;
         }
 
+        inline int16_t getSample(uint32_t delay)
+        {
+            if (delay > _numSamples) delay = _numSamples;
+            int32_t index = _index - delay;
+            if (index < 0) index += _size;
+            return _buffer[index];
+        }
+
         bool begin(size_t size);
         void clear();
         void addSample(int32_t sample);
@@ -58,7 +60,6 @@ class WaveBuffer
         WaveStats getStatistics(size_t frameSize = 0);
 
     protected:
-        FXEngine& _fxEngine;
         size_t _size;
         size_t _numSamples = 0;
         size_t _numNewSamples = 0;

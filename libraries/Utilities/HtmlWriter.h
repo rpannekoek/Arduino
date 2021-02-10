@@ -19,7 +19,7 @@ class HtmlWriter
         void writeBar(float value, String cssClass, bool fill, bool useDiv = true);
         void writeTextBox(String name, String label, String value, uint16_t maxLength);
         void writeCheckbox(String name, String label, bool value);
-        void writeSlider(String name, String label, String unitOfMeasure, int value, int minValue, int maxValue);
+        void writeSlider(String name, String label, String unitOfMeasure, int value, int minValue, int maxValue, int denominator = 1);
 
     private:
         StringBuilder& _output;

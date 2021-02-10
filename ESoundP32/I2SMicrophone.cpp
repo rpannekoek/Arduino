@@ -19,13 +19,6 @@ i2s_config_t i2sConfig =
 };
 
 
-// Constructor
-I2SMicrophone::I2SMicrophone(WaveBuffer& waveBuffer)
-    : _waveBuffer(waveBuffer)
-{
-}
-
-
 bool I2SMicrophone::begin(i2s_port_t i2sPort, int sampleRate, int bckPin, int wsPin, int dataPin)
 {
     Tracer tracer(F("I2SMicrophone::begin"));
@@ -146,6 +139,8 @@ void I2SMicrophone::dataSink()
         int32_t micSample;
         size_t bytesRead;
         esp_err_t err = i2s_read(_i2sPort, &micSample, sizeof(int32_t), &bytesRead, 15 /*ms*/);
+
+        uint32_t startCycles = ESP.getCycleCount();
         if (err != ESP_OK)
         {
             TRACE(F("i2s_read returned %X\n"), err);
@@ -161,8 +156,9 @@ void I2SMicrophone::dataSink()
 
         _recordedSamples++;
 
-        // Convert 32 bits sample (only 24 MSB set) to 16 bits
-        _waveBuffer.addSample(micSample / _scale);
+        _fxEngine.addSample(micSample / _scale);
+
+        _cycles = ESP.getCycleCount() - startCycles;
     }
 }
 

@@ -1,11 +1,11 @@
 #include "FX.h"
 
-class FXFlanger : public SoundEffect
+class FXModulation : public SoundEffect
 {
 public:
     virtual String getName()
     {
-        return F("Flanger");
+        return F("Modulation");
     }
 
     virtual void initialize();
@@ -13,11 +13,10 @@ public:
     virtual void handleConfigPost(WebServer& webServer);
     virtual int32_t filter(int32_t sample, WaveBuffer& inputBuffer, WaveBuffer& outputBuffer);
 
-protected:
-    uint32_t _delay;
+private:
     uint32_t _modulationPeriod;
-    uint32_t _modulationDepth;
     uint32_t _modulationIndex;
-    int32_t _attenuation;
-    float* _sineTable;
+    float* _sineTable = nullptr;
+
+    void buildSineTable();
 };
