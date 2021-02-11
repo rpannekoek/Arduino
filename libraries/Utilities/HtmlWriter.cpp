@@ -107,6 +107,30 @@ void HtmlWriter::writeCheckbox(String name, String label, bool value)
 }
 
 
+void HtmlWriter::writeRadioButtons(String name, String label, const char** values, int numValues, int index)
+{
+    _output.printf(
+        F("<tr><td><label for=\"%s\">%s</label></td><td>"), 
+        name.c_str(),
+        label.c_str()
+        );
+
+    for (int i = 0; i < numValues; i++)
+    {
+        const char* checked = (i == index) ? "checked" : "";
+        _output.printf(
+            F("<input type=\"radio\" name=\"%s\" value=\"%d\" %s>%s"), 
+            name.c_str(),
+            i,
+            checked,
+            values[i]
+            );
+    }
+
+    _output.println(F("</td></tr>"));
+}
+
+
 void HtmlWriter::writeSlider(String name, String label, String unitOfMeasure, int value, int minValue, int maxValue, int denominator)
 {
     _output.printf(F("<tr><td><label for=\"%s\">%s</label></td><td>"), name.c_str(), label.c_str());

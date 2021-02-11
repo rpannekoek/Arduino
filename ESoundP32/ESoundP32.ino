@@ -23,6 +23,7 @@
 #include "FXReverb.h"
 #include "FXFlanger.h"
 #include "FXModulation.h"
+#include "FXFilter.h"
 
 #define SAMPLE_FREQUENCY 44100
 #define DSP_FRAME_SIZE 2048
@@ -220,6 +221,7 @@ void setup()
     SoundEffects.add(new FXReverb());
     SoundEffects.add(new FXFlanger());
     SoundEffects.add(new FXModulation());
+    SoundEffects.add(new FXFilter());
 
     Tracer::traceFreeHeap();
 
@@ -829,7 +831,7 @@ void testFillWaveBuffer()
         {
             float phi = float(2 * PI) * i / 64;
             int16_t sinewave = sinf(phi) * 32000 + 700;
-            WaveBuffer.addSample(sinewave);
+            SoundEffects.addSample(sinewave);
         }
     }
     else
@@ -839,7 +841,7 @@ void testFillWaveBuffer()
         {
             int16_t squarewave = ((i % 64) < 32) ? 32000 : -32000;
             squarewave += 700;
-            WaveBuffer.addSample(squarewave);
+            SoundEffects.addSample(squarewave);
         }
     }
 }

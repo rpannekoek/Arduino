@@ -47,6 +47,25 @@ struct complex_t
     }
 };
 
+
+enum struct FilterType
+{
+    LPF,
+    BPF,
+    HPF
+};
+
+
+struct BiquadCoefficients
+{
+    float b0;
+    float b1;
+    float b2;
+    float a1;
+    float a2;
+};
+
+
 class DSP32
 {
     public:
@@ -67,6 +86,7 @@ class DSP32
         BinInfo getBinInfo(uint16_t index);
         BinInfo getOctaveInfo(uint16_t index);
         String getNote(float frequency);
+        static BiquadCoefficients calcFilterCoefficients(FilterType filterType, float f, float qFactor);
 
     protected:
         bool _tracePerformance;

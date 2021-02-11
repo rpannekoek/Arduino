@@ -279,3 +279,35 @@ String DSP32::getNote(float frequency)
     result += octave;
     return result;
 }
+
+
+BiquadCoefficients DSP32::calcFilterCoefficients(FilterType filterType, float f, float qFactor)
+{
+    BiquadCoefficients result;
+    float* coefficients = (float*) &result;
+    esp_err_t err;
+    switch (filterType)
+    {
+        case FilterType::LPF:
+            err = dsps_biquad_gen_lpf_f32(coefficients, f, qFactor);
+            break;
+
+        case FilterType::BPF:
+            err = dsps_biquad_gen_bpf_f32(coefficients, f, qFactor);
+            break;
+
+        case FilterType::HPF:
+            err = dsps_biquad_gen_hpf_f32(coefficients, f, qFactor);
+            break;
+
+        default:
+            TRACE(F("Unexpected filter type.\n"));
+    }
+
+    if (err != ESP_OK)
+    {
+        TRACE(F("Error calculating coefficients: %X\n"), err);
+    }
+
+    return result;
+}
