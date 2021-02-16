@@ -15,11 +15,12 @@
 #include <Log.h>
 #include <WiFiStateMachine.h>
 #include <BluetoothAudio.h>
+#include <DSP32.h>
+#include <I2SMicrophone.h>
+#include <TimerDAC.h>
+#include <WaveBuffer.h>
+#include <FX.h>
 #include "PersistentData.h"
-#include "DSP32.h"
-#include "I2SMicrophone.h"
-#include "WaveBuffer.h"
-#include "FX.h"
 #include "FXReverb.h"
 #include "FXFlanger.h"
 #include "FXModulation.h"
@@ -62,10 +63,14 @@ WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 BluetoothAudio BTAudio;
 //U8G2_SSD1306_128X64_NONAME_F_HW_I2C Display(U8G2_R0, /*RST*/ U8X8_PIN_NONE, /*SCL*/ GPIO_NUM_4, /*SDA*/ GPIO_NUM_5);
 U8G2_SSD1327_MIDAS_128X128_F_HW_I2C Display(U8G2_R0, /*RST*/ U8X8_PIN_NONE, /*SCL*/ GPIO_NUM_21, /*SDA*/ GPIO_NUM_22);
+//U8G2_SSD1306_128X64_NONAME_F_4W_HW_SPI(U8G2_R0, /*CS*/ 666, /*DC*/ 666, /*RST*/ 666);
+//Adafruit_SSD1306 Display(128, 64, nullptr, TFT_DC, TFT_RST, TFT_CS);
+
 DSP32 DSP(/*tracePerformance*/ false);
 WaveBuffer WaveBuffer;
 FXEngine SoundEffects(WaveBuffer);
-I2SMicrophone Mic(SoundEffects);
+I2SMicrophone Mic(SoundEffects, SAMPLE_FREQUENCY, I2S_NUM_1, /*bck*/GPIO_NUM_12, /*ws*/GPIO_NUM_15, /*data*/GPIO_NUM_13);
+TimerDAC DAC(WaveBuffer);
 
 WaveStats lastWaveStats;
 float* lastOctavePower;
@@ -214,8 +219,11 @@ void setup()
     if (!DSP.begin(DSP_FRAME_SIZE, WindowType::Hann, SAMPLE_FREQUENCY))
         logError(F("DSP.begin() failed"));
 
-    if (!Mic.begin(I2S_NUM_0, SAMPLE_FREQUENCY, /*bck*/GPIO_NUM_12, /*ws*/GPIO_NUM_13, /*data*/GPIO_NUM_14 ))
+    if (!Mic.begin())
         logError(F("Starting microphone failed"));
+
+    if (!DAC.begin(dac_channel_t::DAC_CHANNEL_1, SAMPLE_FREQUENCY))
+        logError(F("Starting DAC failed"));
 
     SoundEffects.begin(SAMPLE_FREQUENCY);
     SoundEffects.add(new FXReverb());
@@ -854,17 +862,22 @@ void handleHttpWaveRequest()
         WaveBuffer.clear();
 
     if (shouldPerformAction(F("startMic")))
-    {
-        WaveBuffer.clear();
         Mic.startRecording();
-        runDspMillis = millis();
-    }
 
     if (shouldPerformAction(F("stopMic")))
         Mic.stopRecording();
 
+    if (shouldPerformAction(F("startDAC")))
+        DAC.startPlaying();
+
+    if (shouldPerformAction(F("stopDAC")))
+        DAC.stopPlaying();
+
     if (shouldPerformAction(F("test")))
         testFillWaveBuffer();
+
+    if (shouldPerformAction(F("startVU")))
+        runDspMillis = millis();
 
     if (shouldPerformAction(F("stopVU")))
         runDspMillis = 0;
@@ -877,7 +890,9 @@ void handleHttpWaveRequest()
     if (WaveBuffer.getNumSamples() != 0)
         HttpResponse.printf(F("<p><a href=\"?clear=%u\">Clear buffer</a></p>\r\n"), currentTime);
 
-    if (runDspMillis != 0)
+    if (runDspMillis == 0)
+        HttpResponse.printf(F("<p><a href=\"?startVU=%u\">Start VU Meter</a></p>\r\n"), currentTime);
+    else
         HttpResponse.printf(F("<p><a href=\"?stopVU=%u\">Stop VU Meter</a></p>\r\n"), currentTime);
 
     if (Mic.isRecording())
@@ -892,6 +907,11 @@ void handleHttpWaveRequest()
         if (isFTPEnabled)
             HttpResponse.println(F("<p><a href=\"/wave/ftp\">Write to FTP Server</a></p>"));
     }
+
+    if (DAC.isPlaying())
+        HttpResponse.printf(F("<p><a href=\"?stopDAC=%u\">Stop DAC</a></p>\r\n"), currentTime);
+    else if (!BTAudio.isSourceStarted())
+        HttpResponse.printf(F("<p><a href=\"?startDAC=%u\">Start DAC</a></p>\r\n"), currentTime);
 
     WaveStats waveStats = WaveBuffer.getStatistics(); // Get stats for whole buffer
 

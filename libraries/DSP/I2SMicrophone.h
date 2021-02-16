@@ -8,9 +8,7 @@ class I2SMicrophone
 {
     public:
         // Constructor
-        I2SMicrophone(FXEngine& fxEngine) : _fxEngine(fxEngine)
-        {
-        }
+        I2SMicrophone(FXEngine& fxEngine, int sampleRate, i2s_port_t i2sPort, int bckPin, int wsPin, int dataPin);
 
         inline bool isRecording()
         {
@@ -27,15 +25,17 @@ class I2SMicrophone
             return _cycles;
         }
 
-        bool begin(i2s_port_t i2sPort, int sampleRate, int bckPin, int wsPin, int dataPin);
+        bool begin();
         bool startRecording();
         bool stopRecording();
         bool setGain(float dB);
         float getGain();
         float adjustGain(float dBFS);
 
-    protected:
+    private:
         i2s_port_t _i2sPort;
+        i2s_config_t _i2sConfig; 
+        i2s_pin_config_t _i2sPinConfig;
         FXEngine& _fxEngine;
         TaskHandle_t _dataSinkTaskHandle;
         volatile bool _isRecording = false;

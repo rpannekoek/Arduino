@@ -51,6 +51,14 @@ class WaveBuffer
             return _buffer[index];
         }
 
+        inline int16_t getNewSample()
+        {
+            if (_numNewSamples == 0) return 0;
+            int32_t index = _index - _numNewSamples--;
+            if (index < 0) index += _size;
+            return _buffer[index];
+        }
+
         bool begin(size_t size);
         void clear();
         void addSample(int32_t sample);

@@ -3,52 +3,53 @@
 #include "I2SMicrophone.h"
 
 
-i2s_config_t i2sConfig = 
+
+// Constructor
+I2SMicrophone::I2SMicrophone(FXEngine& fxEngine, int sampleRate, i2s_port_t i2sPort, int bckPin, int wsPin, int dataPin)
+    : _fxEngine(fxEngine)
 {
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
-    .sample_rate = 44100,
-    .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
-    .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-    .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S),
-    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL3, // interrupt priority
-    .dma_buf_count = 3,
-    .dma_buf_len = 512, // samples
-    .use_apll = true,
-    .tx_desc_auto_clear = false,
-    .fixed_mclk = 0   
-};
+    _i2sPort = i2sPort;
+    _i2sConfig = {
+            .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+            .sample_rate = sampleRate,
+            .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+            .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+            .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S),
+            .intr_alloc_flags = ESP_INTR_FLAG_LEVEL3, // interrupt priority
+            .dma_buf_count = 3,
+            .dma_buf_len = 512, // samples
+            .use_apll = true,
+            .tx_desc_auto_clear = false,
+            .fixed_mclk = 0   
+        };
+    _i2sPinConfig = {
+        .bck_io_num = bckPin,
+        .ws_io_num = wsPin,
+        .data_out_num = I2S_PIN_NO_CHANGE,
+        .data_in_num = dataPin,
+    };
+}
 
 
-bool I2SMicrophone::begin(i2s_port_t i2sPort, int sampleRate, int bckPin, int wsPin, int dataPin)
+bool I2SMicrophone::begin()
 {
     Tracer tracer(F("I2SMicrophone::begin"));
 
-    _i2sPort = i2sPort;
-    i2sConfig.sample_rate = sampleRate;
-
-    esp_err_t err = i2s_driver_install(i2sPort, &i2sConfig, 0, nullptr);
+    esp_err_t err = i2s_driver_install(_i2sPort, &_i2sConfig, 0, nullptr);
     if (err != ESP_OK)
     {
         TRACE(F("i2s_driver_install returned %X\n"), err);
         return false;        
     }
 
-    i2s_pin_config_t pinConfig =
-    {
-        .bck_io_num = bckPin,
-        .ws_io_num = wsPin,
-        .data_out_num = I2S_PIN_NO_CHANGE,
-        .data_in_num = dataPin
-    };
-
-    err = i2s_set_pin(i2sPort, &pinConfig);
+   err = i2s_set_pin(_i2sPort, &_i2sPinConfig);
     if (err != ESP_OK)
     {
         TRACE(F("i2s_set_pin returned %X\n"), err);
         return false;        
     }
 
-    err = i2s_start(i2sPort);
+    err = i2s_start(_i2sPort);
     if (err != ESP_OK)
     {
         TRACE(F("i2s_start returned %X\n"), err);
@@ -58,7 +59,7 @@ bool I2SMicrophone::begin(i2s_port_t i2sPort, int sampleRate, int bckPin, int ws
     xTaskCreatePinnedToCore(
         dataSinkTask,
         "Mic Data Sink",
-        8192, // Stack Size (words)
+        4096, // Stack Size (words)
         this, // taskParams
         3, // Priority
         &_dataSinkTaskHandle,
