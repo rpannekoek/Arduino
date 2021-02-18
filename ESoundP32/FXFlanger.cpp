@@ -67,7 +67,7 @@ void FXFlanger::handleConfigPost(WebServer& webServer)
         );
 }
 
-int32_t FXFlanger::filter(int32_t sample, WaveBuffer& inputBuffer, WaveBuffer& outputBuffer)
+int32_t FXFlanger::filter(int32_t sample, ISampleStore& inputBuffer, ISampleStore& outputBuffer)
 {
     if (++_modulationIndex == _modulationPeriod) _modulationIndex = 0;
     float modulation = _sineTable[SINE_SAMPLES * _modulationIndex / _modulationPeriod] * _modulationDepth;

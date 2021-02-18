@@ -10,7 +10,15 @@ struct WaveStats
 };
 
 
-class WaveBuffer
+class ISampleStore
+{
+    public:
+        virtual void addSample(int32_t sample) = 0;
+        virtual int16_t getSample(uint32_t delay) = 0;
+};
+
+
+class WaveBuffer : public ISampleStore
 {
     public:
         inline size_t getNumSamples()
@@ -43,14 +51,6 @@ class WaveBuffer
             return _upsampleFactor;
         }
 
-        inline int16_t getSample(uint32_t delay)
-        {
-            if (delay > _numSamples) delay = _numSamples;
-            int32_t index = _index - delay;
-            if (index < 0) index += _size;
-            return _buffer[index];
-        }
-
         inline int16_t getNewSample()
         {
             if (_numNewSamples == 0) return 0;
@@ -61,7 +61,8 @@ class WaveBuffer
 
         bool begin(size_t size);
         void clear();
-        void addSample(int32_t sample);
+        virtual void addSample(int32_t sample);
+        virtual int16_t getSample(uint32_t delay);
         size_t getSamples(int16_t* sampleBuffer, size_t numSamples);
         void getNewSamples(int16_t* sampleBuffer, size_t numSamples, size_t minDistance);
         void writeWaveFile(Stream& toStream, uint16_t sampleRate);

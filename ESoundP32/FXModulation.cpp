@@ -45,7 +45,7 @@ void FXModulation::handleConfigPost(WebServer& webServer)
 }
 
 
-int32_t FXModulation::filter(int32_t sample, WaveBuffer& inputBuffer, WaveBuffer& outputBuffer)
+int32_t FXModulation::filter(int32_t sample, ISampleStore& inputBuffer, ISampleStore& outputBuffer)
 {
     if (++_modulationIndex == _modulationPeriod) _modulationIndex = 0;
     return float(sample) * _sineTable[_modulationIndex];

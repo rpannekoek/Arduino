@@ -2,10 +2,9 @@
 #include "FX.h"
 
 
-bool FXEngine::begin(uint16_t sampleRate)
+bool FXEngine::begin()
 {
-    _sampleRate = sampleRate;
-    _inputBuffer.begin(sampleRate / 10); // 100 ms input buffer
+    _inputBuffer.begin(_sampleRate / 10); // 100 ms input buffer
 }
 
 
@@ -47,4 +46,25 @@ bool FXEngine::reset()
     }
 
     return true;    
+}
+
+
+void FXEngine::addSample(int32_t sample)
+{
+    int32_t filteredSample = sample;
+    if (_numEnabledFX > 0)
+    {
+        for (int i = 0; i < _numEnabledFX; i++)
+        {
+            filteredSample = _enabledFX[i]->filter(filteredSample, _inputBuffer, _outputBuffer);
+        }
+        _inputBuffer.addSample(sample);
+    }
+    _outputBuffer.addSample(filteredSample);
+}
+
+
+int16_t FXEngine::getSample(uint32_t delay)
+{
+    _outputBuffer.getSample(delay);
 }

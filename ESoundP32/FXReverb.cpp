@@ -31,7 +31,7 @@ void FXReverb::handleConfigPost(WebServer& webServer)
 }
 
 
-int32_t FXReverb::filter(int32_t sample, WaveBuffer& inputBuffer, WaveBuffer& outputBuffer)
+int32_t FXReverb::filter(int32_t sample, ISampleStore& inputBuffer, ISampleStore& outputBuffer)
 {
     int32_t delayedSample = outputBuffer.getSample(_delay);
     return sample + (8 * delayedSample / _attenuation);

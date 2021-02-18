@@ -45,7 +45,7 @@ void FXFilter::handleConfigPost(WebServer& webServer)
 }
 
 
-int32_t FXFilter::filter(int32_t sample, WaveBuffer& inputBuffer, WaveBuffer& outputBuffer)
+int32_t FXFilter::filter(int32_t sample, ISampleStore& inputBuffer, ISampleStore& outputBuffer)
 {
     float output = _coefficients.b0 * sample;
     output += _coefficients.b1 * inputBuffer.getSample(1);

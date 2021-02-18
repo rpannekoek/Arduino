@@ -68,6 +68,15 @@ void WaveBuffer::addSample(int32_t sample)
 }
 
 
+int16_t WaveBuffer::getSample(uint32_t delay)
+{
+    if (delay > _numSamples) delay = _numSamples;
+    int32_t index = _index - delay;
+    if (index < 0) index += _size;
+    return _buffer[index];
+}
+
+
 size_t WaveBuffer::getSamples(int16_t* sampleBuffer, size_t numSamples)
 {
     if (numSamples > _numSamples) numSamples = _numSamples;
@@ -90,12 +99,19 @@ void WaveBuffer::getNewSamples(int16_t* sampleBuffer, size_t numSamples, size_t 
         return;
     }
 
-    // Slipping buffer implementation
+    // Try to keep a fixed distance of 8 * numSamples
+    // Compensate differences in incoming & outgoing rates by up/down-sampling if needed
     _upsampleFactor = 0;
     int distanceFactor = (_numNewSamples - minDistance) / numSamples;
     if (distanceFactor < 8)
     {
-        _upsampleFactor = 1 << distanceFactor;
+        _upsampleFactor = 2 << distanceFactor; // 3-25%
+        numSamples -= numSamples / _upsampleFactor;
+    }
+    else if ((distanceFactor > 8) && (distanceFactor < 16))
+    {
+        // Negative values means: downsampling
+        _upsampleFactor = -(2 << (16 - distanceFactor)); // 3-25%
         numSamples -= numSamples / _upsampleFactor;
     }
 
@@ -107,13 +123,24 @@ void WaveBuffer::getNewSamples(int16_t* sampleBuffer, size_t numSamples, size_t 
     for (int i = 0; i < numSamples; i++)
     {
         int16_t sample = _buffer[index];
-        if ((_upsampleFactor != 0) && ((i % _upsampleFactor) == 1)) 
+        if (_upsampleFactor > 0)
         {
-            // Add an interpolated sample
-            int32_t interpolatedSample = sample;
-            interpolatedSample += previousSample;
-            interpolatedSample /= 2;
-            sampleBuffer[j++] = interpolatedSample;
+            if ((i % _upsampleFactor) == 1) 
+            {
+                // Upsampling: add an interpolated sample
+                int32_t interpolatedSample = sample;
+                interpolatedSample += previousSample;
+                interpolatedSample /= 2;
+                sampleBuffer[j++] = interpolatedSample;
+            }
+        }
+        else if (_upsampleFactor < 0)
+        {
+            if ((i % -_upsampleFactor) == 1) 
+            {
+                // Downsampling: drop/overwrite a sample
+                j--;
+            }
         }
         sampleBuffer[j++] = sample;
 

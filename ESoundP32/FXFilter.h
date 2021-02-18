@@ -12,7 +12,7 @@ public:
     virtual void initialize();
     virtual void writeConfigForm(HtmlWriter& html);
     virtual void handleConfigPost(WebServer& webServer);
-    virtual int32_t filter(int32_t sample, WaveBuffer& inputBuffer, WaveBuffer& outputBuffer);
+    virtual int32_t filter(int32_t sample, ISampleStore& inputBuffer, ISampleStore& outputBuffer);
 
 private:
     FilterType _filterType;
