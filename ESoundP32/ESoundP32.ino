@@ -1,7 +1,7 @@
 #define DEBUG_ESP_PORT Serial
 
 #include <math.h>
-#include <U8g2lib.h>
+#include <Adafruit_SSD1306.h>
 #include <driver/i2s.h>
 #include <esp_a2dp_api.h>
 #include <ESPWiFi.h>
@@ -17,7 +17,7 @@
 #include <BluetoothAudio.h>
 #include <DSP32.h>
 #include <I2SMicrophone.h>
-#include <TimerDAC.h>
+#include <I2SDAC.h>
 #include <WaveBuffer.h>
 #include <FX.h>
 #include "PersistentData.h"
@@ -32,6 +32,8 @@
 #define FULL_SCALE 32768
 #define DB_MIN 32
 #define RUN_DSP_INTERVAL 500
+#define DISPLAY_WIDTH 128
+#define DISPLAY_HEIGHT 64
 
 #define COD_AUDIO_RENDERING (ESP_BT_COD_SRVC_AUDIO | ESP_BT_COD_SRVC_RENDERING)
 
@@ -61,16 +63,13 @@ HtmlWriter Html(HttpResponse, ICON, CSS, 60); // Max bar length: 60
 Log<const char> EventLog(50); // Max 50 log entries
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 BluetoothAudio BTAudio;
-//U8G2_SSD1306_128X64_NONAME_F_HW_I2C Display(U8G2_R0, /*RST*/ U8X8_PIN_NONE, /*SCL*/ GPIO_NUM_4, /*SDA*/ GPIO_NUM_5);
-U8G2_SSD1327_MIDAS_128X128_F_HW_I2C Display(U8G2_R0, /*RST*/ U8X8_PIN_NONE, /*SCL*/ GPIO_NUM_21, /*SDA*/ GPIO_NUM_22);
-//U8G2_SSD1306_128X64_NONAME_F_4W_HW_SPI(U8G2_R0, /*CS*/ 666, /*DC*/ 666, /*RST*/ 666);
-//Adafruit_SSD1306 Display(128, 64, nullptr, TFT_DC, TFT_RST, TFT_CS);
+Adafruit_SSD1306 Display(DISPLAY_WIDTH, DISPLAY_HEIGHT, &SPI, TFT_DC, TFT_RST, TFT_CS);
 
 DSP32 DSP(/*tracePerformance*/ false);
 WaveBuffer WaveBuffer;
-FXEngine SoundEffects(WaveBuffer);
+FXEngine SoundEffects(WaveBuffer, SAMPLE_FREQUENCY);
 I2SMicrophone Mic(SoundEffects, SAMPLE_FREQUENCY, I2S_NUM_1, /*bck*/GPIO_NUM_12, /*ws*/GPIO_NUM_15, /*data*/GPIO_NUM_13);
-TimerDAC DAC(WaveBuffer);
+I2SDAC DAC(WaveBuffer, SAMPLE_FREQUENCY, I2S_NUM_0, /*bck*/GPIO_NUM_21, /*ws*/GPIO_NUM_32, /*data*/GPIO_NUM_22);
 
 WaveStats lastWaveStats;
 float* lastOctavePower;
@@ -78,8 +77,6 @@ int16_t* dspBuffer;
 
 time_t currentTime = 0;
 bool isFTPEnabled = false;
-uint8_t displayWidth =0 ;
-uint8_t displayHeight =0;
 time_t actionPerformedTime = 0;
 uint32_t a2dpDistance = 512;
 uint32_t a2dpSamples = 0;
@@ -132,22 +129,21 @@ void bootDisplay(const char* text = nullptr)
 {
     Tracer tracer(F(__func__), text);
 
-    if (displayWidth == 0) return;
+    Display.clearDisplay();
+    Display.setTextColor(SSD1306_WHITE);
 
-    Display.clearBuffer();
-
-    Display.setFont(u8g2_font_10x20_tf);
-    Display.setCursor(0, 20);
+    Display.setTextSize(2);
+    Display.setCursor(0, 0);
     Display.print(PersistentData.hostName);
 
     if (text != nullptr)
     {
-        Display.setFont(u8g2_font_8x13_tf);
-        Display.setCursor(0, 35);
+        Display.setTextSize(1);
+        Display.setCursor(0, 20);
         Display.print(text);
     }
 
-    Display.sendBuffer();
+    Display.display();
 }
 
 
@@ -174,10 +170,7 @@ void setup()
 
     if (Display.begin())
     {
-        Display.setBusClock(400000);
-        displayWidth = Display.getDisplayWidth();
-        displayHeight = Display.getDisplayHeight();
-        TRACE(F("Display size: %d x %d\n"), displayWidth, displayHeight);
+        TRACE(F("Display size: %d x %d\n"), DISPLAY_WIDTH, DISPLAY_HEIGHT);
         bootDisplay();
     }
     else
@@ -222,10 +215,10 @@ void setup()
     if (!Mic.begin())
         logError(F("Starting microphone failed"));
 
-    if (!DAC.begin(dac_channel_t::DAC_CHANNEL_1, SAMPLE_FREQUENCY))
+    if (!DAC.begin())
         logError(F("Starting DAC failed"));
 
-    SoundEffects.begin(SAMPLE_FREQUENCY);
+    SoundEffects.begin();
     SoundEffects.add(new FXReverb());
     SoundEffects.add(new FXFlanger());
     SoundEffects.add(new FXModulation());
@@ -331,16 +324,16 @@ void displayWaveInfo()
 
     float dBFS = 20 * log10f(float(lastWaveStats.peak) / FULL_SCALE);
 
-    Display.clearBuffer();
-    drawVUMeter(dBFS, lastOctavePower, displayWidth, displayHeight - 22);
-    Display.setFont(u8g2_font_9x15_tf);
-    Display.setCursor(0, displayHeight - 1);
+    Display.clearDisplay();
+    drawVUMeter(dBFS, lastOctavePower, DISPLAY_WIDTH, DISPLAY_HEIGHT - 10);
+    Display.setTextSize(1);
+    Display.setCursor(0, DISPLAY_HEIGHT - 8);
     Display.printf(
         "%0.0f dB  %d%%",
         dBFS,
         WaveBuffer.getFillPercentage()
         );
-    Display.sendBuffer();
+    Display.display();
 }
 
 
@@ -352,17 +345,17 @@ void drawVUMeter(float vu, float* octavePower, uint8_t width, uint8_t height)
     if (vuSegments < 0) vuSegments = 0;
     for (int s = 0; s < vuSegments; s++)
     {
-        Display.drawBox(s * 4, 0, 3, vuBarWidth - 2);
+        Display.fillRect(s * 4, 0, 3, vuBarWidth - 2, SSD1306_WHITE);
     }
     for (int s = vuSegments; s < vuBarSegments; s++)
     {
-        Display.drawPixel(s * 4 + 1, (vuBarWidth / 2 - 1));
+        Display.drawPixel(s * 4 + 1, (vuBarWidth / 2 - 1), SSD1306_WHITE);
     }
 
     // Octave bars
     if (octavePower != nullptr)
     {
-        Display.drawFrame(0, vuBarWidth, width, height - vuBarWidth);
+        Display.drawRect(0, vuBarWidth, width, height - vuBarWidth, SSD1306_WHITE);
 
         float dBminOctave = DB_MIN * 2;
         int octaveBarWidth = (width - 2) / DSP.getOctaves();
@@ -377,12 +370,12 @@ void drawVUMeter(float vu, float* octavePower, uint8_t width, uint8_t height)
             for (int s = 0; s < dBoctaveSegments; s++)
             {
                 int segmentY = height - 3 - (s * 3);
-                Display.drawBox(barX, segmentY, octaveBarWidth - 1, 2);
+                Display.fillRect(barX, segmentY, octaveBarWidth - 1, 2, SSD1306_WHITE);
             }
             for (int s = dBoctaveSegments; s < octaveBarSegments; s++)
             {
                 int segmentY = height - 2 - (s * 3);
-                Display.drawPixel(barX + octaveBarWidth / 2, segmentY);
+                Display.drawPixel(barX + octaveBarWidth / 2, segmentY, SSD1306_WHITE);
             }
         }
     }
