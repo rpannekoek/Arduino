@@ -4,27 +4,28 @@
 #include <driver/i2s.h>
 #include "WaveBuffer.h"
 
-#define DAC_BUFFER_SAMPLES 256
-
 class I2SDAC
 {
     public:
-        // Constructor
-        I2SDAC(WaveBuffer& waveBuffer) : _waveBuffer(waveBuffer)
-        {
-        }
+        // Constructor for internal DAC
+        I2SDAC(WaveBuffer& waveBuffer, int sampleRate, i2s_port_t i2sPort);
+
+        // Constructor for external DAC
+        I2SDAC(WaveBuffer& waveBuffer, int sampleRate, i2s_port_t i2sPort, int bckPin, int wsPin, int dataPin);
 
         inline bool isPlaying()
         {
             return _isPlaying;
         }
 
-        bool begin(i2s_port_t i2sPort, int sampleRate);
+        bool begin();
         bool startPlaying();
         bool stopPlaying();
 
     protected:
         i2s_port_t _i2sPort;
+        i2s_config_t _i2sConfig;
+        i2s_pin_config_t* _i2sPinConfig;
         WaveBuffer& _waveBuffer;
         int16_t* _sampleBuffer;
         TaskHandle_t _dataSourceTaskHandle;

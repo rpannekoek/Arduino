@@ -2,25 +2,29 @@
 #include <Tracer.h>
 #include "I2SMicrophone.h"
 
-
+// According to TRM: M >= 2
+#define M 2
+#define CHANNELS 2
+#define DMA_BUFFER_SAMPLES 512
 
 // Constructor
-I2SMicrophone::I2SMicrophone(FXEngine& fxEngine, int sampleRate, i2s_port_t i2sPort, int bckPin, int wsPin, int dataPin)
-    : _fxEngine(fxEngine)
+I2SMicrophone::I2SMicrophone(ISampleStore& sampleStore, int sampleRate, i2s_port_t i2sPort, int bckPin, int wsPin, int dataPin)
+    : _sampleStore(sampleStore)
 {
     _i2sPort = i2sPort;
     _i2sConfig = {
-            .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
-            .sample_rate = sampleRate,
-            .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
-            .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
-            .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S),
-            .intr_alloc_flags = ESP_INTR_FLAG_LEVEL3, // interrupt priority
-            .dma_buf_count = 3,
-            .dma_buf_len = 512, // samples
-            .use_apll = true,
-            .tx_desc_auto_clear = false,
-            .fixed_mclk = 0   
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+        .sample_rate = sampleRate,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = (i2s_comm_format_t)(I2S_COMM_FORMAT_I2S),
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL3, // interrupt priority
+        .dma_buf_count = 2,
+        .dma_buf_len = DMA_BUFFER_SAMPLES,
+        .use_apll = true,
+        .tx_desc_auto_clear = false,
+        // Using fixed MCLK, so I2SDAC (16 bits) and I2SMicrophone (32 bits) can both use APLL
+        .fixed_mclk = M * CHANNELS * I2S_BITS_PER_SAMPLE_32BIT * sampleRate   
         };
     _i2sPinConfig = {
         .bck_io_num = bckPin,
@@ -42,7 +46,7 @@ bool I2SMicrophone::begin()
         return false;        
     }
 
-   err = i2s_set_pin(_i2sPort, &_i2sPinConfig);
+    err = i2s_set_pin(_i2sPort, &_i2sPinConfig);
     if (err != ESP_OK)
     {
         TRACE(F("i2s_set_pin returned %X\n"), err);
@@ -61,7 +65,7 @@ bool I2SMicrophone::begin()
         "Mic Data Sink",
         4096, // Stack Size (words)
         this, // taskParams
-        3, // Priority
+        configMAX_PRIORITIES - 1, // Priority
         &_dataSinkTaskHandle,
         PRO_CPU_NUM // Core ID
         );
@@ -135,11 +139,13 @@ void I2SMicrophone::dataSink()
 {
     Tracer tracer(F("I2SMicrophone::dataSink"));
 
+    TickType_t msTimeout = 2 * 1000 * _i2sConfig.dma_buf_len / _i2sConfig.sample_rate;
+
     while (true)
     {
         int32_t micSample;
         size_t bytesRead;
-        esp_err_t err = i2s_read(_i2sPort, &micSample, sizeof(int32_t), &bytesRead, 15 /*ms*/);
+        esp_err_t err = i2s_read(_i2sPort, &micSample, sizeof(int32_t), &bytesRead, msTimeout);
 
         uint32_t startCycles = ESP.getCycleCount();
         if (err != ESP_OK)
@@ -149,7 +155,7 @@ void I2SMicrophone::dataSink()
         }
         if (bytesRead < sizeof(int32_t))
         {
-            TRACE(F("I2S microphone timeout\n"));
+            TRACE(F("i2s_read timeout\n"));
             continue; // Stopping a task is not allowed
         }
 
@@ -157,7 +163,7 @@ void I2SMicrophone::dataSink()
 
         _recordedSamples++;
 
-        _fxEngine.addSample(micSample / _scale);
+        _sampleStore.addSample(micSample / _scale);
 
         _cycles = ESP.getCycleCount() - startCycles;
     }
