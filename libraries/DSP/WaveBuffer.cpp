@@ -70,7 +70,7 @@ void WaveBuffer::addSample(int32_t sample)
 
 int16_t WaveBuffer::getSample(uint32_t delay)
 {
-    if (delay > _numSamples) delay = _numSamples;
+    if (delay > _numSamples) return 0;
     int32_t index = _index - delay;
     if (index < 0) index += _size;
     return _buffer[index];
@@ -90,65 +90,28 @@ size_t WaveBuffer::getSamples(int16_t* sampleBuffer, size_t numSamples)
 }
 
 
-void WaveBuffer::getNewSamples(int16_t* sampleBuffer, size_t numSamples, size_t minDistance)
+void WaveBuffer::getNewSamples(int16_t* sampleBuffer, size_t numSamples)
 {
-    if (numSamples + minDistance > _numNewSamples)
+    uint32_t startCycles = ESP.getCycleCount();
+
+    if (numSamples > _numNewSamples)
     {
-        // Reached the minimum distance: return zeroes
         memset(sampleBuffer, 0, numSamples * sizeof(int16_t));
         return;
     }
 
-    // Try to keep a fixed distance of 8 * numSamples
-    // Compensate differences in incoming & outgoing rates by up/down-sampling if needed
-    _upsampleFactor = 0;
-    int distanceFactor = (_numNewSamples - minDistance) / numSamples;
-    if (distanceFactor < 8)
-    {
-        _upsampleFactor = 2 << distanceFactor; // 3-25%
-        numSamples -= numSamples / _upsampleFactor;
-    }
-    else if ((distanceFactor > 8) && (distanceFactor < 16))
-    {
-        // Negative values means: downsampling
-        _upsampleFactor = -(2 << (16 - distanceFactor)); // 3-25%
-        numSamples -= numSamples / _upsampleFactor;
-    }
-
-    int32_t index = _index - _numNewSamples;
+    int32_t index = _index - _numNewSamples - 1;
     if (index < 0) index += _size;
 
-    int j = 0;
-    int16_t previousSample = 0;
-    for (int i = 0; i < numSamples; i++)
-    {
-        int16_t sample = _buffer[index];
-        if (_upsampleFactor > 0)
-        {
-            if ((i % _upsampleFactor) == 1) 
-            {
-                // Upsampling: add an interpolated sample
-                int32_t interpolatedSample = sample;
-                interpolatedSample += previousSample;
-                interpolatedSample /= 2;
-                sampleBuffer[j++] = interpolatedSample;
-            }
-        }
-        else if (_upsampleFactor < 0)
-        {
-            if ((i % -_upsampleFactor) == 1) 
-            {
-                // Downsampling: drop/overwrite a sample
-                j--;
-            }
-        }
-        sampleBuffer[j++] = sample;
-
-        previousSample = sample;
-        if (++index == _size) index = 0;
-    }
+    size_t segment1Size = (index + numSamples < _size) ? numSamples : (_size - index);
+    size_t segment2Size = numSamples - segment1Size;
+    if (segment1Size > 0)
+        memcpy(sampleBuffer, _buffer + index, segment1Size * sizeof(int16_t));
+    if (segment2Size > 0)
+        memcpy(sampleBuffer + segment1Size, _buffer, segment2Size * sizeof(int16_t));
 
     _numNewSamples -= numSamples;
+    _cycles = ESP.getCycleCount() - startCycles;
 }
 
 

@@ -46,11 +46,6 @@ class WaveBuffer : public ISampleStore
             return _numSamples == _size;
         }
 
-        inline uint16_t getUpsampleFactor()
-        {
-            return _upsampleFactor;
-        }
-
         inline int16_t getNewSample()
         {
             if (_numNewSamples == 0) return 0;
@@ -59,12 +54,17 @@ class WaveBuffer : public ISampleStore
             return _buffer[index];
         }
 
+        inline uint32_t getCycles()
+        {
+            return _cycles;
+        }
+
         bool begin(size_t size);
         void clear();
         virtual void addSample(int32_t sample);
         virtual int16_t getSample(uint32_t delay);
         size_t getSamples(int16_t* sampleBuffer, size_t numSamples);
-        void getNewSamples(int16_t* sampleBuffer, size_t numSamples, size_t minDistance);
+        void getNewSamples(int16_t* sampleBuffer, size_t numSamples);
         void writeWaveFile(Stream& toStream, uint16_t sampleRate);
         WaveStats getStatistics(size_t frameSize = 0);
 
@@ -75,7 +75,7 @@ class WaveBuffer : public ISampleStore
         size_t _numClippedSamples = 0;
         int16_t* _buffer = nullptr;
         uint32_t _index = 0;
-        uint16_t _upsampleFactor = 0;
+        uint32_t _cycles = 0;
 };
 
 #endif
