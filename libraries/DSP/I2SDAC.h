@@ -8,10 +8,10 @@ class I2SDAC
 {
     public:
         // Constructor for internal DAC
-        I2SDAC(WaveBuffer& waveBuffer, int sampleRate, i2s_port_t i2sPort);
+        I2SDAC(WaveBuffer& waveBuffer, int sampleRate, i2s_port_t i2sPort, int timingPin = -1);
 
         // Constructor for external DAC
-        I2SDAC(WaveBuffer& waveBuffer, int sampleRate, i2s_port_t i2sPort, int bckPin, int wsPin, int dataPin);
+        I2SDAC(WaveBuffer& waveBuffer, int sampleRate, i2s_port_t i2sPort, int bckPin, int wsPin, int dataPin, int timingPin = -1);
 
         inline bool isPlaying()
         {
@@ -26,6 +26,7 @@ class I2SDAC
         i2s_port_t _i2sPort;
         i2s_config_t _i2sConfig;
         i2s_pin_config_t* _i2sPinConfig;
+        int _timingPin;
         WaveBuffer& _waveBuffer;
         int16_t* _sampleBuffer;
         TaskHandle_t _dataSourceTaskHandle;

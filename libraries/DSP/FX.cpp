@@ -51,6 +51,8 @@ bool FXEngine::reset()
 
 void FXEngine::addSample(int32_t sample)
 {
+    if (_timingPin >= 0) digitalWrite(_timingPin, 0);
+
     int32_t filteredSample = sample;
     if (_numEnabledFX > 0)
     {
@@ -61,6 +63,8 @@ void FXEngine::addSample(int32_t sample)
         _inputBuffer.addSample(sample);
     }
     _outputBuffer.addSample(filteredSample);
+
+    if (_timingPin >= 0) digitalWrite(_timingPin, 1);
 }
 
 

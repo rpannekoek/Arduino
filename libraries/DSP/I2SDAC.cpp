@@ -9,7 +9,7 @@
 
 
 // Constructor for internal DAC
-I2SDAC::I2SDAC(WaveBuffer& waveBuffer, int sampleRate, i2s_port_t i2sPort) 
+I2SDAC::I2SDAC(WaveBuffer& waveBuffer, int sampleRate, i2s_port_t i2sPort, int timingPin) 
     : _waveBuffer(waveBuffer)
 {
     _i2sPort = i2sPort;
@@ -28,10 +28,11 @@ I2SDAC::I2SDAC(WaveBuffer& waveBuffer, int sampleRate, i2s_port_t i2sPort)
         .fixed_mclk = 0   
     };
     _i2sPinConfig = nullptr;
+    _timingPin = timingPin;
 }
 
 // Constructor for external DAC
-I2SDAC::I2SDAC(WaveBuffer& waveBuffer, int sampleRate, i2s_port_t i2sPort, int bckPin, int wsPin, int dataPin)
+I2SDAC::I2SDAC(WaveBuffer& waveBuffer, int sampleRate, i2s_port_t i2sPort, int bckPin, int wsPin, int dataPin, int timingPin)
     : _waveBuffer(waveBuffer)
 {
     _i2sPort = i2sPort;
@@ -56,6 +57,7 @@ I2SDAC::I2SDAC(WaveBuffer& waveBuffer, int sampleRate, i2s_port_t i2sPort, int b
         .data_out_num = dataPin,
         .data_in_num = I2S_PIN_NO_CHANGE
     };
+    _timingPin = timingPin;
 }
 
 
@@ -167,7 +169,11 @@ void I2SDAC::dataSource()
             continue;
         }
 
-        _waveBuffer.getNewSamples(_sampleBuffer, DMA_BUFFER_SAMPLES, 0);
+        if (_timingPin >= 0) digitalWrite(_timingPin, 1);
+
+        _waveBuffer.getNewSamples(_sampleBuffer, DMA_BUFFER_SAMPLES);
+
+        if (_timingPin >= 0) digitalWrite(_timingPin, 0);
 
         size_t bytesWritten = 0;
         esp_err_t err = i2s_write(_i2sPort, _sampleBuffer, bytesToWrite, &bytesWritten, msTimeout);

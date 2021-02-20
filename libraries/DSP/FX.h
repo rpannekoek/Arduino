@@ -35,8 +35,8 @@ class SoundEffect
 class FXEngine : public ISampleStore
 {
     public:
-        FXEngine(ISampleStore& outputBuffer, uint16_t sampleRate) 
-            : _outputBuffer(outputBuffer), _sampleRate(sampleRate)
+        FXEngine(ISampleStore& outputBuffer, uint16_t sampleRate, int timingPin = -1) 
+            : _outputBuffer(outputBuffer), _sampleRate(sampleRate), _timingPin(timingPin)
         {
         }
 
@@ -66,6 +66,7 @@ class FXEngine : public ISampleStore
         int _numRegisteredFX = 0;
         int _numEnabledFX = 0;
         uint16_t _sampleRate;
+        int _timingPin;
 };
 
 #endif
