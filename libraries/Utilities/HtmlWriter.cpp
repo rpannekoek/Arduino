@@ -145,5 +145,5 @@ void HtmlWriter::writeSlider(String name, String label, String unitOfMeasure, in
     if (denominator == 1)
         _output.printf(F("<div>%d %s</div></td></tr>\r\n"), value, unitOfMeasure.c_str());
     else
-        _output.printf(F("<div>%0.1f %s</div></td></tr>\r\n"), float(value) / denominator, unitOfMeasure.c_str());
+        _output.printf(F("<div>%0.3f %s</div></td></tr>\r\n"), float(value) / denominator, unitOfMeasure.c_str());
 }

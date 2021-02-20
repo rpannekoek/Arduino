@@ -25,6 +25,7 @@
 #include "FXFlanger.h"
 #include "FXModulation.h"
 #include "FXFilter.h"
+#include "FXLoop.h"
 
 #define SAMPLE_FREQUENCY 44100
 #define DSP_FRAME_SIZE 2048
@@ -62,14 +63,28 @@ StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, 60); // Max bar length: 60
 Log<const char> EventLog(50); // Max 50 log entries
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
+DSP32 DSP(/*tracePerformance*/ false);
 BluetoothAudio BTAudio;
 Adafruit_SSD1306 Display(DISPLAY_WIDTH, DISPLAY_HEIGHT, &SPI, TFT_DC, TFT_RST, TFT_CS);
-
-DSP32 DSP(/*tracePerformance*/ false);
 WaveBuffer WaveBuffer;
-FXEngine SoundEffects(WaveBuffer, SAMPLE_FREQUENCY);
-I2SMicrophone Mic(SoundEffects, SAMPLE_FREQUENCY, I2S_NUM_1, /*bck*/GPIO_NUM_12, /*ws*/GPIO_NUM_15, /*data*/GPIO_NUM_13);
-I2SDAC DAC(WaveBuffer, SAMPLE_FREQUENCY, I2S_NUM_0, /*bck*/GPIO_NUM_21, /*ws*/GPIO_NUM_32, /*data*/GPIO_NUM_22);
+FXEngine SoundEffects(WaveBuffer, SAMPLE_FREQUENCY, LED_BUILTIN);
+I2SMicrophone Mic(
+    SoundEffects,
+    SAMPLE_FREQUENCY,
+    I2S_NUM_1,
+    /*bck*/GPIO_NUM_12,
+    /*ws*/GPIO_NUM_15,
+    /*data*/GPIO_NUM_13
+    );
+I2SDAC DAC(
+    WaveBuffer,
+    SAMPLE_FREQUENCY,
+    I2S_NUM_0,
+    /*bck*/GPIO_NUM_21,
+    /*ws*/GPIO_NUM_32,
+    /*data*/GPIO_NUM_22,
+    /*timing*/GPIO_NUM_2
+    );
 
 WaveStats lastWaveStats;
 float* lastOctavePower;
@@ -78,7 +93,6 @@ int16_t* dspBuffer;
 time_t currentTime = 0;
 bool isFTPEnabled = false;
 time_t actionPerformedTime = 0;
-uint32_t a2dpDistance = 512;
 uint32_t a2dpSamples = 0;
 uint32_t lastBTSamples = 0;
 TaskHandle_t micDataSinkTaskHandle;
@@ -154,6 +168,10 @@ void setup()
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, LED_ON);
 
+    // GPIO2 is used for I2SDAC timing output
+    pinMode(GPIO_NUM_2, OUTPUT);
+    digitalWrite(GPIO_NUM_2, 0);
+
     Serial.begin(115200);
     Serial.println();
 
@@ -219,6 +237,7 @@ void setup()
         logError(F("Starting DAC failed"));
 
     SoundEffects.begin();
+    SoundEffects.add(new FXLoop());
     SoundEffects.add(new FXReverb());
     SoundEffects.add(new FXFlanger());
     SoundEffects.add(new FXModulation());
@@ -271,7 +290,7 @@ void a2dpDataSink(const uint8_t* data, uint32_t length)
         monoData +=  stereoData[i].left;
         monoData /= 2;
 
-        WaveBuffer.addSample(monoData);
+        SoundEffects.addSample(monoData);
     }
 
     a2dpSamples += samples;
@@ -286,7 +305,7 @@ int32_t a2dpDataSource(uint8_t* data, int32_t length)
     StereoData* stereoData = (StereoData*)data;
     int16_t* monoData = (int16_t*)data;
 
-    WaveBuffer.getNewSamples(monoData, samples, a2dpDistance);
+    WaveBuffer.getNewSamples(monoData, samples);
 
     for (int i = samples - 1; i >= 0; i--)
     {
@@ -531,7 +550,7 @@ void handleHttpBluetoothRequest()
     HttpResponse.printf(F("<tr><td>Remote device</td><td>%s</td></tr>\r\n"), BTAudio.getRemoteDevice().c_str());
     HttpResponse.printf(F("<tr><td>Sample rate</td><td>%d</td></tr>\r\n"), BTAudio.getSampleRate());
     HttpResponse.printf(F("<tr><td>A2DP Samples</td><td>%u</td></tr>\r\n"), a2dpSamples);
-    HttpResponse.printf(F("<tr><td>Sample rate</td><td>%0.1f kHz</td></tr>\r\n"), a2dpSampleRateKHz);
+    HttpResponse.printf(F("<tr><td>Sample rate</td><td>%0.2f kHz</td></tr>\r\n"), a2dpSampleRateKHz);
     HttpResponse.println(F("</table>"));
 
     if (shouldPerformAction(F("audio")))
@@ -699,8 +718,6 @@ void handleHttpMicRequest()
     else
         micGain = Mic.getGain();
 
-    int msDelay = 1000 * a2dpDistance / SAMPLE_FREQUENCY;
-
     float micSampleRateKHz = float(Mic.getRecordedSamples() - lastMicSamples) / (millis() - lastMicMillis);
     lastMicSamples = Mic.getRecordedSamples();
     lastMicMillis = millis();
@@ -723,9 +740,7 @@ void handleHttpMicRequest()
 
     Html.writeCheckbox(F("AGC"), F("AGC"), useMicAGC);
 
-    Html.writeSlider(F("Delay"), F("Delay"), F("ms"), msDelay, 10, 1000);
-
-    HttpResponse.printf(F("<tr><td>Sample rate</td><td>%0.1f kHz</td></tr>\r\n"), micSampleRateKHz);
+    HttpResponse.printf(F("<tr><td>Sample rate</td><td>%0.2f kHz</td></tr>\r\n"), micSampleRateKHz);
     HttpResponse.printf(
         F("<tr><td>Cycles</td><td>%u (%0.1f us)</td></tr>\r\n"), 
         Mic.getCycles(),
@@ -752,9 +767,6 @@ void handleHttpMicPostRequest()
         int micGain = WebServer.arg(F("Gain")).toInt();
         Mic.setGain(micGain);
     }
-
-    int msDelay = WebServer.arg(F("Delay")).toInt();
-    a2dpDistance = msDelay * SAMPLE_FREQUENCY / 1000;
 
     handleHttpMicRequest();
 }
@@ -924,8 +936,9 @@ void handleHttpWaveRequest()
         1000 * WaveBuffer.getNumNewSamples() / SAMPLE_FREQUENCY
         );
     HttpResponse.printf(
-        F("<tr><th>Upsample ratio</th><td>1/%d</td></tr>\r\n"),
-        WaveBuffer.getUpsampleFactor()
+        F("<tr><th>Cycles</th><td>%u (%0.2f us)</td></tr>\r\n"),
+        WaveBuffer.getCycles(),
+        float(WaveBuffer.getCycles()) / ESP.getCpuFreqMHz()
         );
     HttpResponse.printf(
         F("<tr><th>Peak</th><td>%d (%0.0f dBFS)</td></tr>\r\n"),
