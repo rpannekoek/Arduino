@@ -32,10 +32,10 @@ class SoundEffect
 };
 
 
-class FXEngine : public ISampleStore
+class FXEngine : public ISampleBuffer
 {
     public:
-        FXEngine(ISampleStore& outputBuffer, uint16_t sampleRate, int timingPin = -1) 
+        FXEngine(WaveBuffer& outputBuffer, uint16_t sampleRate, uint8_t timingPin = 0xFF) 
             : _outputBuffer(outputBuffer), _sampleRate(sampleRate), _timingPin(timingPin)
         {
         }
@@ -56,17 +56,18 @@ class FXEngine : public ISampleStore
         bool enable(SoundEffect* fx);
         bool reset();
         virtual void addSample(int32_t sample);
+        virtual void addSamples(int32_t* samples, uint32_t numSamples);
         virtual int16_t getSample(uint32_t delay);
 
     private:
-        ISampleStore& _outputBuffer;
+        WaveBuffer& _outputBuffer;
         WaveBuffer _inputBuffer;
         SoundEffect* _registeredFX[MAX_FX];
         SoundEffect* _enabledFX[MAX_FX];
         int _numRegisteredFX = 0;
         int _numEnabledFX = 0;
         uint16_t _sampleRate;
-        int _timingPin;
+        uint8_t _timingPin;
 };
 
 #endif

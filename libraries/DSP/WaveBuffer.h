@@ -13,12 +13,18 @@ struct WaveStats
 class ISampleStore
 {
     public:
-        virtual void addSample(int32_t sample) = 0;
         virtual int16_t getSample(uint32_t delay) = 0;
 };
 
+class ISampleBuffer : public ISampleStore
+{
+    public:
+        virtual void addSample(int32_t sample) = 0;
+        virtual void addSamples(int32_t* samples, uint32_t numSamples) = 0;
+};
 
-class WaveBuffer : public ISampleStore
+
+class WaveBuffer : public ISampleBuffer
 {
     public:
         inline size_t getNumSamples()
@@ -54,28 +60,39 @@ class WaveBuffer : public ISampleStore
             return _buffer[index];
         }
 
-        inline uint32_t getCycles()
-        {
-            return _cycles;
-        }
-
         bool begin(size_t size);
         void clear();
         virtual void addSample(int32_t sample);
+        virtual void addSamples(int32_t* samples, uint32_t numSamples);
         virtual int16_t getSample(uint32_t delay);
         size_t getSamples(int16_t* sampleBuffer, size_t numSamples);
         void getNewSamples(int16_t* sampleBuffer, size_t numSamples);
         void writeWaveFile(Stream& toStream, uint16_t sampleRate);
         WaveStats getStatistics(size_t frameSize = 0);
 
-    protected:
+    private:
         size_t _size;
         size_t _numSamples = 0;
         size_t _numNewSamples = 0;
         size_t _numClippedSamples = 0;
         int16_t* _buffer = nullptr;
         uint32_t _index = 0;
-        uint32_t _cycles = 0;
+
+        inline int16_t clipSample(int32_t sample)
+        {
+            // Ensure the sample fits in 16 bits
+            if (sample > 32767) 
+            {
+                sample = 32767;
+                _numClippedSamples++;
+            }
+            if (sample < -32768)
+            {
+                sample = -32768;
+                _numClippedSamples++;
+            }
+            return sample;
+        }
 };
 
 #endif

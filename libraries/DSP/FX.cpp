@@ -51,7 +51,7 @@ bool FXEngine::reset()
 
 void FXEngine::addSample(int32_t sample)
 {
-    if (_timingPin >= 0) digitalWrite(_timingPin, 0);
+    digitalWrite(_timingPin, 0);
 
     int32_t filteredSample = sample;
     if (_numEnabledFX > 0)
@@ -64,7 +64,31 @@ void FXEngine::addSample(int32_t sample)
     }
     _outputBuffer.addSample(filteredSample);
 
-    if (_timingPin >= 0) digitalWrite(_timingPin, 1);
+    digitalWrite(_timingPin, 1);
+}
+
+
+void FXEngine::addSamples(int32_t* samples, uint32_t numSamples)
+{
+    digitalWrite(_timingPin, 0);
+
+    if (_numEnabledFX > 0)
+    {
+        for (int k = 0; k < numSamples; k++)
+        {
+            int32_t filteredSample = samples[k];
+            for (int i = 0; i < _numEnabledFX; i++)
+            {
+                filteredSample = _enabledFX[i]->filter(filteredSample, _inputBuffer, _outputBuffer);
+            }
+            _outputBuffer.addSample(filteredSample);
+            _inputBuffer.addSample(samples[k]);
+        }
+    }
+    else
+        _outputBuffer.addSamples(samples, numSamples);
+
+    digitalWrite(_timingPin, 1);
 }
 
 

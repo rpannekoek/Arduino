@@ -48,23 +48,25 @@ void WaveBuffer::clear()
 
 void WaveBuffer::addSample(int32_t sample)
 {
-    // Ensure the sample fits in 16 bits
-    if (sample > 32767) 
-    {
-        sample = 32767;
-        _numClippedSamples++;
-    }
-    if (sample < -32768)
-    {
-        sample = -32768;
-        _numClippedSamples++;
-    }
-
     if (_index == _size) _index = 0;
-    _buffer[_index++] = sample;
+    _buffer[_index++] = clipSample(sample);
 
     if (_numSamples < _size) _numSamples++;
     if (_numNewSamples < _size) _numNewSamples++;
+}
+
+
+void WaveBuffer::addSamples(int32_t* samples, uint32_t numSamples)
+{
+    int index = _index;
+    for (int i = 0; i < numSamples; i++)
+    {
+        if (index == _size) index = 0;
+        _buffer[index++] = clipSample(samples[i]);
+    }
+    _index = index;    
+    _numSamples = std::min(_numSamples + numSamples, _size);
+    _numNewSamples = std::min(_numNewSamples + numSamples, _size);
 }
 
 
@@ -92,8 +94,6 @@ size_t WaveBuffer::getSamples(int16_t* sampleBuffer, size_t numSamples)
 
 void WaveBuffer::getNewSamples(int16_t* sampleBuffer, size_t numSamples)
 {
-    uint32_t startCycles = ESP.getCycleCount();
-
     if (numSamples > _numNewSamples)
     {
         memset(sampleBuffer, 0, numSamples * sizeof(int16_t));
@@ -111,7 +111,6 @@ void WaveBuffer::getNewSamples(int16_t* sampleBuffer, size_t numSamples)
         memcpy(sampleBuffer + segment1Size, _buffer, segment2Size * sizeof(int16_t));
 
     _numNewSamples -= numSamples;
-    _cycles = ESP.getCycleCount() - startCycles;
 }
 
 

@@ -98,8 +98,6 @@ uint32_t lastBTSamples = 0;
 TaskHandle_t micDataSinkTaskHandle;
 uint32_t runDspMillis = 0;
 uint32_t lastBTMillis = 0;
-uint32_t lastMicMillis = 0;
-uint32_t lastMicSamples = 0;
 bool useMicAGC = false;
 
 
@@ -283,17 +281,20 @@ void onWiFiInitialized()
 void a2dpDataSink(const uint8_t* data, uint32_t length)
 {   
     StereoData* stereoData = (StereoData*)data;
-    uint32_t samples = length / sizeof(StereoData);
-    for (int i = 0; i < samples; i++)
-    {
-        int32_t monoData = stereoData[i].right;
-        monoData +=  stereoData[i].left;
-        monoData /= 2;
+    int32_t* monoData = (int32_t*)data;
+    uint32_t numSamples = length / sizeof(StereoData);
 
-        SoundEffects.addSample(monoData);
+    for (int i = 0; i < numSamples; i++)
+    {
+        int32_t monoSample = stereoData[i].right;
+        monoSample +=  stereoData[i].left;
+        monoSample /= 2;
+        monoData[i] = monoSample;
     }
 
-    a2dpSamples += samples;
+    SoundEffects.addSamples(monoData, numSamples);
+
+    a2dpSamples += numSamples;
 }
 
 
@@ -301,19 +302,19 @@ int32_t a2dpDataSource(uint8_t* data, int32_t length)
 {
     if (length < 0) return -1; // Buffer flush request
 
-    int samples = length / sizeof(StereoData);
+    int numSamples = length / sizeof(StereoData);
     StereoData* stereoData = (StereoData*)data;
     int16_t* monoData = (int16_t*)data;
 
-    WaveBuffer.getNewSamples(monoData, samples);
+    WaveBuffer.getNewSamples(monoData, numSamples);
 
-    for (int i = samples - 1; i >= 0; i--)
+    for (int i = numSamples - 1; i >= 0; i--)
     {
         stereoData[i].left = monoData[i];
         stereoData[i].right = monoData[i];
     }
 
-    a2dpSamples += samples;
+    a2dpSamples += numSamples;
     return length;
 }
 
@@ -718,10 +719,6 @@ void handleHttpMicRequest()
     else
         micGain = Mic.getGain();
 
-    float micSampleRateKHz = float(Mic.getRecordedSamples() - lastMicSamples) / (millis() - lastMicMillis);
-    lastMicSamples = Mic.getRecordedSamples();
-    lastMicMillis = millis();
-
     Html.writeHeader(F("Microphone"), true, true, refreshInterval);
 
     HttpResponse.println(F("<form method=\"POST\">"));
@@ -739,13 +736,6 @@ void handleHttpMicRequest()
     Html.writeSlider(F("Gain"), F("Gain"), F("dB"), roundf(micGain), 0, 48);
 
     Html.writeCheckbox(F("AGC"), F("AGC"), useMicAGC);
-
-    HttpResponse.printf(F("<tr><td>Sample rate</td><td>%0.2f kHz</td></tr>\r\n"), micSampleRateKHz);
-    HttpResponse.printf(
-        F("<tr><td>Cycles</td><td>%u (%0.1f us)</td></tr>\r\n"), 
-        Mic.getCycles(),
-        float(Mic.getCycles()) / ESP.getCpuFreqMHz()
-        );
 
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
@@ -934,11 +924,6 @@ void handleHttpWaveRequest()
         F("<tr><th>New samples</th><td>%u (%d ms)</td></tr>\r\n"),
         WaveBuffer.getNumNewSamples(),
         1000 * WaveBuffer.getNumNewSamples() / SAMPLE_FREQUENCY
-        );
-    HttpResponse.printf(
-        F("<tr><th>Cycles</th><td>%u (%0.2f us)</td></tr>\r\n"),
-        WaveBuffer.getCycles(),
-        float(WaveBuffer.getCycles()) / ESP.getCpuFreqMHz()
         );
     HttpResponse.printf(
         F("<tr><th>Peak</th><td>%d (%0.0f dBFS)</td></tr>\r\n"),

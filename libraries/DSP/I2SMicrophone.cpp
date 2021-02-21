@@ -8,8 +8,8 @@
 #define DMA_BUFFER_SAMPLES 512
 
 // Constructor
-I2SMicrophone::I2SMicrophone(ISampleStore& sampleStore, int sampleRate, i2s_port_t i2sPort, int bckPin, int wsPin, int dataPin)
-    : _sampleStore(sampleStore)
+I2SMicrophone::I2SMicrophone(ISampleBuffer& sampleBuffer, int sampleRate, i2s_port_t i2sPort, int bckPin, int wsPin, int dataPin)
+    : _sampleBuffer(sampleBuffer)
 {
     _i2sPort = i2sPort;
     _i2sConfig = {
@@ -32,6 +32,7 @@ I2SMicrophone::I2SMicrophone(ISampleStore& sampleStore, int sampleRate, i2s_port
         .data_out_num = I2S_PIN_NO_CHANGE,
         .data_in_num = dataPin,
     };
+    _transferBuffer = new int32_t[DMA_BUFFER_SAMPLES];
 }
 
 
@@ -87,7 +88,6 @@ bool I2SMicrophone::startRecording()
         return false;
     }
 
-    _recordedSamples = 0;
     _isRecording = true;
     return true;
 }
@@ -140,20 +140,18 @@ void I2SMicrophone::dataSink()
     Tracer tracer(F("I2SMicrophone::dataSink"));
 
     TickType_t msTimeout = 2 * 1000 * _i2sConfig.dma_buf_len / _i2sConfig.sample_rate;
+    size_t bytesToRead = DMA_BUFFER_SAMPLES * sizeof(int32_t);
 
     while (true)
     {
-        int32_t micSample;
         size_t bytesRead;
-        esp_err_t err = i2s_read(_i2sPort, &micSample, sizeof(int32_t), &bytesRead, msTimeout);
-
-        uint32_t startCycles = ESP.getCycleCount();
+        esp_err_t err = i2s_read(_i2sPort, _transferBuffer, bytesToRead, &bytesRead, msTimeout);
         if (err != ESP_OK)
         {
             TRACE(F("i2s_read returned %X\n"), err);
             continue; // Stopping a task is not allowed
         }
-        if (bytesRead < sizeof(int32_t))
+        if (bytesRead < bytesToRead)
         {
             TRACE(F("i2s_read timeout\n"));
             continue; // Stopping a task is not allowed
@@ -161,11 +159,13 @@ void I2SMicrophone::dataSink()
 
         if (!_isRecording) continue;
 
-        _recordedSamples++;
+        int32_t scale = _scale;
+        for (int i = 0; i < DMA_BUFFER_SAMPLES; i++)
+        {
+            _transferBuffer[i] /= scale;
+        }
 
-        _sampleStore.addSample(micSample / _scale);
-
-        _cycles = ESP.getCycleCount() - startCycles;
+        _sampleBuffer.addSamples(_transferBuffer, DMA_BUFFER_SAMPLES);
     }
 }
 
