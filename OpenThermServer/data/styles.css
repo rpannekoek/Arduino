@@ -17,13 +17,44 @@ h2
 
 table
 {
-    border: thin solid gray;
     border-collapse: collapse;
 }
 
-td, th
+td,th
 {
-	padding-left: 1em;
-	padding-right: 1em;
-	border: thin solid gray;
+	padding-left: 0.5em;
+	padding-right: 0.5em;
+    border: thin solid gray;
 }
+
+td.graph
+{
+    border: none;
+}
+
+
+.setBar
+{
+	background-color: yellow;
+    color: yellow;
+}
+
+.waterBar
+{
+	background-color: blue;
+    color: blue;
+}
+
+.barFill
+{
+	background-color: gray;
+    color: gray;
+}
+
+.emptyBar
+{
+    background-color: orange;
+    color: orange;
+}
+
+
