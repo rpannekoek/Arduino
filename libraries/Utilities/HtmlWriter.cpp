@@ -1,3 +1,4 @@
+#include <Arduino.h>
 #include <HtmlWriter.h>
 #include <math.h>
 
@@ -53,8 +54,8 @@ void HtmlWriter::writeFooter()
 
 void HtmlWriter::writeBar(float value, String cssClass, bool fill, bool useDiv)
 {
-    int barLength = round(value * _maxBarLength);
-    if (barLength > _maxBarLength) barLength = _maxBarLength;
+    value = std::max(std::min(value, 1.0f), 0.0f);
+    size_t barLength = roundf(value * _maxBarLength);
 
     memset(_bar, 'o', barLength);
     _bar[barLength] = 0;
