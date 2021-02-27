@@ -27,6 +27,7 @@ void Tracer::trace(String format, ...)
 
 void Tracer::traceFreeHeap()
 {
+#ifdef ESP32
     traceHeapStats(
         "Internal",
         ESP.getHeapSize(),
@@ -35,7 +36,6 @@ void Tracer::traceFreeHeap()
         ESP.getMaxAllocHeap()
         );
 
-#ifdef ESP32
     traceHeapStats(
         "PSRAM",
         ESP.getPsramSize(),
@@ -43,6 +43,10 @@ void Tracer::traceFreeHeap()
         ESP.getMinFreePsram(),
         ESP.getMaxAllocPsram()
         );
+#else
+    trace(F("Heap statistics:\n"));
+    trace(F("\t%u bytes free\n"), ESP.getFreeHeap());
+    trace(F("\tLargest free block: %u\n"), ESP.getMaxFreeBlockSize());
 #endif
 }
 
@@ -61,6 +65,8 @@ void Tracer::traceHeapStats(const char* heapName, uint32_t total, uint32_t free,
 
 void Tracer::hexDump(uint8_t* data, size_t length)
 {
+    if (_traceToPtr == nullptr) return;
+    
     for (int row = 0; row < length; row += 16)
     {
         // Output hex values
