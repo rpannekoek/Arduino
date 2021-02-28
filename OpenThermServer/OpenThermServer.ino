@@ -182,6 +182,10 @@ void loop()
 {
     currentTime = WiFiSM.getCurrentTime();
 
+    // Let WiFi State Machine handle initialization and web requests
+    // This also calls the onXXX methods below
+    WiFiSM.run();
+
     if (millis() >= watchdogFeedTime)
     {
         OTGW.feedWatchdog();
@@ -227,10 +231,6 @@ void loop()
         return;
     }
 
-    // Let WiFi State Machine handle initialization and web requests
-    // This also calls the onXXX methods below
-    WiFiSM.run();
-
     delay(10);
 }
 
@@ -245,12 +245,10 @@ void onTimeServerInit()
 
 void onTimeServerSynced()
 {
-    currentTime = TimeServer.getCurrentTime();
-
     // After time server sync all times leap ahead from 1-1-1970
     otgwTimeout = currentTime + OTGW_TIMEOUT;
     if (otgwInitializeTime != 0) 
-        otgwInitializeTime = currentTime;
+        otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
     if (changeBoilerLevelTime != 0) 
         changeBoilerLevelTime = currentTime;
     if (boilerOverrideStartTime != 0)
@@ -810,7 +808,7 @@ void handleHttpRootRequest()
     GlobalLogEntry* logEntryPtr = GlobalLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
-        time_t seconds = std::min(currentTime - logEntryPtr->time, (time_t)GLOBAL_LOG_INTERVAL);
+        time_t seconds = std::min(currentTime + 1 - logEntryPtr->time, (time_t)GLOBAL_LOG_INTERVAL);
         float avgTWater = logEntryPtr->sumTWater / seconds;
 
         HttpResponse.printf(
