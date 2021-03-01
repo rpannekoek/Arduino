@@ -4,6 +4,7 @@
 #include <Tracer.h>
 #include "DSP32.h"
 
+
 // Constructor
 DSP32::DSP32(bool tracePerformance)
     : _tracePerformance(tracePerformance)
@@ -153,11 +154,10 @@ float* DSP32::getSpectralPower(complex_t* complexSpectrum)
     {
         _spectralPower[i] = complexSpectrum[i].getPower();
     }
-    uint32_t endCycles = xthal_get_ccount();
 
     if (_tracePerformance)
     {
-        TRACE(F("Getting spectral power took %u cycles\n"), endCycles - startCycles);
+        TRACE(F("Getting spectral power took %u cycles\n"), xthal_get_ccount() - startCycles);
     }
 
     return _spectralPower;
@@ -183,8 +183,6 @@ float* DSP32::getOctavePower(float* spectralPower)
         }
         _octavePower[octave] += spectralPower[i]; 
     }
-    uint32_t endCycles = xthal_get_ccount();
-
     // Normalize to 0 dBFS
     float scale = 4.0 / float(sq(_frameSize));
     for (int i = 0; i <= octave; i++)
@@ -194,10 +192,43 @@ float* DSP32::getOctavePower(float* spectralPower)
 
     if (_tracePerformance)
     {
-        TRACE(F("Getting octave power took %u cycles\n"), endCycles - startCycles);
+        TRACE(F("Getting octave power took %u cycles\n"), xthal_get_ccount() - startCycles);
     }
 
     return _octavePower;
+}
+
+
+float DSP32::getdBA(float* spectralPower)
+{
+    uint32_t startCycles = xthal_get_ccount();
+
+    // A-weighting table starting at 10 Hz with 1/3 octave intervals (from Wikipedia)
+    static float aWeighting[34] = {
+        -70.4, -63.4, -56.7, -50.5, -44.7, -39.4, -34.6, -30.2, -26.2, -22.5,
+        -19.1, -16.1, -13.4, -10.9, -8.6, -6.6, -4.8, -3.2, -1.9, -0.8, 0.0, 0.6,
+        1.0, 1.2, 1.3, 1.2, 1.0, 0.5, -0.1, -1.1, -2.5, -4.3, -6.6, -9.3
+        };
+
+    float binWidthHz = float(_sampleFrequency) / _frameSize;
+
+    float aWeightedPower = 0;
+    for (int i = 1; i < _frameSize / 2; i++)
+    {
+        float binFreq = binWidthHz * i * 1.5; // use bin center frequency
+        int aIndex = roundf(log2f(binFreq / 10) * 3);
+        float aWeight = aWeighting[aIndex];
+        aWeightedPower += spectralPower[i] * pow10f(aWeight / 10);
+    }
+
+    float result = 10 * log10f(aWeightedPower);
+    
+    if (_tracePerformance)
+    {
+        TRACE(F("Calculating db(A) took %u cycles\n"), xthal_get_ccount() - startCycles);
+    }
+
+    return result;
 }
 
 
@@ -220,11 +251,10 @@ BinInfo DSP32::getFundamental(float* spectralPower)
             peakIndex = i;
         }
     }
-    uint32_t endCycles = xthal_get_ccount();
 
     if (_tracePerformance)
     {
-        TRACE(F("HPS calculation took %u cycles.\n"), endCycles - startCycles);
+        TRACE(F("HPS calculation took %u cycles.\n"), xthal_get_ccount() - startCycles);
     }
 
     return getBinInfo(peakIndex);

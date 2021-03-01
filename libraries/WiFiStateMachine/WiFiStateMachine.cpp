@@ -6,20 +6,22 @@
 #include <Tracer.h>
 
 #ifdef ESP32
-#include <rom/rtc.h>
+    #include <rom/rtc.h>
+#else
+    #define U_SPIFFS U_FS
 #endif
 
 #define MAX_RETRY_TIMEOUT 300000
 
 // Constructor
-WiFiStateMachine::WiFiStateMachine(WiFiNTP& timeServer, WebServer& webServer, Log<const char>& eventLog)
+WiFiStateMachine::WiFiStateMachine(WiFiNTP& timeServer, ESPWebServer& webServer, Log<const char>& eventLog)
     : _timeServer(timeServer), _webServer(webServer), _eventLog(eventLog)
 {
     memset(_handlers, 0, sizeof(_handlers));
 }
 
 
-void WiFiStateMachine::on(WiFiState state, void (*handler)(void))
+void WiFiStateMachine::on(WiFiInitState state, void (*handler)(void))
 {
     _handlers[static_cast<int>(state)] = handler;
 }
@@ -49,7 +51,7 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName)
     ArduinoOTA.onEnd([]() { TRACE(F("OTA end %d\n"), ArduinoOTA.getCommand()); });
     ArduinoOTA.onError([](ota_error_t error) { TRACE(F("OTA error %u\n"), error); });
     
-    setState(WiFiState::Initializing);
+    setState(WiFiInitState::Initializing);
 }
 
 
@@ -86,7 +88,7 @@ void WiFiStateMachine::logEvent(String msg)
 }
 
 
-void WiFiStateMachine::setState(WiFiState newState)
+void WiFiStateMachine::setState(WiFiInitState newState)
 {
     _state = newState;
     _stateChangeTime = millis();
@@ -149,71 +151,71 @@ void WiFiStateMachine::run()
 
     switch (_state)
     {
-        case WiFiState::Initializing:
+        case WiFiInitState::Initializing:
             if (_ssid.length() == 0)
             {
                 initializeAP();
                 _isInAccessPointMode = true;
-                setState(WiFiState::AwaitingConnection);
+                setState(WiFiInitState::AwaitingConnection);
             }
             else
             {
                 initializeSTA();
                 _isInAccessPointMode = false;
-                setState(WiFiState::Connecting);
+                setState(WiFiInitState::Connecting);
             }
             break;
 
-        case WiFiState::AwaitingConnection:
+        case WiFiInitState::AwaitingConnection:
             if (WiFi.softAPgetStationNum() > 0)
             {
                 _webServer.begin();
                 // Skip actual time server sync (no internet access), but still trigger TimeServerSynced event.
-                setState(WiFiState::TimeServerSynced);
+                setState(WiFiInitState::TimeServerSynced);
             }
             else
                 blinkLED(400, 100);
             break;
 
-        case WiFiState::Connecting:
+        case WiFiInitState::Connecting:
             if (WiFi.status() == WL_CONNECTED)
-                setState(WiFiState::Connected);
+                setState(WiFiInitState::Connected);
             else if (currentMillis >= (_stateChangeTime + 15000))
             {
                 TRACE(F("Timeout connecting WiFi\n"));
-                setState(WiFiState::ConnectFailed);
+                setState(WiFiInitState::ConnectFailed);
             }
             break;
 
-        case WiFiState::ConnectFailed:
+        case WiFiInitState::ConnectFailed:
             if (currentMillis >= (_stateChangeTime + _retryTimeout))
             {
                 _retryTimeout *= 2; // Exponential backoff
                 if (_retryTimeout > MAX_RETRY_TIMEOUT) _retryTimeout = MAX_RETRY_TIMEOUT;
-                setState(WiFiState::Initializing);
+                setState(WiFiInitState::Initializing);
             }
             else
                 blinkLED(500, 500);
             break;
 
-        case WiFiState::Connected:
+        case WiFiInitState::Connected:
             _ipAddress = WiFi.localIP();
             event = F("WiFi connected. IP address: ");
             event += getIPAddress();
             logEvent(event);
             ArduinoOTA.begin();
             _webServer.begin();
-            setState(WiFiState::TimeServerInitializing);
+            setState(WiFiInitState::TimeServerInitializing);
             break;
 
-        case WiFiState::TimeServerInitializing:
+        case WiFiInitState::TimeServerInitializing:
             if (_timeServer.beginGetServerTime())
-                setState(WiFiState::TimeServerSyncing);
+                setState(WiFiInitState::TimeServerSyncing);
             else
-                setState(WiFiState::TimeServerSyncFailed);
+                setState(WiFiInitState::TimeServerSyncFailed);
             break;
 
-        case WiFiState::TimeServerSyncing:
+        case WiFiInitState::TimeServerSyncing:
             _initTime = _timeServer.endGetServerTime(); 
             if (_initTime == 0)
             {
@@ -221,32 +223,32 @@ void WiFiStateMachine::run()
                 if (currentMillis >= (_stateChangeTime + 5000))
                 {
                     TRACE(F("Timeout waiting for NTP server response\n"));
-                    setState(WiFiState::TimeServerSyncFailed);
+                    setState(WiFiInitState::TimeServerSyncFailed);
                 }
             }
             else
             {
                 _isTimeServerAvailable = true;
-                setState(WiFiState::TimeServerSynced);
+                setState(WiFiInitState::TimeServerSynced);
             }
             break;
         
-        case WiFiState::TimeServerSyncFailed:
+        case WiFiInitState::TimeServerSyncFailed:
             // Retry Time Server sync after 15 seconds
             if (currentMillis >= (_stateChangeTime + 15000))
-                setState(WiFiState::TimeServerInitializing);
+                setState(WiFiInitState::TimeServerInitializing);
             else
                 blinkLED(250, 250);
             break;
 
-        case WiFiState::TimeServerSynced:
+        case WiFiInitState::TimeServerSynced:
             if (_isTimeServerAvailable)
             {
                 String event = F("Time synchronized using NTP server: ");
                 event += _timeServer.NTPServer; 
                 logEvent(event);
             }
-            setState(WiFiState::Initialized);
+            setState(WiFiInitState::Initialized);
             break;
 
         default:
@@ -254,7 +256,7 @@ void WiFiStateMachine::run()
             break;
     }
 
-    if (_state > WiFiState::Connected)
+    if (_state > WiFiInitState::Connected)
     {
         _webServer.handleClient();
         ArduinoOTA.handle();

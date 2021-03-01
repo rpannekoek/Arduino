@@ -60,7 +60,7 @@ const int boilerTSet[5] = {0, 40, 50, 60, 0};
 
 
 OpenThermGateway OTGW(Serial, 14);
-WebServer WebServer(80); // Default HTTP port
+ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer(NTP_SERVER, 24 * 3600); // Synchronize daily
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 WeatherAPI WeatherService(2000); // 2 sec request timeout
@@ -166,9 +166,9 @@ void setup()
     memset(otgwRequests, 0xFF, sizeof(otgwRequests));
     memset(otgwResponses, 0xFF, sizeof(otgwResponses));
 
-    WiFiSM.on(WiFiState::TimeServerInitializing, onTimeServerInit);
-    WiFiSM.on(WiFiState::TimeServerSynced, onTimeServerSynced);
-    WiFiSM.on(WiFiState::Initialized, onWiFiInitialized);
+    WiFiSM.on(WiFiInitState::TimeServerInitializing, onTimeServerInit);
+    WiFiSM.on(WiFiInitState::TimeServerSynced, onTimeServerSynced);
+    WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
     WiFiSM.begin(WIFI_SSID, WIFI_PASSWORD, PersistentData.hostName);
 
     Tracer::traceFreeHeap();

@@ -8,7 +8,7 @@
 
 #define AP_SSID "ESP-Config"
 
-enum struct WiFiState
+enum struct WiFiInitState
 {
     Booting = 0,
     Initializing = 1,
@@ -28,9 +28,9 @@ class WiFiStateMachine
 {
     public:
         // Constructor
-        WiFiStateMachine(WiFiNTP& timeServer, WebServer& webServer, Log<const char>& eventLog);
+        WiFiStateMachine(WiFiNTP& timeServer, ESPWebServer& webServer, Log<const char>& eventLog);
 
-        void on(WiFiState state, void (*handler)(void));
+        void on(WiFiInitState state, void (*handler)(void));
  
         void begin(String ssid, String password, String hostName);
         void run();
@@ -49,7 +49,7 @@ class WiFiStateMachine
             return getCurrentTime() - _initTime;
         }
 
-        WiFiState inline getState()
+        WiFiInitState inline getState()
         {
             return _state;
         }
@@ -64,8 +64,8 @@ class WiFiStateMachine
             return _ipAddress.toString();
         }
 
-    protected:
-        WiFiState _state = WiFiState::Booting;
+    private:
+        WiFiInitState _state = WiFiInitState::Booting;
         uint32_t _stateChangeTime = 0;
         uint32_t _retryTimeout;
         uint32_t _resetTime = 0;
@@ -74,16 +74,16 @@ class WiFiStateMachine
         String _password;
         String _hostName;
         WiFiNTP& _timeServer;
-        WebServer& _webServer;
+        ESPWebServer& _webServer;
         Log<const char>& _eventLog;
-        void (*_handlers[static_cast<int>(WiFiState::Initialized) + 1])(void); // function pointers indexed by state
+        void (*_handlers[static_cast<int>(WiFiInitState::Initialized) + 1])(void); // function pointers indexed by state
         bool _isTimeServerAvailable = false;
         bool _isInAccessPointMode = false;
         IPAddress _ipAddress;
 
         void initializeAP();
         void initializeSTA();
-        void setState(WiFiState newState);
+        void setState(WiFiInitState newState);
         void blinkLED(int tOn, int tOff);
         String getResetReason();
 };

@@ -37,7 +37,7 @@ struct EnergyLogEntry
 
 
 SoladinComm Soladin;
-WebServer WebServer(80); // Default HTTP port
+ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer(NTP_SERVER, 24 * 3600); // Synchronize daily
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
@@ -109,8 +109,8 @@ void setup()
     WebServer.serveStatic("/styles.css", SPIFFS, "/styles.css", cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
 
-    WiFiSM.on(WiFiState::TimeServerSynced, onTimeServerSynced);
-    WiFiSM.on(WiFiState::Initialized, onWiFiInitialized);
+    WiFiSM.on(WiFiInitState::TimeServerSynced, onTimeServerSynced);
+    WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
     WiFiSM.begin(WIFI_SSID, WIFI_PASSWORD, PersistentData.hostName);
 
     Tracer::traceFreeHeap();

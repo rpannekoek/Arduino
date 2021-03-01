@@ -42,7 +42,7 @@
 #define CFG_GAS_CALORIFIC F("GasCalorific")
 #define CFG_POWER_LOG_DELTA F("PowerLogDelta")
 
-WebServer WebServer(80); // Default HTTP port
+ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer(SECONDS_PER_DAY); // Synchronize daily
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
@@ -129,8 +129,8 @@ void setup()
     WebServer.serveStatic(CSS, SPIFFS, CSS, cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
 
-    WiFiSM.on(WiFiState::TimeServerSynced, onTimeServerSynced);
-    WiFiSM.on(WiFiState::Initialized, onWiFiInitialized);
+    WiFiSM.on(WiFiInitState::TimeServerSynced, onTimeServerSynced);
+    WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
     WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
 
     Tracer::traceFreeHeap();

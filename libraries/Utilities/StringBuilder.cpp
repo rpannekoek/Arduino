@@ -2,37 +2,20 @@
 #include <PSRAM.h>
 #include "StringBuilder.h"
 
-
-#ifdef ESP32
-    // Small String Optimization is implemented in recent versions of the SDK
-    #define SSO true
-#endif
-
-#ifdef SSO
-    #define CAPACITY capacity()
-#else
-    #define CAPACITY capacity
-#endif
-
 // Constructor
 StringBuilder::StringBuilder(size_t size)
     : String((const char*)nullptr) // Minimal String init
 {
-#ifdef SSO
     setBuffer((char*) malloc(size));
     setCapacity(size - 1);
-#else
-    buffer = (char*) malloc(size);
-    capacity = size - 1;
-#endif
-    _space = CAPACITY;
+    _space = capacity();
 }
 
 
 void StringBuilder::clear()
 {
-    set_length(0);
-    _space = CAPACITY;
+    setLen(0);
+    _space = capacity();
 }
 
 
@@ -73,18 +56,8 @@ size_t StringBuilder::write(const uint8_t* dataPtr, size_t size)
 }
 
 
-void StringBuilder::set_length(size_t value)
-{
-#ifdef SSO
-    setLen(value);
-#else
-    len = value;
-#endif
-}
-
-
 void StringBuilder::update_length(size_t additional)
 {
     unsigned int newLength = length() + additional;  
-    set_length(std::min(newLength, CAPACITY)); 
+    setLen(std::min(newLength, capacity())); 
 }

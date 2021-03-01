@@ -21,7 +21,6 @@ class StringBuilder : public String, public Print
   protected:
     size_t _space;
     
-    void set_length(size_t value);
     void update_length(size_t additional);
 };
 

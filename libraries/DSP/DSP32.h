@@ -82,6 +82,7 @@ class DSP32
         complex_t* runFFT(const int16_t* signal);
         float* getSpectralPower(complex_t* complexSpectrum);
         float* getOctavePower(float* spectralPower);
+        float getdBA(float* spectralPower);
         BinInfo getFundamental(float* spectralPower);
         BinInfo getBinInfo(uint16_t index);
         BinInfo getOctaveInfo(uint16_t index);

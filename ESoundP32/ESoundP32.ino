@@ -32,7 +32,7 @@
 #define WAVE_BUFFER_SAMPLES (15 * SAMPLE_FREQUENCY)
 #define FULL_SCALE 32768
 #define DB_MIN 32
-#define RUN_DSP_INTERVAL 500
+#define RUN_DSP_INTERVAL 250
 #define DISPLAY_WIDTH 128
 #define DISPLAY_HEIGHT 64
 
@@ -56,7 +56,7 @@
 #define CFG_TZ_OFFSET F("TZOffset")
 
 
-WebServer WebServer(80); // Default HTTP port
+ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer(3600 * 24); // Synchronize daily
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
@@ -88,6 +88,7 @@ I2SDAC DAC(
 
 WaveStats lastWaveStats;
 float* lastOctavePower;
+float lastdBA;
 int16_t* dspBuffer;
 
 time_t currentTime = 0;
@@ -211,8 +212,8 @@ void setup()
     WebServer.serveStatic(CSS, SPIFFS, CSS, cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
 
-    WiFiSM.on(WiFiState::TimeServerSynced, onTimeServerSynced);
-    WiFiSM.on(WiFiState::Initialized, onWiFiInitialized);
+    WiFiSM.on(WiFiInitState::TimeServerSynced, onTimeServerSynced);
+    WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
     WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
 
     if (!BTAudio.begin(PersistentData.hostName))
@@ -328,6 +329,7 @@ void runWaveDsp()
     if (WaveBuffer.getNumSamples() < DSP_FRAME_SIZE)
     {
         lastOctavePower = nullptr;
+        lastdBA = 0;
         return;
     }
 
@@ -335,24 +337,28 @@ void runWaveDsp()
     complex_t* complexSpectrum = DSP.runFFT(dspBuffer);
     float* spectralPower = DSP.getSpectralPower(complexSpectrum);
     lastOctavePower = DSP.getOctavePower(spectralPower);
+    lastdBA = DSP.getdBA(spectralPower); // TODO: Correct Mic gain
 }
 
 
 void displayWaveInfo()
 {
-    Tracer tracer(F(__func__));
+    //Tracer tracer(F(__func__));
 
     float dBFS = 20 * log10f(float(lastWaveStats.peak) / FULL_SCALE);
 
     Display.clearDisplay();
     drawVUMeter(dBFS, lastOctavePower, DISPLAY_WIDTH, DISPLAY_HEIGHT - 10);
+
     Display.setTextSize(1);
     Display.setCursor(0, DISPLAY_HEIGHT - 8);
-    Display.printf(
-        "%0.0f dB  %d%%",
-        dBFS,
-        WaveBuffer.getFillPercentage()
-        );
+    Display.printf("%0.0f dBFS", dBFS);
+
+    Display.setCursor(DISPLAY_WIDTH * 1/3, DISPLAY_HEIGHT - 8);
+    Display.printf("%0.0f dB(A)", lastdBA);
+
+    Display.setCursor(DISPLAY_WIDTH * 2/3, DISPLAY_HEIGHT - 8);
+    Display.printf("%d ms", 1000 * WaveBuffer.getNumNewSamples() / SAMPLE_FREQUENCY);
     Display.display();
 }
 
