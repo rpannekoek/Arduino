@@ -583,7 +583,7 @@ void handleHttpSyncFTPRequest()
  
     writeHtmlFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, "text/html", HttpResponse);
 }
 
 
@@ -604,7 +604,7 @@ void handleHttpEventLogRequest()
 
     writeHtmlFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, "text/html", HttpResponse);
 }
 
 
@@ -650,7 +650,7 @@ void handleHttpConfigFormRequest()
 
     writeHtmlFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, "text/html", HttpResponse);
 }
 
 
