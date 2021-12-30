@@ -1,3 +1,5 @@
+#define DEBUG_ESP_PORT Serial
+
 #include <math.h>
 #include <ESPWiFi.h>
 #include <ESPWebServer.h>
@@ -14,13 +16,10 @@
 #include "PersistentData.h"
 #include "OpenThermLogEntry.h"
 #include "GlobalLogEntry.h"
-#include "WiFiCredentials.private.h"
 
-
-#define NTP_SERVER "fritz.box"
-#define FTP_SERVER "fritz.box"
 #define ICON "/apple-touch-icon.png"
 #define CSS "/styles.css"
+#define SECONDS_PER_DAY (24 * 3600)
 #define WATCHDOG_INTERVAL_MS 1000
 #define OTGW_STARTUP_TIME 5
 #define OTGW_TIMEOUT 60
@@ -37,15 +36,23 @@
 #define LED_ON 0
 #define LED_OFF 1
 
-#define CFG_HOSTNAME F("hostName")
+#define CFG_WIFI_SSID F("WifiSSID")
+#define CFG_WIFI_KEY F("WifiKey")
+#define CFG_HOST_NAME F("HostName")
+#define CFG_NTP_SERVER F("NTPServer")
+#define CFG_FTP_SERVER F("FTPServer")
+#define CFG_FTP_USER F("FTPUser")
+#define CFG_FTP_PASSWORD F("FTPPassword")
 #define CFG_TZ_OFFSET F("tzOffset")
 #define CFG_OT_LOG_INTERVAL F("otLogInterval")
 #define CFG_FTP_SYNC_ENTRIES F("ftpSyncEntries")
 #define CFG_WEATHER_API_KEY F("weatherApiKey")
 #define CFG_WEATHER_LOC F("weatherLocation")
 
+const char* ContentTypeHtml = "text/html;charset=UTF-8";
+const char* ContentTypeText = "text/plain";
 
-const char* BOILER_LEVEL_NAMES[5] = {"Off", "Low", "Medium", "High", "Thermostat"};
+const char* BoilerLevelNames[5] = {"Off", "Low", "Medium", "High", "Thermostat"};
 
 enum BoilerLevel // Unscoped enum so it can be used as array index without casting
 {
@@ -61,7 +68,7 @@ const int boilerTSet[5] = {0, 40, 50, 60, 0};
 
 OpenThermGateway OTGW(Serial, 14);
 ESPWebServer WebServer(80); // Default HTTP port
-WiFiNTP TimeServer(NTP_SERVER, 24 * 3600); // Synchronize daily
+WiFiNTP TimeServer(SECONDS_PER_DAY); // Synchronize daily
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 WeatherAPI WeatherService(2000); // 2 sec request timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
@@ -137,6 +144,7 @@ void setup()
     #endif
 
     PersistentData.begin();
+    TimeServer.NTPServer = PersistentData.ntpServer;
     TimeServer.timeZoneOffset = PersistentData.timeZoneOffset;
     Html.setTitlePrefix(PersistentData.hostName);
 
@@ -169,7 +177,7 @@ void setup()
     WiFiSM.on(WiFiInitState::TimeServerInitializing, onTimeServerInit);
     WiFiSM.on(WiFiInitState::TimeServerSynced, onTimeServerSynced);
     WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
-    WiFiSM.begin(WIFI_SSID, WIFI_PASSWORD, PersistentData.hostName);
+    WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
 
     Tracer::traceFreeHeap();
 
@@ -460,9 +468,19 @@ uint16_t getTOutside()
 }
 
 
+uint16_t getTReturn()
+{
+    uint16_t result = boilerResponses[OpenThermDataId::TReturn];
+    if (result == DATA_VALUE_NONE)
+        result = otgwResponses[OpenThermDataId::TReturn];
+    return result;
+}
+
+
 void updateGlobalLog()
 {
     float tWater = getDecimal(boilerResponses[OpenThermDataId::TBoiler]);
+    float tReturn = getDecimal(getTReturn());
     bool flame = (boilerResponses[OpenThermDataId::Status] & OpenThermStatus::SlaveFlame) != 0;
 
     if (currentTime >= lastGlobalLogEntryPtr->time + GLOBAL_LOG_INTERVAL)
@@ -471,7 +489,7 @@ void updateGlobalLog()
         lastGlobalLogEntryPtr->time = currentTime;
         GlobalLog.add(lastGlobalLogEntryPtr);
     }
-    lastGlobalLogEntryPtr->update(tWater, flame);
+    lastGlobalLogEntryPtr->update(tWater, tReturn, flame);
 }
 
 
@@ -492,6 +510,7 @@ void logOpenThermValues(bool forceCreate)
     otLogEntryPtr->boilerStatus = boilerResponses[OpenThermDataId::Status];
     otLogEntryPtr->boilerTSet = boilerResponses[OpenThermDataId::TSet];
     otLogEntryPtr->boilerTWater = boilerResponses[OpenThermDataId::TBoiler];
+    otLogEntryPtr->tReturn = getTReturn();
     otLogEntryPtr->tOutside = getTOutside();
     otLogEntryPtr->repeat = 0;
 
@@ -519,7 +538,12 @@ bool trySyncOpenThermLog(Print* printTo)
 {
     Tracer tracer(F("trySyncOpenThermLog"));
 
-    if (!FTPClient.begin(FTP_SERVER, FTP_USERNAME, FTP_PASSWORD, FTP_DEFAULT_CONTROL_PORT, printTo))
+    if (!FTPClient.begin(
+        PersistentData.ftpServer,
+        PersistentData.ftpUser,
+        PersistentData.ftpPassword,
+        FTP_DEFAULT_CONTROL_PORT,
+        printTo))
     {
         FTPClient.end();
         return false;
@@ -623,7 +647,7 @@ void test(String message)
         int tWater = 40;
         for (int i = 0; i < GLOBAL_LOG_INTERVAL; i++)
         {
-            lastGlobalLogEntryPtr->update(tWater, (i % 2 == 0));
+            lastGlobalLogEntryPtr->update(tWater, tWater - 10, (i % 2 == 0));
             if (tWater++ == 60) tWater = 40;
         }
     }
@@ -751,7 +775,13 @@ float getBarValue(float t, float tMin = 20)
 void handleHttpRootRequest()
 {
     Tracer tracer(F("handleHttpRootRequest"));
-    
+
+    if (WiFiSM.isInAccessPointMode())
+    {
+        handleHttpConfigFormRequest();
+        return;
+    }
+
     uint32_t otgwErrors = 0;
     for (int i = 0; i <= 4; i++)
         otgwErrors += OTGW.errors[i];
@@ -759,6 +789,8 @@ void handleHttpRootRequest()
     float thermostatTSet = getDecimal(thermostatRequests[OpenThermDataId::TSet]);
     float boilerTSet = getDecimal(boilerResponses[OpenThermDataId::TSet]);
     float boilerTWater = getDecimal(boilerResponses[OpenThermDataId::TBoiler]);
+    float tReturn = getDecimal(getTReturn());
+    float tOutside = getDecimal(getTOutside());
 
     Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
 
@@ -799,28 +831,44 @@ void handleHttpRootRequest()
         );
     Html.writeBar(getBarValue(boilerTWater), F("waterBar"), true, false);
     HttpResponse.println(F("</td></tr>"));
+    HttpResponse.printf(
+        F("<tr><th>TReturn</th><td>%0.1f</td><td class=\"graph\">"),
+        tReturn
+        );
+    Html.writeBar(getBarValue(tReturn), F("returnBar"), true, false);
+    HttpResponse.println(F("</td></tr>"));
+    HttpResponse.printf(
+        F("<tr><th>TOutside</th><td>%0.1f</td><td class=\"graph\"></td></tr>"),
+        tOutside
+        );
     HttpResponse.println(F("</table>"));
 
     HttpResponse.println(F("<h1>Last 24 hours</h1>"));
 
     HttpResponse.println(F("<table>"));
-    HttpResponse.println(F("<tr><th>Time</th><th>Flame</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
+    HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th rowspan='2'>Flame</th><th colspan='3'>TWater</th><th colspan='3'>TReturn</th></tr>"));
+    HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
     GlobalLogEntry* logEntryPtr = GlobalLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
         time_t seconds = std::min(currentTime + 1 - logEntryPtr->time, (time_t)GLOBAL_LOG_INTERVAL);
         float avgTWater = logEntryPtr->sumTWater / seconds;
+        float avgTReturn = logEntryPtr->sumTReturn / seconds;
+        float avgDeltaT = avgTWater - avgTReturn;
 
         HttpResponse.printf(
-            F("<tr><td>%s</td><td>%d %%</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td class=\"graph\">"),
+            F("<tr><td>%s</td><td>%d %%</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td class=\"graph\">"),
             formatTime("%H:%M", logEntryPtr->time),
             100 * logEntryPtr->flameCount / seconds,
             logEntryPtr->minTWater,
             logEntryPtr->maxTWater,
-            avgTWater
+            avgTWater,
+            logEntryPtr->minTReturn,
+            logEntryPtr->maxTReturn,
+            avgTReturn
             );
 
-        Html.writeBar(getBarValue(avgTWater), F("waterBar"), false, false);
+        Html.writeStackedBar(getBarValue(avgTReturn), getBarValue(avgDeltaT), F("returnBar"), F("waterBar"), false, false);
 
         HttpResponse.println(F("</td></tr>"));
         logEntryPtr = GlobalLog.getNextEntry();
@@ -829,7 +877,7 @@ void handleHttpRootRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -870,10 +918,10 @@ void handleHttpOpenThermRequest()
 
     HttpResponse.println(F("<h1>Boiler override</h1>"));
     HttpResponse.println(F("<table>"));
-    HttpResponse.printf(F("<tr><td>Current level</td><td>%s</td></tr>\r\n"), BOILER_LEVEL_NAMES[currentBoilerLevel]);
+    HttpResponse.printf(F("<tr><td>Current level</td><td>%s</td></tr>\r\n"), BoilerLevelNames[currentBoilerLevel]);
     if (changeBoilerLevelTime != 0)
     {
-        HttpResponse.printf(F("<tr><td>Change to</td><td>%s</td></tr>\r\n"), BOILER_LEVEL_NAMES[changeBoilerLevel]);
+        HttpResponse.printf(F("<tr><td>Change to</td><td>%s</td></tr>\r\n"), BoilerLevelNames[changeBoilerLevel]);
         HttpResponse.printf(F("<tr><td>Change in</td><td>%d s</td></tr>\r\n"), changeBoilerLevelTime - currentTime);
     }
     HttpResponse.printf(F("<tr><td>Override duration</td><td>%0.1f h</td></tr>\r\n"), float(totalOverrideDuration) / 3600);
@@ -886,7 +934,7 @@ void handleHttpOpenThermRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -926,7 +974,7 @@ void handleHttpOpenThermTrafficRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -946,17 +994,18 @@ void handleHttpOpenThermLogRequest()
     bool skipEvenEntries = OpenThermLog.count() > (OT_LOG_LENGTH / 2);
 
     HttpResponse.println(F("<table>"));
-    HttpResponse.println(F("<tr><th>Time</th><th>TSet(t)</th><th>Max mod %</th><th>TSet(b)</th><th>TWater</th><th>TOutside</th><th>Status</th></tr>"));
+    HttpResponse.println(F("<tr><th>Time</th><th>TSet(t)</th><th>Max mod %</th><th>TSet(b)</th><th>TWater</th><th>TReturn</th><th>TOutside</th><th>Status</th></tr>"));
     OpenThermLogEntry* otLogEntryPtr = OpenThermLog.getFirstEntry();
     while (otLogEntryPtr != nullptr)
     {
         HttpResponse.printf(
-            F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%s</td></tr>\r\n"),
+            F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%s</td></tr>\r\n"),
             formatTime("%H:%M", otLogEntryPtr->time), 
             getDecimal(otLogEntryPtr->thermostatTSet),
             getDecimal(otLogEntryPtr->thermostatMaxRelModulation),
             getDecimal(otLogEntryPtr->boilerTSet),
             getDecimal(otLogEntryPtr->boilerTWater),
+            getDecimal(otLogEntryPtr->tReturn),
             getDecimal(otLogEntryPtr->tOutside),
             OTGW.getSlaveStatus(otLogEntryPtr->boilerStatus)
             );
@@ -969,7 +1018,7 @@ void handleHttpOpenThermLogRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -982,7 +1031,7 @@ void handleHttpOpenThermLogSyncRequest()
     HttpResponse.printf(
         F("<p>Sending %d OpenTherm log entries to FTP server (%s) ...</p>\r\n"), 
         otLogEntriesToSync,
-        FTP_SERVER
+        PersistentData.ftpServer
         );
 
     HttpResponse.println(F("<div><pre>"));
@@ -999,7 +1048,7 @@ void handleHttpOpenThermLogSyncRequest()
  
     Html.writeFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -1014,12 +1063,12 @@ void handleHttpOpenThermLogCsvRequest()
     */
 
     HttpResponse.clear();
-    HttpResponse.println(F("\"Time\",\"TSet(t)\",\"Max Modulation %\",\"TSet(b)\",\"TWater\",\"TOutside\",\"CH\",\"DHW\""));
+    HttpResponse.println(F("\"Time\",\"TSet(t)\",\"Max Modulation %\",\"TSet(b)\",\"TWater\",\"TReturn\",\"TOutside\",\"CH\",\"DHW\""));
 
     OpenThermLogEntry* otLogEntryPtr = OpenThermLog.getFirstEntry();
     writeCsvDataLines(otLogEntryPtr, HttpResponse);
 
-    WebServer.send(200, F("text/plain"), HttpResponse);
+    WebServer.send(200, ContentTypeText, HttpResponse);
 }
 
 
@@ -1053,12 +1102,13 @@ void writeCsvDataLine(OpenThermLogEntry* otLogEntryPtr, time_t time, Print& dest
     }
 
     destination.printf(
-        "\"%s\",%d,%d,%d,%d,%d,%d,%d\r\n", 
+        "\"%s\",%d,%d,%d,%d,%d,%d,%d,%d\r\n", 
         formatTime("%F %H:%M", time), 
         getInteger(otLogEntryPtr->thermostatTSet),
         getInteger(otLogEntryPtr->thermostatMaxRelModulation),
         getInteger(otLogEntryPtr->boilerTSet),
         getInteger(otLogEntryPtr->boilerTWater),
+        getInteger(otLogEntryPtr->tReturn),
         getInteger(otLogEntryPtr->tOutside),
         statusCH,
         statusDHW
@@ -1089,7 +1139,7 @@ void handleHttpEventLogRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -1114,7 +1164,7 @@ void handleHttpCommandFormRequest()
 
     otgwResponse = String();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -1150,7 +1200,13 @@ void handleHttpConfigFormRequest()
 
     HttpResponse.println(F("<form action=\"/config\" method=\"POST\">"));
     HttpResponse.println(F("<table>"));
-    Html.writeTextBox(CFG_HOSTNAME, F("Host name"), PersistentData.hostName, 32);
+    Html.writeTextBox(CFG_WIFI_SSID, F("WiFi SSID"), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID) - 1);
+    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1);
+    Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
+    Html.writeTextBox(CFG_NTP_SERVER, F("NTP server"), PersistentData.ntpServer, sizeof(PersistentData.ntpServer) - 1);
+    Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
+    Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
+    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
     Html.writeTextBox(CFG_TZ_OFFSET, F("Timezone offset"), String(PersistentData.timeZoneOffset), 3);
     Html.writeTextBox(CFG_OT_LOG_INTERVAL, F("OpenTherm Log Interval (s)"), String(PersistentData.openThermLogInterval), 4);
     Html.writeTextBox(CFG_FTP_SYNC_ENTRIES, F("FTP Sync Entries"), String(PersistentData.ftpSyncEntries), 4);
@@ -1179,7 +1235,7 @@ void handleHttpConfigFormRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -1193,11 +1249,18 @@ void handleHttpConfigFormPost()
 {
     Tracer tracer(F("handleHttpConfigFormPost"));
 
+    copyString(WebServer.arg(CFG_WIFI_SSID), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID)); 
+    copyString(WebServer.arg(CFG_WIFI_KEY), PersistentData.wifiKey, sizeof(PersistentData.wifiKey)); 
+    copyString(WebServer.arg(CFG_HOST_NAME), PersistentData.hostName, sizeof(PersistentData.hostName)); 
+    copyString(WebServer.arg(CFG_NTP_SERVER), PersistentData.ntpServer, sizeof(PersistentData.ntpServer)); 
+    copyString(WebServer.arg(CFG_FTP_SERVER), PersistentData.ftpServer, sizeof(PersistentData.ftpServer)); 
+    copyString(WebServer.arg(CFG_FTP_USER), PersistentData.ftpUser, sizeof(PersistentData.ftpUser)); 
+    copyString(WebServer.arg(CFG_FTP_PASSWORD), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword)); 
+
     PersistentData.timeZoneOffset = WebServer.arg(CFG_TZ_OFFSET).toInt();
     PersistentData.openThermLogInterval = WebServer.arg(CFG_OT_LOG_INTERVAL).toInt();
     PersistentData.ftpSyncEntries = WebServer.arg(CFG_FTP_SYNC_ENTRIES).toInt();
 
-    copyString(WebServer.arg(CFG_HOSTNAME), PersistentData.hostName, sizeof(PersistentData.hostName));
     copyString(WebServer.arg(CFG_WEATHER_API_KEY), PersistentData.weatherApiKey, sizeof(PersistentData.weatherApiKey));
     copyString(WebServer.arg(CFG_WEATHER_LOC), PersistentData.weatherLocation, sizeof(PersistentData.weatherLocation));
 

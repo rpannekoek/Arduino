@@ -28,6 +28,7 @@ enum OpenThermDataId // Unscoped enum so it can be used as array index without c
     TRoom = 24,
     TBoiler = 25,
     TOutside = 27,
+    TReturn = 28,
     MaxTSet = 57,
     BoilerBurnerStarts = 116,
     BoilerBurnerHours = 120,

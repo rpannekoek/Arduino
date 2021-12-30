@@ -81,6 +81,42 @@ void HtmlWriter::writeBar(float value, String cssClass, bool fill, bool useDiv)
 }
 
 
+void HtmlWriter::writeStackedBar(float value1, float value2, String cssClass1, String cssClass2, bool fill, bool useDiv)
+{
+    value1 = std::max(std::min(value1, 1.0f), 0.0f);
+    value2 = std::max(std::min(value2, 1.0f - value1), 0.0f);
+    size_t barLength1 = roundf(value1 * _maxBarLength);
+    size_t barLength2 = roundf(value2 * _maxBarLength);
+
+    if (useDiv) _output.print(F("<div>"));
+
+    memset(_bar, 'o', barLength1);
+    _bar[barLength1] = 0;
+
+    _output.printf(F("<span class=\"%s\">%s</span>"), cssClass1.c_str(), _bar);
+
+    memset(_bar, 'o', barLength2);
+    _bar[barLength2] = 0;
+
+    _output.printf(F("<span class=\"%s\">%s</span>"), cssClass2.c_str(), _bar);
+
+    if (fill)
+    {
+        memset(_bar, 'o', _maxBarLength - barLength1 - barLength2);
+        _bar[_maxBarLength - barLength1 - barLength2] = 0;
+
+        _output.printf(F("<span class=\"barFill\">%s</span>"), _bar);
+    }
+    else if (barLength1 == 0 && barLength2 == 0)
+    {
+        // Ensure that an empty bar has the same height
+        _output.print(F("<span class=\"emptyBar\">o</span>"));
+    }
+
+    if (useDiv) _output.print("</div>");
+}
+
+
 void HtmlWriter::writeTextBox(String name, String label, String value,  uint16_t maxLength)
 {
     _output.printf(

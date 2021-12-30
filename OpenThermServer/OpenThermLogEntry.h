@@ -6,6 +6,7 @@ struct OpenThermLogEntry
     uint16_t boilerStatus;
     uint16_t boilerTSet;
     uint16_t boilerTWater;
+    uint16_t tReturn;
     uint16_t tOutside;
     uint8_t repeat;
 
@@ -16,6 +17,7 @@ struct OpenThermLogEntry
             (otherPtr->boilerStatus == boilerStatus) &&
             (otherPtr->boilerTSet == boilerTSet) &&
             (otherPtr->boilerTWater == boilerTWater) &&
+            (otherPtr->tReturn == tReturn) &&
             (otherPtr->tOutside == tOutside);
     }
 };

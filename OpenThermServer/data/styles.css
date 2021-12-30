@@ -45,6 +45,12 @@ td.graph
     color: blue;
 }
 
+.returnBar
+{
+	background-color: green;
+    color: green;
+}
+
 .barFill
 {
 	background-color: gray;
