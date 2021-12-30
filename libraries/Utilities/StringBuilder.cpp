@@ -1,21 +1,20 @@
 #include <Arduino.h>
-#include <PSRAM.h>
 #include "StringBuilder.h"
 
 // Constructor
 StringBuilder::StringBuilder(size_t size)
-    : String((const char*)nullptr) // Minimal String init
 {
-    setBuffer((char*) malloc(size));
-    setCapacity(size - 1);
-    _space = capacity();
+    _buffer = (char*) malloc(size);
+    _capacity = size;
+    clear();
 }
 
 
 void StringBuilder::clear()
 {
-    setLen(0);
-    _space = capacity();
+    _buffer[0] = 0;
+    _length = 0;
+    _space = _capacity;
 }
 
 
@@ -24,9 +23,11 @@ void StringBuilder::printf(const __FlashStringHelper* fformat, ...)
     if (_space == 0)
         return;
 
+    char* end = _buffer + _length;
+
     va_list args;
     va_start(args, fformat);
-    size_t additional = vsnprintf_P(end(), _space, (PGM_P) fformat, args);
+    size_t additional = vsnprintf_P(end, _space, (PGM_P) fformat, args);
     va_end(args);
 
     update_length(additional);
@@ -47,8 +48,9 @@ size_t StringBuilder::write(const uint8_t* dataPtr, size_t size)
     if (size >= _space)
         size = (_space - 1);
 
-    memcpy(end(), dataPtr, size);
-    end()[size] = 0; 
+    char* end = _buffer + _length;
+    memcpy(end, dataPtr, size);
+    end[size] = 0; 
 
     update_length(size);
 
@@ -58,6 +60,6 @@ size_t StringBuilder::write(const uint8_t* dataPtr, size_t size)
 
 void StringBuilder::update_length(size_t additional)
 {
-    unsigned int newLength = length() + additional;  
-    setLen(std::min(newLength, capacity())); 
+    _length += additional;
+    _space -= additional;
 }
