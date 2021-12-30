@@ -51,14 +51,13 @@ Log<HeatLogEntry> HeatLog(24 * 2);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
 OneWire OneWireBus(D7);
-DeviceAddress tInputSensorAddress;
-DeviceAddress tOutputSensorAddress;
 DallasTemperature TempSensors(&OneWireBus);
 FlowSensor Flow_Sensor(D6);
 
+DeviceAddress tInputSensorAddress;
+DeviceAddress tOutputSensorAddress;
 
 time_t currentTime = 0;
-time_t otLogTime = 0;
 time_t heatLogTime = 0;
 time_t actionPerformedTime = 0;
 
@@ -199,11 +198,15 @@ void onWiFiInitialized()
 }
 
 
+float calcPower(float flowRate, float deltaT)
+{
+    return SPECIFIC_HEAT_CAP_H2O * (flowRate / 60) * deltaT;
+}
+
 void updateHeatLog()
 {
-    float deltaT = tInput - tOutput;
     float flowRate = Flow_Sensor.getFlowRate();
-    powerKW = SPECIFIC_HEAT_CAP_H2O * (flowRate / 60) * deltaT;
+    powerKW = calcPower(flowRate, tInput - tOutput);
 
     if (currentTime >= lastHeatLogEntryPtr->time + HEAT_LOG_INTERVAL)
     {
@@ -243,7 +246,7 @@ void test(String message)
         {
             float tOutput = tInput - 10;
             float flowRate = tInput / 2;
-            float powerKW = SPECIFIC_HEAT_CAP_H2O * flowRate * (tInput - tOutput); 
+            float powerKW = calcPower(flowRate, tInput - tOutput); 
             lastHeatLogEntryPtr->update(tInput, tOutput, flowRate, powerKW);
             if (tInput++ == 60) tInput = 40;
         }
