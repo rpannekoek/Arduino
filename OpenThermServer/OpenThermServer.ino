@@ -813,32 +813,32 @@ void handleHttpRootRequest()
 
     HttpResponse.println(F("<table>"));
     HttpResponse.printf(
-        F("<tr><th>Thermostat</th><td>%0.1f @ %0.0f %%</td><td class=\"graph\">"),
+        F("<tr><th>Thermostat</th><td>%0.1f °C @ %0.0f %%</td><td class=\"graph\">"),
         thermostatTSet,
         getDecimal(thermostatRequests[OpenThermDataId::MaxRelModulation])       
         );
     Html.writeBar(getBarValue(thermostatTSet), F("setBar"), true, false);
     HttpResponse.println(F("</td></tr>"));
     HttpResponse.printf(
-        F("<tr><th>TSet</th><td>%0.1f</td><td class=\"graph\">"),
+        F("<tr><th>T<sub>set</sub></th><td>%0.1f °C</td><td class=\"graph\">"),
         boilerTSet
         );
     Html.writeBar(getBarValue(boilerTSet), F("setBar"), true, false);
     HttpResponse.println(F("</td></tr>"));
     HttpResponse.printf(
-        F("<tr><th>TWater</th><td>%0.1f</td><td class=\"graph\">"),
+        F("<tr><th>T<sub>water</sub></th><td>%0.1f °C</td><td class=\"graph\">"),
         boilerTWater
         );
     Html.writeBar(getBarValue(boilerTWater), F("waterBar"), true, false);
     HttpResponse.println(F("</td></tr>"));
     HttpResponse.printf(
-        F("<tr><th>TReturn</th><td>%0.1f</td><td class=\"graph\">"),
+        F("<tr><th>T<sub>return</sub></th><td>%0.1f °C</td><td class=\"graph\">"),
         tReturn
         );
     Html.writeBar(getBarValue(tReturn), F("returnBar"), true, false);
     HttpResponse.println(F("</td></tr>"));
     HttpResponse.printf(
-        F("<tr><th>TOutside</th><td>%0.1f</td><td class=\"graph\"></td></tr>"),
+        F("<tr><th>T<sub>outside</sub></th><td>%0.1f °C</td><td class=\"graph\"></td></tr>"),
         tOutside
         );
     HttpResponse.println(F("</table>"));
@@ -846,7 +846,7 @@ void handleHttpRootRequest()
     HttpResponse.println(F("<h1>Last 24 hours</h1>"));
 
     HttpResponse.println(F("<table>"));
-    HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th rowspan='2'>Flame</th><th colspan='3'>TWater</th><th colspan='3'>TReturn</th></tr>"));
+    HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th rowspan='2'>Flame</th><th colspan='3'>T<sub>water</sub> (°C)</th><th colspan='3'>T<sub>return</sub> (°C)</th></tr>"));
     HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
     GlobalLogEntry* logEntryPtr = GlobalLog.getFirstEntry();
     while (logEntryPtr != nullptr)
