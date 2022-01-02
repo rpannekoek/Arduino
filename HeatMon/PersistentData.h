@@ -1,7 +1,8 @@
 #include <PersistentDataBase.h>
+#include <DallasTemperature.h>
 
 
-struct PersistentDataStruct : PersistentDataBase
+struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
 {
     char wifiSSID[32];
     char wifiKey[32];
@@ -11,6 +12,10 @@ struct PersistentDataStruct : PersistentDataBase
     char ftpUser[32];
     char ftpPassword[32];
     int16_t timeZoneOffset; // hours
+    DeviceAddress tInputSensorAddress;
+    DeviceAddress tOutputSensorAddress;
+    float tInputOffset;
+    float tOutputOffset;
 
     PersistentDataStruct() : PersistentDataBase(
         sizeof(wifiSSID) +
@@ -20,7 +25,11 @@ struct PersistentDataStruct : PersistentDataBase
         sizeof(ftpServer) + 
         sizeof(ftpUser) + 
         sizeof(ftpPassword) + 
-        sizeof(timeZoneOffset)
+        sizeof(timeZoneOffset) +
+        sizeof(tInputSensorAddress) +
+        sizeof(tOutputSensorAddress) +
+        sizeof(tInputOffset) +
+        sizeof(tOutputOffset)
         ) {}
 
     virtual void initialize()
@@ -33,6 +42,10 @@ struct PersistentDataStruct : PersistentDataBase
         ftpUser[0] = 0;
         ftpPassword[0] = 0;
         timeZoneOffset = 1;
+        memset(tInputSensorAddress, 0, sizeof(tInputSensorAddress));
+        memset(tOutputSensorAddress, 0, sizeof(tOutputSensorAddress));
+        tInputOffset = 0;
+        tOutputOffset = 0;
     }
 
     virtual void validate()
@@ -48,6 +61,9 @@ struct PersistentDataStruct : PersistentDataBase
 
         if (timeZoneOffset < -12) timeZoneOffset = -12;
         if (timeZoneOffset > 14) timeZoneOffset = 14;
+
+        tInputOffset = std::max(std::min(tInputOffset, 1.0f), -1.0f);
+        tOutputOffset = std::max(std::min(tOutputOffset, 1.0f), -1.0f);
     }
 };
 

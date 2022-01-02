@@ -54,18 +54,17 @@ OneWire OneWireBus(D7);
 DallasTemperature TempSensors(&OneWireBus);
 FlowSensor Flow_Sensor(D6);
 
-DeviceAddress tInputSensorAddress;
-DeviceAddress tOutputSensorAddress;
-
 time_t currentTime = 0;
 time_t heatLogTime = 0;
 time_t actionPerformedTime = 0;
 
 HeatLogEntry* lastHeatLogEntryPtr = nullptr;
 
+bool calibrationRequired = false;
 float tInput = 0;
 float tOutput = 0;
 float powerKW = 0;
+
 
 const char* formatTime(const char* format, time_t time)
 {
@@ -78,6 +77,35 @@ const char* formatTime(const char* format, time_t time)
 void logEvent(String msg)
 {
     WiFiSM.logEvent(msg);
+}
+
+
+void logSensorInfo(const char* name, DeviceAddress addr, float offset)
+{
+    char message[64];
+    if (TempSensors.isConnected(addr))
+    {
+        snprintf(
+            message,
+            sizeof(message),
+            "%s sensor address: %02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X. Offset: %0.2f",
+            name,
+            addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7],
+            offset
+            );
+    }
+    else
+    {
+        snprintf(
+            message,
+            sizeof(message),
+            "ERROR: %s sensor is not connected.",
+            name
+            );
+    }
+
+    String event(message);
+    logEvent(event);
 }
 
 
@@ -106,6 +134,8 @@ void setup()
 
     const char* cacheControl = "max-age=86400, public";
     WebServer.on("/", handleHttpRootRequest);
+    WebServer.on("/calibrate", HTTP_GET, handleHttpCalibrateFormRequest);
+    WebServer.on("/calibrate", HTTP_POST, handleHttpCalibrateFormPost);
     WebServer.on("/events", handleHttpEventLogRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
     WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
@@ -114,7 +144,6 @@ void setup()
     WebServer.serveStatic(CSS, SPIFFS, CSS, cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
     
-    WiFiSM.on(WiFiInitState::TimeServerInitializing, onTimeServerInit);
     WiFiSM.on(WiFiInitState::TimeServerSynced, onTimeServerSynced);
     WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
     WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
@@ -126,14 +155,24 @@ void setup()
     TRACE(F("Found %d OneWire devices.\n"), TempSensors.getDeviceCount());
     TRACE(F("Found %d temperature sensors.\n"), TempSensors.getDS18Count());
 
-    if (!TempSensors.getAddress(tInputSensorAddress, 0))
+    if (!TempSensors.validFamily(PersistentData.tInputSensorAddress))
     {
-        logEvent(F("ERROR: No input temperature sensor detected."));
+        // Device addresses not initialized; obtain & store them in persistent data.
+        if (!TempSensors.getAddress(PersistentData.tInputSensorAddress, 0))
+        {
+            logEvent(F("ERROR: Unable to obtain input sensor address."));
+        }
+        if (!TempSensors.getAddress(PersistentData.tOutputSensorAddress, 1))
+        {
+            logEvent(F("ERROR: Unable to obtain output sensor address."));
+        }
+        PersistentData.writeToEEPROM();
+        calibrationRequired = true;
     }
-    if (!TempSensors.getAddress(tOutputSensorAddress, 1))
-    {
-        logEvent(F("ERROR: No output temperature sensor detected."));
-    }
+
+    logSensorInfo("Input", PersistentData.tInputSensorAddress, PersistentData.tInputOffset);    
+    logSensorInfo("Output", PersistentData.tOutputSensorAddress, PersistentData.tOutputOffset);    
+
     TempSensors.requestTemperatures();
 
     Tracer::traceFreeHeap();
@@ -153,34 +192,35 @@ void loop()
 
     if (Serial.available())
     {
-        digitalWrite(LED_BUILTIN, LED_ON);
-        handleSerialData();
-        digitalWrite(LED_BUILTIN, LED_OFF);
-        return;
+        String message = Serial.readStringUntil('\n');
+        test(message);
     }
 
     if (TempSensors.getDS18Count() > 0 && TempSensors.isConversionComplete())
     {
-        tInput = TempSensors.getTempC(tInputSensorAddress);
+        digitalWrite(LED_BUILTIN, LED_ON);
+        float tInputMeasured = TempSensors.getTempC(PersistentData.tInputSensorAddress);
+        tInput = (tInputMeasured == DEVICE_DISCONNECTED_C)
+            ? 0.0
+            : tInputMeasured + PersistentData.tInputOffset;
         if (TempSensors.getDS18Count() > 1)
         {
-            tOutput = TempSensors.getTempC(tOutputSensorAddress);        
+            float tOutputMeasured = TempSensors.getTempC(PersistentData.tOutputSensorAddress);
+            tOutput = (tOutputMeasured == DEVICE_DISCONNECTED_C)
+                ? 0.0
+                : tOutputMeasured + PersistentData.tOutputOffset;        
         }        
         TempSensors.requestTemperatures();
+        digitalWrite(LED_BUILTIN, LED_OFF);
     }
 
     delay(10);
 }
 
 
-void onTimeServerInit()
-{
-}
-
-
 void onTimeServerSynced()
 {
-    // Create first global log entry
+    // Create first heat log entry
     lastHeatLogEntryPtr = new HeatLogEntry();
     lastHeatLogEntryPtr->time = currentTime - (currentTime % HEAT_LOG_INTERVAL);
     HeatLog.add(lastHeatLogEntryPtr);
@@ -215,15 +255,6 @@ void updateHeatLog()
         HeatLog.add(lastHeatLogEntryPtr);
     }
     lastHeatLogEntryPtr->update(tInput, tOutput, flowRate, powerKW);
-}
-
-
-void handleSerialData()
-{
-    Tracer tracer(F("handleSerialData"));
-
-    String message = Serial.readStringUntil('\n');
-    test(message);
 }
 
 
@@ -282,6 +313,12 @@ void handleHttpRootRequest()
     if (WiFiSM.isInAccessPointMode())
     {
         handleHttpConfigFormRequest();
+        return;
+    }
+
+    if (calibrationRequired)
+    {
+        handleHttpCalibrateFormRequest();
         return;
     }
 
@@ -373,6 +410,71 @@ void handleHttpRootRequest()
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
+}
+
+
+void handleHttpCalibrateFormRequest()
+{
+    Tracer tracer(F("handleHttpCalibrateFormRequest"));
+
+    Html.writeHeader(F("Calibrate sensors"), true, true);
+
+    if (TempSensors.getDS18Count() < 2)
+    {
+        HttpResponse.println(F("<h2>Missing temperature sensors</h2>"));
+        HttpResponse.printf(F("<p>Number of temperature sensors detected: %d</p>\r\n"), TempSensors.getDS18Count());
+        return;
+    }
+
+    HttpResponse.println(F("<p>Ensure that both temperature sensors are measuring the same temperature.</p>"));
+
+    float tInputMeasured = TempSensors.getTempC(PersistentData.tInputSensorAddress);
+    float tOutputMeasured = TempSensors.getTempC(PersistentData.tOutputSensorAddress);
+
+    HttpResponse.println(F("<form action=\"/calibrate\" method=\"POST\">"));
+    HttpResponse.println(F("<table>"));
+    HttpResponse.println(F("<tr><th>Sensor</th><th>Measured</th><th>Offset</th><th>Effective</th></tr>"));
+
+    HttpResponse.printf(
+        F("<tr><td>T<sub>in</sub></td><td>%0.2f °C<td><input type=\"text\" name=\"tInputOffset\" value=\"%0.2f\" maxlength=\"5\"></td><td>%0.2f °C</td></tr>\r\n"),
+        tInputMeasured,
+        PersistentData.tInputOffset,
+        tInputMeasured + PersistentData.tInputOffset
+        );
+
+    HttpResponse.printf(
+        F("<tr><td>T<sub>out</sub></td><td>%0.2f °C<td>%0.2f</td><td>%0.2f °C</td></tr>\r\n"),
+        tOutputMeasured,
+        PersistentData.tOutputOffset,
+        tOutputMeasured + PersistentData.tOutputOffset        
+        );
+
+    HttpResponse.println(F("</table>"));
+    HttpResponse.println(F("<input type=\"submit\">"));
+    HttpResponse.println(F("</form>"));
+
+    Html.writeFooter();
+
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
+}
+
+
+void handleHttpCalibrateFormPost()
+{
+    Tracer tracer(F("handleHttpCalibrateFormPost"));
+
+    float tInputMeasured = TempSensors.getTempC(PersistentData.tInputSensorAddress);
+    float tOutputMeasured = TempSensors.getTempC(PersistentData.tOutputSensorAddress);
+
+    PersistentData.tInputOffset = WebServer.arg("tInputOffset").toFloat();
+    PersistentData.tOutputOffset = tInputMeasured + PersistentData.tInputOffset - tOutputMeasured;
+
+    PersistentData.validate();
+    PersistentData.writeToEEPROM();
+
+    calibrationRequired = false;
+
+    handleHttpCalibrateFormRequest();
 }
 
 
