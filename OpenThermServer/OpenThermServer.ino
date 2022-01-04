@@ -1,5 +1,3 @@
-#define DEBUG_ESP_PORT Serial
-
 #include <math.h>
 #include <ESPWiFi.h>
 #include <ESPWebServer.h>
