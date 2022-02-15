@@ -10,10 +10,12 @@
 #include <HtmlWriter.h>
 #include <Log.h>
 #include <FlowSensor.h>
+#include <EnergyMeter.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include "PersistentData.h"
 #include "HeatLogEntry.h"
+#include "EnergyLogEntry.h"
 
 #define ICON "/apple-touch-icon.png"
 #define CSS "/styles.css"
@@ -21,7 +23,9 @@
 #define SECONDS_PER_DAY (24 * 3600)
 #define SPECIFIC_HEAT_CAP_H2O 4.186
 #define MAX_FLOW 30
-#define MAX_POWER 20
+#define MAX_POWER 10
+#define MAX_ENERGY 120
+#define MAX_COP 5
 #define HTTP_POLL_INTERVAL 60
 #define EVENT_LOG_LENGTH 50
 #define FTP_RETRY_INTERVAL (60 * 60)
@@ -47,24 +51,27 @@ WiFiFTPClient FTPClient(2000); // 2 sec timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, 40);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
-Log<HeatLogEntry> HeatLog(24 * 2);
+Log<HeatLogEntry> HeatLog(24 * 2); // 24 hrs
+Log<EnergyLogEntry> EnergyLog(31); // 31 days
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
 OneWire OneWireBus(D7);
 DallasTemperature TempSensors(&OneWireBus);
 FlowSensor Flow_Sensor(D6);
+EnergyMeter Energy_Meter(D2);
 
 time_t currentTime = 0;
 time_t heatLogTime = 0;
 time_t actionPerformedTime = 0;
 
 HeatLogEntry* lastHeatLogEntryPtr = nullptr;
+EnergyLogEntry* lastEnergyLogEntryPtr = nullptr;
 
 bool calibrationRequired = false;
 float tInput = 0;
 float tOutput = 0;
-float powerKW = 0;
-
+float pOutKW = 0;
+float pInKW = 0;
 
 const char* formatTime(const char* format, time_t time)
 {
@@ -136,6 +143,7 @@ void setup()
     WebServer.on("/", handleHttpRootRequest);
     WebServer.on("/calibrate", HTTP_GET, handleHttpCalibrateFormRequest);
     WebServer.on("/calibrate", HTTP_POST, handleHttpCalibrateFormPost);
+    WebServer.on("/heatlog", handleHttpHeatLogRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
     WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
@@ -148,7 +156,8 @@ void setup()
     WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
     WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
 
-    Flow_Sensor.begin(5.0, 6.6); // 5 sec measure interval
+    Flow_Sensor.begin(5.0, 6.6); // 5 sec measure interval, 6.6 Hz @ 1 l/min
+    Energy_Meter.begin(100, 1000); // 100 W resolution, 1000 pulses per kWh
     TempSensors.begin();
     TempSensors.setWaitForConversion(false);
 
@@ -158,16 +167,18 @@ void setup()
     if (!TempSensors.validFamily(PersistentData.tInputSensorAddress))
     {
         // Device addresses not initialized; obtain & store them in persistent data.
+        calibrationRequired = true;
         if (!TempSensors.getAddress(PersistentData.tInputSensorAddress, 0))
         {
             logEvent(F("ERROR: Unable to obtain input sensor address."));
+            calibrationRequired = false;
         }
         if (!TempSensors.getAddress(PersistentData.tOutputSensorAddress, 1))
         {
             logEvent(F("ERROR: Unable to obtain output sensor address."));
+            calibrationRequired = false;
         }
         PersistentData.writeToEEPROM();
-        calibrationRequired = true;
     }
 
     logSensorInfo("Input", PersistentData.tInputSensorAddress, PersistentData.tInputOffset);    
@@ -225,6 +236,11 @@ void onTimeServerSynced()
     lastHeatLogEntryPtr->time = currentTime - (currentTime % HEAT_LOG_INTERVAL);
     HeatLog.add(lastHeatLogEntryPtr);
     heatLogTime = currentTime;
+
+    // Create first energy log entry (starting 00:00 current day)
+    lastEnergyLogEntryPtr = new EnergyLogEntry();
+    lastEnergyLogEntryPtr->time = currentTime - (currentTime % SECONDS_PER_DAY);
+    EnergyLog.add(lastEnergyLogEntryPtr);
 }
 
 
@@ -234,6 +250,7 @@ void onWiFiInitialized()
     {
         heatLogTime++;
         updateHeatLog();
+        updateEnergyLog();
     }
 }
 
@@ -246,7 +263,8 @@ float calcPower(float flowRate, float deltaT)
 void updateHeatLog()
 {
     float flowRate = Flow_Sensor.getFlowRate();
-    powerKW = calcPower(flowRate, tInput - tOutput);
+    pOutKW = calcPower(flowRate, tInput - tOutput);
+    pInKW = Energy_Meter.getPower() / 1000;
 
     if (currentTime >= lastHeatLogEntryPtr->time + HEAT_LOG_INTERVAL)
     {
@@ -254,9 +272,22 @@ void updateHeatLog()
         lastHeatLogEntryPtr->time = currentTime;
         HeatLog.add(lastHeatLogEntryPtr);
     }
-    lastHeatLogEntryPtr->update(tInput, tOutput, flowRate, powerKW);
+    lastHeatLogEntryPtr->update(tInput, tOutput, flowRate, pOutKW, pInKW);
 }
 
+void updateEnergyLog()
+{
+    if (currentTime >= lastEnergyLogEntryPtr->time + SECONDS_PER_DAY)
+    {
+        Energy_Meter.resetEnergy();
+        lastEnergyLogEntryPtr = new EnergyLogEntry();
+        lastEnergyLogEntryPtr->time = currentTime;
+        EnergyLog.add(lastEnergyLogEntryPtr);
+    }
+
+    lastEnergyLogEntryPtr->energyOut += pOutKW / 3600;
+    lastEnergyLogEntryPtr->energyIn = Energy_Meter.getEnergy();
+}
 
 void test(String message)
 {
@@ -277,8 +308,9 @@ void test(String message)
         {
             float tOutput = tInput - 10;
             float flowRate = tInput / 2;
-            float powerKW = calcPower(flowRate, tInput - tOutput); 
-            lastHeatLogEntryPtr->update(tInput, tOutput, flowRate, powerKW);
+            float pOutKW = calcPower(flowRate, tInput - tOutput);
+            float pInKw = pOutKW / 4; 
+            lastHeatLogEntryPtr->update(tInput, tOutput, flowRate, pOutKW, pInKW);
             if (tInput++ == 60) tInput = 40;
         }
     }
@@ -323,6 +355,7 @@ void handleHttpRootRequest()
     }
 
     float flowRate = Flow_Sensor.getFlowRate();
+    float cop = (pInKW == 0) ? 0 : pOutKW / pInKW;
 
     Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
 
@@ -332,6 +365,7 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><th>ESP Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.printf(F("<tr><th>ESP Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
     HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
+    HttpResponse.printf(F("<tr><th><a href=\"/heatlog\">Heat log</a></th><td>%d</td></p>\r\n"), HeatLog.count());
     HttpResponse.println(F("</table>"));
 
     HttpResponse.println(F("<h1>Current values</h1>"));
@@ -362,49 +396,54 @@ void handleHttpRootRequest()
     Html.writeBar(flowRate / MAX_FLOW, F("flowBar"), true, false);
     HttpResponse.println(F("</td></tr>"));
     HttpResponse.printf(
-        F("<tr><th>Power</th><td>%0.1f kW</td><td class=\"graph\">"),
-        powerKW
+        F("<tr><th>P<sub>out</sub></th><td>%0.1f kW</td><td class=\"graph\">"),
+        pOutKW
         );
-    Html.writeBar(powerKW / MAX_POWER, F("powerBar"), true, false);
+    Html.writeBar(pOutKW / MAX_POWER, F("powerBar"), true, false);
+    HttpResponse.println(F("</td></tr>"));
+    HttpResponse.printf(
+        F("<tr><th>P<sub>in</sub></th><td>%0.1f kW</td><td class=\"graph\">"),
+        pInKW
+        );
+    Html.writeBar(pInKW / MAX_POWER, F("powerBar"), true, false);
+    HttpResponse.println(F("</td></tr>"));
+    HttpResponse.printf(
+        F("<tr><th>COP</th><td>%0.1f</td><td class=\"graph\">"),
+        cop
+        );
+    Html.writeBar(cop / MAX_COP, F("copBar"), true, false);
     HttpResponse.println(F("</td></tr>"));
     HttpResponse.println(F("</table>"));
 
-    HttpResponse.println(F("<h1>Last 24 hours</h1>"));
+    HttpResponse.println(F("<h1>Energy last 31 days</h1>"));
 
     HttpResponse.println(F("<table>"));
-    HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th colspan='3'>T<sub>in</sub> (°C)</th><th colspan='3'>T<sub>out</sub> (°C)</th><th colspan='3'>Flow rate (l/min)</th><th colspan='3'>Power (kW)</th></tr>"));
-    HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
-    HeatLogEntry* logEntryPtr = HeatLog.getFirstEntry();
+    HttpResponse.println(F("<tr><th>Day</th><th>E<sub>out</sub> (kWh)</sub></th><th>E<sub>in</sub> (kWh)</th></tr>"));
+
+    EnergyLogEntry* logEntryPtr = EnergyLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
-        time_t seconds = std::min(currentTime + 1 - logEntryPtr->time, (time_t)HEAT_LOG_INTERVAL);
-        float avgTInput = logEntryPtr->sumTInput / seconds;
-        float avgTOutput = logEntryPtr->sumTOutput / seconds;
-        float avgFlow = logEntryPtr->sumFlow / seconds;
-        float avgPower = logEntryPtr->sumPower / seconds;
-
         HttpResponse.printf(
-            F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td class=\"graph\">"),
-            formatTime("%H:%M", logEntryPtr->time),
-            logEntryPtr->minTInput,
-            logEntryPtr->maxTInput,
-            avgTInput,
-            logEntryPtr->minTOutput,
-            logEntryPtr->maxTOutput,
-            avgTOutput,
-            logEntryPtr->minFlow,
-            logEntryPtr->maxFlow,
-            avgFlow,
-            logEntryPtr->minPower,
-            logEntryPtr->maxPower,
-            avgPower
+            F("<tr><td>%s</td><td>%0.2f</td><td>%0.2f</td><td class=\"graph\">"),
+            formatTime("%d %b", logEntryPtr->time),
+            logEntryPtr->energyOut,
+            logEntryPtr->energyIn
             );
 
-        Html.writeBar(avgPower / MAX_POWER, F("powerBar"), false, false);
+        Html.writeStackedBar(
+            logEntryPtr->energyIn / MAX_ENERGY,
+            (logEntryPtr->energyOut - logEntryPtr->energyIn) / MAX_ENERGY,
+            F("eInBar"),
+            F("energyBar"),
+            false,
+            false
+            );
 
         HttpResponse.println(F("</td></tr>"));
-        logEntryPtr = HeatLog.getNextEntry();
+
+        logEntryPtr = EnergyLog.getNextEntry();
     }
+
     HttpResponse.println(F("</table>"));
 
     Html.writeFooter();
@@ -412,6 +451,62 @@ void handleHttpRootRequest()
     WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
+void handleHttpHeatLogRequest()
+{
+    Tracer tracer(F("handleHttpHeatLogRequest"));
+
+    Html.writeHeader(F("Heat log"), true, true);
+
+    HttpResponse.println(F("<table>"));
+    HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th colspan='3'>T<sub>in</sub> (°C)</th><th colspan='3'>T<sub>out</sub> (°C)</th><th colspan='3'>Flow rate (l/min)</th><th colspan='3'>P<sub>out</sub> (kW)</th><th colspan='3'>P<sub>in</sub> (kW)</th></tr>"));
+    HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
+    HeatLogEntry* logEntryPtr = HeatLog.getFirstEntry();
+    while (logEntryPtr != nullptr)
+    {
+        time_t seconds = std::min(currentTime + 1 - logEntryPtr->time, (time_t)HEAT_LOG_INTERVAL);
+        float avgTInput = logEntryPtr->sumTInput / seconds;
+        float avgTOutput = logEntryPtr->sumTOutput / seconds;
+        float avgFlowRate = logEntryPtr->sumFlowRate / seconds;
+        float avgPOut = logEntryPtr->sumPOut / seconds;
+        float avgPIn = logEntryPtr->sumPIn / seconds;
+
+        HttpResponse.printf(
+            F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.2f</td><td>%0.1f</td><td>%0.1f</td><td>%0.2f</td><td class=\"graph\">"),
+            formatTime("%H:%M", logEntryPtr->time),
+            logEntryPtr->minTInput,
+            logEntryPtr->maxTInput,
+            avgTInput,
+            logEntryPtr->minTOutput,
+            logEntryPtr->maxTOutput,
+            avgTOutput,
+            logEntryPtr->minFlowRate,
+            logEntryPtr->maxFlowRate,
+            avgFlowRate,
+            logEntryPtr->minPOut,
+            logEntryPtr->maxPOut,
+            avgPOut,
+            logEntryPtr->minPIn,
+            logEntryPtr->maxPIn,
+            avgPIn
+            );
+
+        Html.writeStackedBar(
+            avgPIn / MAX_POWER,
+            (avgPOut - avgPIn) / MAX_POWER,
+            F("pInBar"),
+            F("powerBar"),
+            false,
+            false
+            );
+
+        HttpResponse.println(F("</td></tr>"));
+        logEntryPtr = HeatLog.getNextEntry();
+    }
+    HttpResponse.println(F("</table>"));
+    Html.writeFooter();
+
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
+}
 
 void handleHttpCalibrateFormRequest()
 {
@@ -476,7 +571,6 @@ void handleHttpCalibrateFormPost()
 
     handleHttpCalibrateFormRequest();
 }
-
 
 void handleHttpEventLogRequest()
 {
