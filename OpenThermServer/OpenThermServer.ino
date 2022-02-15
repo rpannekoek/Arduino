@@ -25,7 +25,7 @@
 #define DATA_VALUE_NONE 0xFFFF
 #define EVENT_LOG_LENGTH 50
 #define OT_LOG_LENGTH 240
-#define KEEP_TSET_LOW_DURATION (11 * 60)
+#define KEEP_TSET_LOW_DURATION (15 * 60)
 #define WEATHER_SERVICE_POLL_INTERVAL (15 * 60)
 #define WEATHER_SERVICE_RESPONSE_TIMEOUT 10
 #define FTP_RETRY_INTERVAL (60 * 60)
@@ -784,11 +784,18 @@ void handleHttpRootRequest()
     for (int i = 0; i <= 4; i++)
         otgwErrors += OTGW.errors[i];
 
+    bool flame = (boilerResponses[OpenThermDataId::Status] & OpenThermStatus::SlaveFlame) != 0;
     float thermostatTSet = getDecimal(thermostatRequests[OpenThermDataId::TSet]);
     float boilerTSet = getDecimal(boilerResponses[OpenThermDataId::TSet]);
     float boilerTWater = getDecimal(boilerResponses[OpenThermDataId::TBoiler]);
     float tReturn = getDecimal(getTReturn());
     float tOutside = getDecimal(getTOutside());
+
+    time_t overrideTimeLeft = 0;
+    if (changeBoilerLevelTime != 0)
+    {
+        overrideTimeLeft = changeBoilerLevelTime - currentTime;
+    }
 
     Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
 
@@ -821,7 +828,8 @@ void handleHttpRootRequest()
         F("<tr><th>T<sub>set</sub></th><td>%0.1f °C</td><td class=\"graph\">"),
         boilerTSet
         );
-    Html.writeBar(getBarValue(boilerTSet), F("setBar"), true, false);
+    const __FlashStringHelper* barStyle = flame ? F("flameBar") : F("setBar");
+    Html.writeBar(getBarValue(boilerTSet), barStyle, true, false);
     HttpResponse.println(F("</td></tr>"));
     HttpResponse.printf(
         F("<tr><th>T<sub>water</sub></th><td>%0.1f °C</td><td class=\"graph\">"),
@@ -839,6 +847,12 @@ void handleHttpRootRequest()
         F("<tr><th>T<sub>outside</sub></th><td>%0.1f °C</td><td class=\"graph\"></td></tr>"),
         tOutside
         );
+    HttpResponse.printf(
+        F("<tr><th>Override</sub></th><td>%d s</td><td class=\"graph\">"),
+        overrideTimeLeft
+        );
+    Html.writeBar(float(overrideTimeLeft) / KEEP_TSET_LOW_DURATION, F("overrideBar"), true, false);
+    HttpResponse.println(F("</td></tr>"));
     HttpResponse.println(F("</table>"));
 
     HttpResponse.println(F("<h1>Last 24 hours</h1>"));
