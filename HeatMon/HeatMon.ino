@@ -24,7 +24,7 @@
 #define SPECIFIC_HEAT_CAP_H2O 4.186
 #define MAX_FLOW 30
 #define MAX_POWER 10
-#define MAX_ENERGY 120
+#define MAX_INPUT_POWER 4
 #define MAX_COP 5
 #define HTTP_POLL_INTERVAL 60
 #define EVENT_LOG_LENGTH 50
@@ -337,6 +337,31 @@ float getBarValue(float t, float tMin = 20, float tMax = 60)
     return (t - tMin) / (tMax - tMin);
 }
 
+float getMaxPower()
+{
+    float result = 0;
+    HeatLogEntry* logEntryPtr = HeatLog.getFirstEntry();
+    while (logEntryPtr != nullptr)
+    {
+        time_t seconds = std::min(currentTime + 1 - logEntryPtr->time, (time_t)HEAT_LOG_INTERVAL);
+        result = std::max(result, logEntryPtr->sumPIn / seconds);
+        result = std::max(result, logEntryPtr->sumPOut / seconds);
+        logEntryPtr = HeatLog.getNextEntry();
+    }
+    return result;
+}
+
+float getMaxEnergy()
+{
+    float result = 0;
+    EnergyLogEntry* logEntryPtr = EnergyLog.getFirstEntry();
+    while (logEntryPtr != nullptr)
+    {
+        result = std::max(result, logEntryPtr->energyIn);
+        result = std::max(result, logEntryPtr->energyOut);
+        logEntryPtr = EnergyLog.getNextEntry();
+    }
+}
 
 void handleHttpRootRequest()
 {
@@ -405,7 +430,7 @@ void handleHttpRootRequest()
         F("<tr><th>P<sub>in</sub></th><td>%0.1f kW</td><td class=\"graph\">"),
         pInKW
         );
-    Html.writeBar(pInKW / MAX_POWER, F("powerBar"), true, false);
+    Html.writeBar(pInKW / MAX_INPUT_POWER, F("pInBar"), true, false);
     HttpResponse.println(F("</td></tr>"));
     HttpResponse.printf(
         F("<tr><th>COP</th><td>%0.1f</td><td class=\"graph\">"),
@@ -420,6 +445,7 @@ void handleHttpRootRequest()
     HttpResponse.println(F("<table>"));
     HttpResponse.println(F("<tr><th>Day</th><th>E<sub>out</sub> (kWh)</sub></th><th>E<sub>in</sub> (kWh)</th></tr>"));
 
+    float maxEnergy = getMaxEnergy();
     EnergyLogEntry* logEntryPtr = EnergyLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
@@ -431,8 +457,8 @@ void handleHttpRootRequest()
             );
 
         Html.writeStackedBar(
-            logEntryPtr->energyIn / MAX_ENERGY,
-            (logEntryPtr->energyOut - logEntryPtr->energyIn) / MAX_ENERGY,
+            logEntryPtr->energyIn / maxEnergy,
+            (logEntryPtr->energyOut - logEntryPtr->energyIn) / maxEnergy,
             F("eInBar"),
             F("energyBar"),
             false,
@@ -460,6 +486,8 @@ void handleHttpHeatLogRequest()
     HttpResponse.println(F("<table>"));
     HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th colspan='3'>T<sub>in</sub> (°C)</th><th colspan='3'>T<sub>out</sub> (°C)</th><th colspan='3'>Flow rate (l/min)</th><th colspan='3'>P<sub>out</sub> (kW)</th><th colspan='3'>P<sub>in</sub> (kW)</th></tr>"));
     HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
+
+    float maxPower = getMaxPower();
     HeatLogEntry* logEntryPtr = HeatLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
@@ -491,8 +519,8 @@ void handleHttpHeatLogRequest()
             );
 
         Html.writeStackedBar(
-            avgPIn / MAX_POWER,
-            (avgPOut - avgPIn) / MAX_POWER,
+            avgPIn / maxPower,
+            (avgPOut - avgPIn) / maxPower,
             F("pInBar"),
             F("powerBar"),
             false,
