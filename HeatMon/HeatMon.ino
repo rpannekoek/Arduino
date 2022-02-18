@@ -445,7 +445,7 @@ void handleHttpRootRequest()
     HttpResponse.println(F("<table>"));
     HttpResponse.println(F("<tr><th>Day</th><th>E<sub>out</sub> (kWh)</sub></th><th>E<sub>in</sub> (kWh)</th></tr>"));
 
-    float maxEnergy = getMaxEnergy();
+    float maxEnergy = std::max(getMaxEnergy(), 1.0f); // Prevent division by zero
     EnergyLogEntry* logEntryPtr = EnergyLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
@@ -487,7 +487,7 @@ void handleHttpHeatLogRequest()
     HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th colspan='3'>T<sub>in</sub> (°C)</th><th colspan='3'>T<sub>out</sub> (°C)</th><th colspan='3'>Flow rate (l/min)</th><th colspan='3'>P<sub>out</sub> (kW)</th><th colspan='3'>P<sub>in</sub> (kW)</th></tr>"));
     HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
 
-    float maxPower = getMaxPower();
+    float maxPower = std::max(getMaxPower(), 1.0f); // Prevent division by zero
     HeatLogEntry* logEntryPtr = HeatLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
