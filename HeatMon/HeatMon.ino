@@ -316,22 +316,6 @@ void test(String message)
     }
 }
 
-
-bool shouldPerformAction(String name)
-{
-    if (!WebServer.hasArg(name))
-        return false; // Action not requested
-
-    time_t actionTime = WebServer.arg(name).toInt();
-
-    if (actionTime == actionPerformedTime)
-        return false; // Action already performed
-
-    actionPerformedTime = actionTime;
-    return true;
-}
-
-
 float getBarValue(float t, float tMin = 20, float tMax = 60)
 {
     return (t - tMin) / (tMax - tMin);
@@ -361,6 +345,7 @@ float getMaxEnergy()
         result = std::max(result, logEntryPtr->energyOut);
         logEntryPtr = EnergyLog.getNextEntry();
     }
+    return result;
 }
 
 void handleHttpRootRequest()
@@ -604,7 +589,7 @@ void handleHttpEventLogRequest()
 {
     Tracer tracer(F("handleHttpEventLogRequest"));
 
-    if (shouldPerformAction(F("clear")))
+    if (WiFiSM.shouldPerformAction(F("clear")))
     {
         EventLog.clear();
         logEvent(F("Event log cleared."));

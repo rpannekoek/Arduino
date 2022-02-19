@@ -312,3 +312,17 @@ String WiFiStateMachine::getResetReason()
     return result;
 #endif
 }
+
+bool WiFiStateMachine::shouldPerformAction(String name)
+{
+    if (!_webServer.hasArg(name))
+        return false; // Action not requested
+
+    time_t actionTime = _webServer.arg(name).toInt();
+
+    if (actionTime == _actionPerformedTime)
+        return false; // Action already performed
+
+    _actionPerformedTime = actionTime;
+    return true;
+}

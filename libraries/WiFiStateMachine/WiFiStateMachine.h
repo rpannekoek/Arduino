@@ -38,6 +38,7 @@ class WiFiStateMachine
 
         void logEvent(String msg);
         time_t getCurrentTime();
+        bool shouldPerformAction(String name);
 
         time_t inline getInitTime()
         {
@@ -70,6 +71,7 @@ class WiFiStateMachine
         uint32_t _retryTimeout;
         uint32_t _resetTime = 0;
         time_t _initTime = 0;
+        time_t _actionPerformedTime = 0;
         String _ssid;
         String _password;
         String _hostName;
