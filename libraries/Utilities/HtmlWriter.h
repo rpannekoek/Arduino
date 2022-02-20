@@ -16,7 +16,7 @@ class HtmlWriter
 
         void writeHeader(String title, bool includeHomePageLink, bool includeHeading, uint16_t refreshInterval = 0);
         void writeFooter();
-        void writeBar(float value, String cssClass, bool fill, bool useDiv = true);
+        void writeBar(float value, String cssClass, bool fill, bool useDiv = true, size_t maxBarLength = 0);
         void writeStackedBar(float value1, float value2, String cssClass1, String cssClass2, bool fill, bool useDiv = true);
         void writeTextBox(String name, String label, String value, uint16_t maxLength);
         void writeCheckbox(String name, String label, bool value);

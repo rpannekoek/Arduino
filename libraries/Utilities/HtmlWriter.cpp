@@ -52,24 +52,33 @@ void HtmlWriter::writeFooter()
 }
 
 
-void HtmlWriter::writeBar(float value, String cssClass, bool fill, bool useDiv)
+void HtmlWriter::writeBar(float value, String cssClass, bool fill, bool useDiv, size_t maxBarLength)
 {
-    value = std::max(std::min(value, 1.0f), 0.0f);
-    size_t barLength = roundf(value * _maxBarLength);
+    char* bar;
+    if (maxBarLength == 0)
+    {
+        bar = _bar;
+        maxBarLength = _maxBarLength;
+    }
+    else
+        bar = new char[maxBarLength + 1];
 
-    memset(_bar, 'o', barLength);
-    _bar[barLength] = 0;
+    value = std::max(std::min(value, 1.0F), 0.0F);
+    size_t barLength = roundf(value * maxBarLength);
+
+    memset(bar, 'o', barLength);
+    bar[barLength] = 0;
 
     if (useDiv) _output.print(F("<div>"));
 
-    _output.printf(F("<span class=\"%s\">%s</span>"), cssClass.c_str(), _bar);
+    _output.printf(F("<span class=\"%s\">%s</span>"), cssClass.c_str(), bar);
 
     if (fill)
     {
-        memset(_bar, 'o', _maxBarLength - barLength);
-        _bar[_maxBarLength - barLength] = 0;
+        memset(bar, 'o', maxBarLength - barLength);
+        bar[maxBarLength - barLength] = 0;
 
-        _output.printf(F("<span class=\"barFill\">%s</span>"), _bar);
+        _output.printf(F("<span class=\"barFill\">%s</span>"), bar);
     }
     else if (barLength == 0)
     {
@@ -78,6 +87,11 @@ void HtmlWriter::writeBar(float value, String cssClass, bool fill, bool useDiv)
     }
 
     if (useDiv) _output.print("</div>");
+
+    if (bar != _bar)
+    {
+        delete[] bar;
+    }
 }
 
 

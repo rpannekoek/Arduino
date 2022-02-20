@@ -69,6 +69,12 @@ td.graph
     color: blue;
 }
 
+.tOutBar
+{
+	background-color: green;
+    color: green;
+}
+
 .flowBar
 {
 	background-color: green;

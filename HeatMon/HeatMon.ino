@@ -31,6 +31,9 @@
 #define FTP_RETRY_INTERVAL (60 * 60)
 #define HEAT_LOG_INTERVAL (30 * 60)
 
+#define MAX_TEMP_VALVE_PIN D0
+#define MAX_TEMP_DELTA_T 5
+
 #define LED_ON 0
 #define LED_OFF 1
 
@@ -42,6 +45,7 @@
 #define CFG_FTP_USER F("FTPUser")
 #define CFG_FTP_PASSWORD F("FTPPassword")
 #define CFG_TZ_OFFSET F("tzOffset")
+#define CFG_MAX_TEMP F("tBufferMax")
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 
@@ -62,16 +66,20 @@ EnergyMeter Energy_Meter(D2);
 
 time_t currentTime = 0;
 time_t heatLogTime = 0;
-time_t actionPerformedTime = 0;
 
 HeatLogEntry* lastHeatLogEntryPtr = nullptr;
 EnergyLogEntry* lastEnergyLogEntryPtr = nullptr;
 
-bool calibrationRequired = false;
+bool newSensorFound = false;
+bool maxTempValveActivated = false;
+bool maxTempValveOverride = false;
+
 float tInput = 0;
 float tOutput = 0;
+float tBuffer = 0;
 float pOutKW = 0;
 float pInKW = 0;
+
 
 const char* formatTime(const char* format, time_t time)
 {
@@ -116,6 +124,58 @@ void logSensorInfo(const char* name, DeviceAddress addr, float offset)
 }
 
 
+void setMaxTempValve(bool activated)
+{
+    maxTempValveActivated = activated;
+    digitalWrite(MAX_TEMP_VALVE_PIN, maxTempValveActivated ? 1 : 0);
+
+    if (activated)
+        logEvent(F("Max temperature valve set on"));
+    else
+        logEvent(F("Max temperature valve set off"));
+}
+
+
+void initTempSensors()
+{
+    Tracer tracer(F("initTempSensors"));
+
+    TRACE(F("Found %d OneWire devices.\n"), TempSensors.getDeviceCount());
+    TRACE(F("Found %d temperature sensors.\n"), TempSensors.getDS18Count());
+
+    if (!TempSensors.validFamily(PersistentData.tInputSensorAddress))
+    {
+        newSensorFound = TempSensors.getAddress(PersistentData.tInputSensorAddress, 0);
+        if (!newSensorFound)
+        {
+            logEvent(F("ERROR: Unable to obtain input sensor address."));
+        }
+    }
+    if (!TempSensors.validFamily(PersistentData.tOutputSensorAddress))
+    {
+        newSensorFound = TempSensors.getAddress(PersistentData.tOutputSensorAddress, 1);
+        if (!newSensorFound)
+        {
+            logEvent(F("ERROR: Unable to obtain output sensor address."));
+        }
+    }
+    if (!TempSensors.validFamily(PersistentData.tBufferSensorAddress))
+    {
+        if (!TempSensors.getAddress(PersistentData.tBufferSensorAddress, 2))
+        {
+            logEvent(F("Unable to obtain buffer sensor address."));
+        }
+        else
+            newSensorFound = true;
+    }
+
+    if (newSensorFound)
+    {
+        PersistentData.writeToEEPROM();
+    }
+}
+
+
 // Boot code
 void setup() 
 {
@@ -144,6 +204,7 @@ void setup()
     WebServer.on("/calibrate", HTTP_GET, handleHttpCalibrateFormRequest);
     WebServer.on("/calibrate", HTTP_POST, handleHttpCalibrateFormPost);
     WebServer.on("/heatlog", handleHttpHeatLogRequest);
+    WebServer.on("/templog", handleHttpTempLogRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
     WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
@@ -161,28 +222,16 @@ void setup()
     TempSensors.begin();
     TempSensors.setWaitForConversion(false);
 
-    TRACE(F("Found %d OneWire devices.\n"), TempSensors.getDeviceCount());
-    TRACE(F("Found %d temperature sensors.\n"), TempSensors.getDS18Count());
-
-    if (!TempSensors.validFamily(PersistentData.tInputSensorAddress))
-    {
-        // Device addresses not initialized; obtain & store them in persistent data.
-        calibrationRequired = true;
-        if (!TempSensors.getAddress(PersistentData.tInputSensorAddress, 0))
-        {
-            logEvent(F("ERROR: Unable to obtain input sensor address."));
-            calibrationRequired = false;
-        }
-        if (!TempSensors.getAddress(PersistentData.tOutputSensorAddress, 1))
-        {
-            logEvent(F("ERROR: Unable to obtain output sensor address."));
-            calibrationRequired = false;
-        }
-        PersistentData.writeToEEPROM();
-    }
+    initTempSensors();
 
     logSensorInfo("Input", PersistentData.tInputSensorAddress, PersistentData.tInputOffset);    
-    logSensorInfo("Output", PersistentData.tOutputSensorAddress, PersistentData.tOutputOffset);    
+    logSensorInfo("Output", PersistentData.tOutputSensorAddress, PersistentData.tOutputOffset);
+    if (TempSensors.isConnected(PersistentData.tBufferSensorAddress))
+    {
+        logSensorInfo("Buffer", PersistentData.tBufferSensorAddress, PersistentData.tBufferOffset);
+        pinMode(MAX_TEMP_VALVE_PIN, OUTPUT);
+        setMaxTempValve(false);
+    }
 
     TempSensors.requestTemperatures();
 
@@ -210,19 +259,30 @@ void loop()
     if (TempSensors.getDS18Count() > 0 && TempSensors.isConversionComplete())
     {
         digitalWrite(LED_BUILTIN, LED_ON);
+
         float tInputMeasured = TempSensors.getTempC(PersistentData.tInputSensorAddress);
-        tInput = (tInputMeasured == DEVICE_DISCONNECTED_C)
-            ? 0.0
-            : tInputMeasured + PersistentData.tInputOffset;
-        if (TempSensors.getDS18Count() > 1)
-        {
-            float tOutputMeasured = TempSensors.getTempC(PersistentData.tOutputSensorAddress);
-            tOutput = (tOutputMeasured == DEVICE_DISCONNECTED_C)
-                ? 0.0
-                : tOutputMeasured + PersistentData.tOutputOffset;        
-        }        
+        if (tInputMeasured != DEVICE_DISCONNECTED_C)
+            tInput = tInputMeasured + PersistentData.tInputOffset;
+
+        float tOutputMeasured = TempSensors.getTempC(PersistentData.tOutputSensorAddress);
+        if (tOutputMeasured != DEVICE_DISCONNECTED_C)
+            tOutput = tOutputMeasured + PersistentData.tOutputOffset;        
+
+        float tBufferMeasured = TempSensors.getTempC(PersistentData.tBufferSensorAddress);
+        if (tBufferMeasured != DEVICE_DISCONNECTED_C)
+            tBuffer = tBufferMeasured + PersistentData.tBufferOffset;        
+
         TempSensors.requestTemperatures();
         digitalWrite(LED_BUILTIN, LED_OFF);
+    }
+
+    if (!maxTempValveOverride && (PersistentData.tBufferMax != 0))
+    {
+        if ((tBuffer > PersistentData.tBufferMax) && !maxTempValveActivated)
+            setMaxTempValve(true);
+
+        if ((tBuffer < (PersistentData.tBufferMax - MAX_TEMP_DELTA_T)) && maxTempValveActivated)
+            setMaxTempValve(false);
     }
 
     delay(10);
@@ -260,6 +320,7 @@ float calcPower(float flowRate, float deltaT)
     return SPECIFIC_HEAT_CAP_H2O * (flowRate / 60) * deltaT;
 }
 
+
 void updateHeatLog()
 {
     float flowRate = Flow_Sensor.getFlowRate();
@@ -272,8 +333,9 @@ void updateHeatLog()
         lastHeatLogEntryPtr->time = currentTime;
         HeatLog.add(lastHeatLogEntryPtr);
     }
-    lastHeatLogEntryPtr->update(tInput, tOutput, flowRate, pOutKW, pInKW);
+    lastHeatLogEntryPtr->update(tInput, tOutput, tBuffer, flowRate, pOutKW, pInKW, maxTempValveActivated);
 }
+
 
 void updateEnergyLog()
 {
@@ -288,6 +350,7 @@ void updateEnergyLog()
     lastEnergyLogEntryPtr->energyOut += pOutKW / 3600;
     lastEnergyLogEntryPtr->energyIn = Energy_Meter.getEnergy();
 }
+
 
 void test(String message)
 {
@@ -307,19 +370,27 @@ void test(String message)
         for (int i = 0; i < HEAT_LOG_INTERVAL; i++)
         {
             float tOutput = tInput - 10;
+            float tBuffer = tInput - 5;
             float flowRate = tInput / 2;
             float pOutKW = calcPower(flowRate, tInput - tOutput);
-            float pInKw = pOutKW / 4; 
-            lastHeatLogEntryPtr->update(tInput, tOutput, flowRate, pOutKW, pInKW);
+            float pInKw = pOutKW / 4;
+            bool valveActivated = (i % 10) == 0; 
+            lastHeatLogEntryPtr->update(tInput, tOutput, tBuffer, flowRate, pOutKW, pInKW, valveActivated);
             if (tInput++ == 60) tInput = 40;
         }
     }
+    else if (message.startsWith("T"))
+    {
+        tBuffer = message.substring(1).toFloat();
+    }
 }
+
 
 float getBarValue(float t, float tMin = 20, float tMax = 60)
 {
     return (t - tMin) / (tMax - tMin);
 }
+
 
 float getMaxPower()
 {
@@ -335,6 +406,7 @@ float getMaxPower()
     return result;
 }
 
+
 float getMaxEnergy()
 {
     float result = 0;
@@ -348,6 +420,7 @@ float getMaxEnergy()
     return result;
 }
 
+
 void handleHttpRootRequest()
 {
     Tracer tracer(F("handleHttpRootRequest"));
@@ -358,10 +431,17 @@ void handleHttpRootRequest()
         return;
     }
 
-    if (calibrationRequired)
+    if (newSensorFound)
     {
         handleHttpCalibrateFormRequest();
         return;
+    }
+
+    if (WiFiSM.shouldPerformAction(F("valve")))
+    {
+        // Toggle valve state (through Web UI)
+        setMaxTempValve(!maxTempValveActivated);
+        maxTempValveOverride = maxTempValveActivated;
     }
 
     float flowRate = Flow_Sensor.getFlowRate();
@@ -376,11 +456,31 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><th>ESP Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
     HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
     HttpResponse.printf(F("<tr><th><a href=\"/heatlog\">Heat log</a></th><td>%d</td></p>\r\n"), HeatLog.count());
+    HttpResponse.printf(F("<tr><th><a href=\"/templog\">Temperature log</a></th><td>%d</td></p>\r\n"), HeatLog.count());
+    if (PersistentData.tBufferMax != 0)
+    {
+        HttpResponse.printf(F("<tr><th>T<sub>buffer,max</sub></th><td>%0.1f °C</td></tr>\r\n"), PersistentData.tBufferMax);
+        HttpResponse.printf(
+            F("<tr><th>T<sub>max</sub> valve</th><td><a href=\"?valve=%u\">%s</a></td></tr>\r\n"),
+            currentTime,
+            maxTempValveActivated ? "On" : "Off"
+            );
+    }
     HttpResponse.println(F("</table>"));
 
     HttpResponse.println(F("<h1>Current values</h1>"));
 
     HttpResponse.println(F("<table>"));
+    if (PersistentData.tBufferMax != 0)
+    {
+        HttpResponse.printf(
+            F("<tr><th>T<sub>buffer</sub></th><td>%0.1f °C</td><td class=\"graph\">"),
+            tBuffer
+            );
+        size_t maxBarLength = round(PersistentData.tBufferMax - 20); // Ensure 1 °C resolution 
+        Html.writeBar(getBarValue(tBuffer, 20, PersistentData.tBufferMax), F("waterBar"), true, false, maxBarLength);
+        HttpResponse.println(F("</td></tr>"));
+    }
     HttpResponse.printf(
         F("<tr><th>T<sub>in</sub></th><td>%0.1f °C</td><td class=\"graph\">"),
         tInput
@@ -462,6 +562,7 @@ void handleHttpRootRequest()
     WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
+
 void handleHttpHeatLogRequest()
 {
     Tracer tracer(F("handleHttpHeatLogRequest"));
@@ -469,29 +570,25 @@ void handleHttpHeatLogRequest()
     Html.writeHeader(F("Heat log"), true, true);
 
     HttpResponse.println(F("<table>"));
-    HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th colspan='3'>T<sub>in</sub> (°C)</th><th colspan='3'>T<sub>out</sub> (°C)</th><th colspan='3'>Flow rate (l/min)</th><th colspan='3'>P<sub>out</sub> (kW)</th><th colspan='3'>P<sub>in</sub> (kW)</th></tr>"));
-    HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
+    HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th colspan='3'>Delta T (°C)</th><th colspan='3'>Flow rate (l/min)</th><th colspan='3'>P<sub>out</sub> (kW)</th><th colspan='3'>P<sub>in</sub> (kW)</th></tr>"));
+    HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
 
     float maxPower = std::max(getMaxPower(), 1.0f); // Prevent division by zero
     HeatLogEntry* logEntryPtr = HeatLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
         time_t seconds = std::min(currentTime + 1 - logEntryPtr->time, (time_t)HEAT_LOG_INTERVAL);
-        float avgTInput = logEntryPtr->sumTInput / seconds;
-        float avgTOutput = logEntryPtr->sumTOutput / seconds;
+        float avgDeltaT = logEntryPtr->sumDeltaT / seconds;
         float avgFlowRate = logEntryPtr->sumFlowRate / seconds;
         float avgPOut = logEntryPtr->sumPOut / seconds;
         float avgPIn = logEntryPtr->sumPIn / seconds;
 
         HttpResponse.printf(
-            F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.2f</td><td>%0.1f</td><td>%0.1f</td><td>%0.2f</td><td class=\"graph\">"),
+            F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.2f</td><td>%0.1f</td><td>%0.1f</td><td>%0.2f</td><td class=\"graph\">"),
             formatTime("%H:%M", logEntryPtr->time),
-            logEntryPtr->minTInput,
-            logEntryPtr->maxTInput,
-            avgTInput,
-            logEntryPtr->minTOutput,
-            logEntryPtr->maxTOutput,
-            avgTOutput,
+            logEntryPtr->minDeltaT,
+            logEntryPtr->maxDeltaT,
+            avgDeltaT,
             logEntryPtr->minFlowRate,
             logEntryPtr->maxFlowRate,
             avgFlowRate,
@@ -521,6 +618,84 @@ void handleHttpHeatLogRequest()
     WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
+
+void handleHttpTempLogRequest()
+{
+    Tracer tracer(F("handleHttpTempLogRequest"));
+
+    Html.writeHeader(F("Temperature log"), true, true);
+
+    HttpResponse.println(F("<table>"));
+    bool includeBufferTemp = (PersistentData.tBufferMax != 0); 
+    if (includeBufferTemp)
+    {
+        HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th rowspan='2'>Valve (s)</th><th colspan='3'>T<sub>buffer</sub> (°C)</th><th colspan='3'>T<sub>in</sub> (°C)</th><th colspan='3'>T<sub>out</sub> (°C)</th></tr>"));
+        HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
+    }
+    else
+    {
+        HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th colspan='3'>T<sub>in</sub> (°C)</th><th colspan='3'>T<sub>out</sub> (°C)</th></tr>"));
+        HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
+    }
+
+    HeatLogEntry* logEntryPtr = HeatLog.getFirstEntry();
+    while (logEntryPtr != nullptr)
+    {
+        time_t seconds = std::min(currentTime + 1 - logEntryPtr->time, (time_t)HEAT_LOG_INTERVAL);
+        float avgTInput = logEntryPtr->sumTInput / seconds;
+        float avgTOutput = logEntryPtr->sumTOutput / seconds;
+
+        if (includeBufferTemp)
+        {
+            float avgTBuffer = logEntryPtr->sumTBuffer / seconds;
+            HttpResponse.printf(
+                F("<tr><td>%s</td><td>%d</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td class=\"graph\">"),
+                formatTime("%H:%M", logEntryPtr->time),
+                logEntryPtr->valveActivatedSeconds,
+                logEntryPtr->minTBuffer,
+                logEntryPtr->maxTBuffer,
+                avgTBuffer,
+                logEntryPtr->minTInput,
+                logEntryPtr->maxTInput,
+                avgTInput,
+                logEntryPtr->minTOutput,
+                logEntryPtr->maxTOutput,
+                avgTOutput
+                );
+        }
+        else
+        {
+            HttpResponse.printf(
+                F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td class=\"graph\">"),
+                formatTime("%H:%M", logEntryPtr->time),
+                logEntryPtr->minTInput,
+                logEntryPtr->maxTInput,
+                avgTInput,
+                logEntryPtr->minTOutput,
+                logEntryPtr->maxTOutput,
+                avgTOutput
+                );
+        }
+
+        Html.writeStackedBar(
+            getBarValue(avgTOutput),
+            (avgTInput - avgTOutput) / 40,
+            F("tOutBar"),
+            F("waterBar"),
+            false,
+            false
+            );
+
+        HttpResponse.println(F("</td></tr>"));
+        logEntryPtr = HeatLog.getNextEntry();
+    }
+    HttpResponse.println(F("</table>"));
+    Html.writeFooter();
+
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
+}
+
+
 void handleHttpCalibrateFormRequest()
 {
     Tracer tracer(F("handleHttpCalibrateFormRequest"));
@@ -534,7 +709,7 @@ void handleHttpCalibrateFormRequest()
         return;
     }
 
-    HttpResponse.println(F("<p>Ensure that both temperature sensors are measuring the same temperature.</p>"));
+    HttpResponse.println(F("<p>Ensure that all temperature sensors are measuring the same temperature.</p>"));
 
     float tInputMeasured = TempSensors.getTempC(PersistentData.tInputSensorAddress);
     float tOutputMeasured = TempSensors.getTempC(PersistentData.tOutputSensorAddress);
@@ -557,6 +732,17 @@ void handleHttpCalibrateFormRequest()
         tOutputMeasured + PersistentData.tOutputOffset        
         );
 
+    if (TempSensors.isConnected(PersistentData.tBufferSensorAddress))
+    {
+        float tBufferMeasured = TempSensors.getTempC(PersistentData.tBufferSensorAddress);
+        HttpResponse.printf(
+            F("<tr><td>T<sub>buffer</sub></td><td>%0.2f °C<td>%0.2f</td><td>%0.2f °C</td></tr>\r\n"),
+            tBufferMeasured,
+            PersistentData.tBufferOffset,
+            tBufferMeasured + PersistentData.tBufferOffset        
+            );
+    }
+
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
     HttpResponse.println(F("</form>"));
@@ -577,13 +763,20 @@ void handleHttpCalibrateFormPost()
     PersistentData.tInputOffset = WebServer.arg("tInputOffset").toFloat();
     PersistentData.tOutputOffset = tInputMeasured + PersistentData.tInputOffset - tOutputMeasured;
 
+    if (TempSensors.isConnected(PersistentData.tBufferSensorAddress))
+    {
+        float tBufferMeasured = TempSensors.getTempC(PersistentData.tOutputSensorAddress);
+        PersistentData.tBufferOffset = tInputMeasured + PersistentData.tInputOffset - tBufferMeasured;
+    }
+
     PersistentData.validate();
     PersistentData.writeToEEPROM();
 
-    calibrationRequired = false;
+    newSensorFound = false;
 
     handleHttpCalibrateFormRequest();
 }
+
 
 void handleHttpEventLogRequest()
 {
@@ -628,9 +821,15 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
     Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
     Html.writeTextBox(CFG_TZ_OFFSET, F("Timezone offset"), String(PersistentData.timeZoneOffset), 3);
+    Html.writeTextBox(CFG_MAX_TEMP, F("Buffer max"), String(PersistentData.tBufferMax), 3);
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
     HttpResponse.println(F("</form>"));
+
+    if (!TempSensors.isConnected(PersistentData.tBufferSensorAddress))
+    {
+        HttpResponse.println("<p>NOTE: No buffer sensor is connected. Leave 'Buffer max' zero to suppress buffer temperature in UI.</p>");
+    }
 
     Html.writeFooter();
 
@@ -643,6 +842,7 @@ void copyString(const String& input, char* buffer, size_t bufferSize)
     strncpy(buffer, input.c_str(), bufferSize);
     buffer[bufferSize - 1] = 0;
 }
+
 
 void handleHttpConfigFormPost()
 {
@@ -657,6 +857,7 @@ void handleHttpConfigFormPost()
     copyString(WebServer.arg(CFG_FTP_PASSWORD), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword)); 
 
     PersistentData.timeZoneOffset = WebServer.arg(CFG_TZ_OFFSET).toInt();
+    PersistentData.tBufferMax = WebServer.arg(CFG_MAX_TEMP).toFloat();
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();
