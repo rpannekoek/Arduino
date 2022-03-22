@@ -31,7 +31,7 @@
 #define FTP_RETRY_INTERVAL (60 * 60)
 #define HEAT_LOG_INTERVAL (30 * 60)
 
-#define MAX_TEMP_VALVE_PIN D0
+#define MAX_TEMP_VALVE_PIN D8
 #define MAX_TEMP_DELTA_T 5
 
 #define LED_ON 0
@@ -143,7 +143,7 @@ void initTempSensors()
     TRACE(F("Found %d OneWire devices.\n"), TempSensors.getDeviceCount());
     TRACE(F("Found %d temperature sensors.\n"), TempSensors.getDS18Count());
 
-    if (!TempSensors.validFamily(PersistentData.tInputSensorAddress))
+    if (TempSensors.getDS18Count() > 0 && !TempSensors.validFamily(PersistentData.tInputSensorAddress))
     {
         newSensorFound = TempSensors.getAddress(PersistentData.tInputSensorAddress, 0);
         if (!newSensorFound)
@@ -151,7 +151,7 @@ void initTempSensors()
             logEvent(F("ERROR: Unable to obtain input sensor address."));
         }
     }
-    if (!TempSensors.validFamily(PersistentData.tOutputSensorAddress))
+    if (TempSensors.getDS18Count() > 1 && !TempSensors.validFamily(PersistentData.tOutputSensorAddress))
     {
         newSensorFound = TempSensors.getAddress(PersistentData.tOutputSensorAddress, 1);
         if (!newSensorFound)
@@ -159,7 +159,7 @@ void initTempSensors()
             logEvent(F("ERROR: Unable to obtain output sensor address."));
         }
     }
-    if (!TempSensors.validFamily(PersistentData.tBufferSensorAddress))
+    if (TempSensors.getDS18Count() > 2 && !TempSensors.validFamily(PersistentData.tBufferSensorAddress))
     {
         if (!TempSensors.getAddress(PersistentData.tBufferSensorAddress, 2))
         {
@@ -226,7 +226,7 @@ void setup()
 
     logSensorInfo("Input", PersistentData.tInputSensorAddress, PersistentData.tInputOffset);    
     logSensorInfo("Output", PersistentData.tOutputSensorAddress, PersistentData.tOutputOffset);
-    if (TempSensors.isConnected(PersistentData.tBufferSensorAddress))
+    if (PersistentData.tBufferMax != 0)
     {
         logSensorInfo("Buffer", PersistentData.tBufferSensorAddress, PersistentData.tBufferOffset);
         pinMode(MAX_TEMP_VALVE_PIN, OUTPUT);
@@ -525,7 +525,7 @@ void handleHttpRootRequest()
     HttpResponse.println(F("</td></tr>"));
     HttpResponse.println(F("</table>"));
 
-    HttpResponse.println(F("<h1>Energy last 31 days</h1>"));
+    HttpResponse.println(F("<h1>Energy per day</h1>"));
 
     HttpResponse.println(F("<table>"));
     HttpResponse.println(F("<tr><th>Day</th><th>E<sub>out</sub> (kWh)</sub></th><th>E<sub>in</sub> (kWh)</th></tr>"));
@@ -706,46 +706,56 @@ void handleHttpCalibrateFormRequest()
     {
         HttpResponse.println(F("<h2>Missing temperature sensors</h2>"));
         HttpResponse.printf(F("<p>Number of temperature sensors detected: %d</p>\r\n"), TempSensors.getDS18Count());
-        return;
     }
-
-    HttpResponse.println(F("<p>Ensure that all temperature sensors are measuring the same temperature.</p>"));
-
-    float tInputMeasured = TempSensors.getTempC(PersistentData.tInputSensorAddress);
-    float tOutputMeasured = TempSensors.getTempC(PersistentData.tOutputSensorAddress);
-
-    HttpResponse.println(F("<form action=\"/calibrate\" method=\"POST\">"));
-    HttpResponse.println(F("<table>"));
-    HttpResponse.println(F("<tr><th>Sensor</th><th>Measured</th><th>Offset</th><th>Effective</th></tr>"));
-
-    HttpResponse.printf(
-        F("<tr><td>T<sub>in</sub></td><td>%0.2f °C<td><input type=\"text\" name=\"tInputOffset\" value=\"%0.2f\" maxlength=\"5\"></td><td>%0.2f °C</td></tr>\r\n"),
-        tInputMeasured,
-        PersistentData.tInputOffset,
-        tInputMeasured + PersistentData.tInputOffset
-        );
-
-    HttpResponse.printf(
-        F("<tr><td>T<sub>out</sub></td><td>%0.2f °C<td>%0.2f</td><td>%0.2f °C</td></tr>\r\n"),
-        tOutputMeasured,
-        PersistentData.tOutputOffset,
-        tOutputMeasured + PersistentData.tOutputOffset        
-        );
-
-    if (TempSensors.isConnected(PersistentData.tBufferSensorAddress))
+    else
     {
-        float tBufferMeasured = TempSensors.getTempC(PersistentData.tBufferSensorAddress);
+        HttpResponse.println(F("<p>Ensure that all temperature sensors are measuring the same temperature.</p>"));
+    
+        float tInputMeasured = TempSensors.getTempC(PersistentData.tInputSensorAddress);
+        float tOutputMeasured = TempSensors.getTempC(PersistentData.tOutputSensorAddress);
+    
+        HttpResponse.println(F("<form action=\"/calibrate\" method=\"POST\">"));
+        HttpResponse.println(F("<table>"));
+        HttpResponse.println(F("<tr><th>Sensor</th><th>Measured</th><th>Offset</th><th>Effective</th></tr>"));
+    
         HttpResponse.printf(
-            F("<tr><td>T<sub>buffer</sub></td><td>%0.2f °C<td>%0.2f</td><td>%0.2f °C</td></tr>\r\n"),
-            tBufferMeasured,
-            PersistentData.tBufferOffset,
-            tBufferMeasured + PersistentData.tBufferOffset        
+            F("<tr><td>T<sub>in</sub></td><td>%0.2f °C<td><input type=\"text\" name=\"tInputOffset\" value=\"%0.2f\" maxlength=\"5\"></td><td>%0.2f °C</td></tr>\r\n"),
+            tInputMeasured,
+            PersistentData.tInputOffset,
+            tInputMeasured + PersistentData.tInputOffset
             );
-    }
+    
+        HttpResponse.printf(
+            F("<tr><td>T<sub>out</sub></td><td>%0.2f °C<td><input type=\"text\" name=\"tOutputOffset\" value=\"%0.2f\" maxlength=\"5\"></td><td>%0.2f °C</td></tr>\r\n"),
+            tOutputMeasured,
+            PersistentData.tOutputOffset,
+            tOutputMeasured + PersistentData.tOutputOffset        
+            );
+    
+        if (TempSensors.isConnected(PersistentData.tBufferSensorAddress))
+        {
+            float tBufferMeasured = TempSensors.getTempC(PersistentData.tBufferSensorAddress);
+            HttpResponse.printf(
+                F("<tr><td>T<sub>buffer</sub></td><td>%0.2f °C<td><input type=\"text\" name=\"tBufferOffset\" value=\"%0.2f\" maxlength=\"5\"></td><td>%0.2f °C</td></tr>\r\n"),
+                tBufferMeasured,
+                PersistentData.tBufferOffset,
+                tBufferMeasured + PersistentData.tBufferOffset        
+                );
+        }
+    
+        HttpResponse.println(F("</table>"));
 
-    HttpResponse.println(F("</table>"));
-    HttpResponse.println(F("<input type=\"submit\">"));
-    HttpResponse.println(F("</form>"));
+        Html.writeCheckbox(F("swapInOut"), F("Swap input and output sensors"), false);
+        HttpResponse.println(F("<br/>"));
+        if (TempSensors.isConnected(PersistentData.tBufferSensorAddress))
+        {
+            Html.writeCheckbox(F("swapInBuf"), F("Swap input and buffer sensors"), false);
+            HttpResponse.println(F("<br/>"));
+        }
+
+        HttpResponse.println(F("<input type=\"submit\">"));
+        HttpResponse.println(F("</form>"));
+    }
 
     Html.writeFooter();
 
@@ -757,16 +767,26 @@ void handleHttpCalibrateFormPost()
 {
     Tracer tracer(F("handleHttpCalibrateFormPost"));
 
-    float tInputMeasured = TempSensors.getTempC(PersistentData.tInputSensorAddress);
-    float tOutputMeasured = TempSensors.getTempC(PersistentData.tOutputSensorAddress);
-
     PersistentData.tInputOffset = WebServer.arg("tInputOffset").toFloat();
-    PersistentData.tOutputOffset = tInputMeasured + PersistentData.tInputOffset - tOutputMeasured;
-
-    if (TempSensors.isConnected(PersistentData.tBufferSensorAddress))
+    PersistentData.tOutputOffset = WebServer.arg("tOutputOffset").toFloat();
+    if (WebServer.hasArg("tBufferOffset"))
     {
-        float tBufferMeasured = TempSensors.getTempC(PersistentData.tOutputSensorAddress);
-        PersistentData.tBufferOffset = tInputMeasured + PersistentData.tInputOffset - tBufferMeasured;
+        PersistentData.tBufferOffset = WebServer.arg("tBufferOffset").toFloat();
+    }
+
+    if (WebServer.hasArg("swapInOut"))
+    {
+        DeviceAddress tInputSensorAddress;
+        memcpy(tInputSensorAddress, PersistentData.tInputSensorAddress, sizeof(DeviceAddress));
+        memcpy(PersistentData.tInputSensorAddress, PersistentData.tOutputSensorAddress, sizeof(DeviceAddress));
+        memcpy(PersistentData.tOutputSensorAddress, tInputSensorAddress, sizeof(DeviceAddress));
+    }
+    if (WebServer.hasArg("swapInBuf"))
+    {
+        DeviceAddress tInputSensorAddress;
+        memcpy(tInputSensorAddress, PersistentData.tInputSensorAddress, sizeof(DeviceAddress));
+        memcpy(PersistentData.tInputSensorAddress, PersistentData.tBufferSensorAddress, sizeof(DeviceAddress));
+        memcpy(PersistentData.tBufferSensorAddress, tInputSensorAddress, sizeof(DeviceAddress));
     }
 
     PersistentData.validate();
