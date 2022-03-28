@@ -10,7 +10,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
     char ftpServer[32];
     char ftpUser[32];
     char ftpPassword[32];
-    int16_t timeZoneOffset; // hours
+    int16_t timeZoneOffset; // Not used
     DeviceAddress tInputSensorAddress;
     DeviceAddress tOutputSensorAddress;
     DeviceAddress tBufferSensorAddress;

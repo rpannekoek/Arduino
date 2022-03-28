@@ -75,7 +75,7 @@ void WiFiStateMachine::logEvent(String msg)
     if (_isTimeServerAvailable)
     {
         time_t currentTime = _timeServer.getCurrentTime();
-        strftime(event, timestamp_size, "%F %H:%M:%S : ", gmtime(&currentTime));
+        strftime(event, timestamp_size, "%F %H:%M:%S : ", localtime(&currentTime));
     }
     else
         snprintf(event, timestamp_size, "@ %u ms : ", static_cast<uint32_t>(millis()));
@@ -98,13 +98,13 @@ void WiFiStateMachine::setState(WiFiInitState newState)
 
 void WiFiStateMachine::initializeAP()
 {
-    TRACE(F("Starting WiFi network '%s' ...\n"), AP_SSID);
+    TRACE(F("Starting WiFi network '%s' ...\n"), _hostName.c_str());
 
     WiFi.persistent(false);
     if (!WiFi.mode(WIFI_AP))
         TRACE(F("Unable to set WiFi mode\n"));
 
-    if (!WiFi.softAP(AP_SSID))
+    if (!WiFi.softAP(_hostName))
         TRACE(F("Unable to start Access Point\n"));
 
     _ipAddress = WiFi.softAPIP();

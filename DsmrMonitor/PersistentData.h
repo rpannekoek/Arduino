@@ -11,7 +11,7 @@ struct PersistentDataStruct : PersistentDataBase
     char ftpServer[32];
     char ftpUser[32];
     char ftpPassword[32];
-    int16_t timeZoneOffset; // hours
+    int16_t timeZoneOffset; // Not used
     uint16_t phaseCount; // 1 or 3
     uint16_t maxPhaseCurrent; // A (per phase)
     uint16_t powerLogDelta;

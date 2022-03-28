@@ -4,6 +4,7 @@
 #include <ESPFileSystem.h>
 #include <WiFiNTP.h>
 #include <WiFiFTP.h>
+#include <TimeUtils.h>
 #include <Tracer.h>
 #include <StringBuilder.h>
 #include <HtmlWriter.h>
@@ -36,14 +37,15 @@
 #define CFG_FTP_SERVER F("FTPServer")
 #define CFG_FTP_USER F("FTPUser")
 #define CFG_FTP_PASSWORD F("FTPPassword")
-#define CFG_TZ_OFFSET F("TZOffset")
 #define CFG_MAX_CURRENT F("MaxCurrent")
 #define CFG_IS_3PHASE F("Is3Phase")
 #define CFG_GAS_CALORIFIC F("GasCalorific")
 #define CFG_POWER_LOG_DELTA F("PowerLogDelta")
 
+const char* ContentTypeHtml = "text/html;charset=UTF-8";
+
 ESPWebServer WebServer(80); // Default HTTP port
-WiFiNTP TimeServer(SECONDS_PER_DAY); // Synchronize daily
+WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, 60); // Max bar length: 60
@@ -68,13 +70,6 @@ GasData gasData;
 int logEntriesToSync = 0;
 bool isFTPEnabled = false;
 int powerLogIndex = 0;
-
-const char* formatTime(const char* format, time_t time)
-{
-    static char timeString[32];
-    strftime(timeString, sizeof(timeString), format, gmtime(&time));
-    return timeString;
-}
 
 
 void logEvent(String msg)
@@ -107,11 +102,8 @@ void setup()
 
     PersistentData.begin();
     TimeServer.NTPServer = PersistentData.ntpServer;
-    TimeServer.timeZoneOffset = PersistentData.timeZoneOffset;
     Html.setTitlePrefix(PersistentData.hostName);
     isFTPEnabled = PersistentData.ftpServer[0] != 0;
-
-    // TODO: Get TZ offset from P1 telegram (Summer/Winter time)
 
     SPIFFS.begin();
 
@@ -634,7 +626,7 @@ void handleHttpViewTelegramRequest()
     HttpResponse.println(F("</pre>"));
     Html.writeFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -655,7 +647,7 @@ void handleHttpPowerLogRequest()
     HttpResponse.println(F("</pre>"));
     Html.writeFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -686,7 +678,7 @@ void handleHttpSyncFTPRequest()
  
     Html.writeFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -707,7 +699,7 @@ void handleHttpEventLogRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -737,7 +729,6 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
     Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
     Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
-    Html.writeTextBox(CFG_TZ_OFFSET, F("Timezone offset"), String(PersistentData.timeZoneOffset), 3);
     Html.writeTextBox(CFG_MAX_CURRENT, F("Max current"), String(PersistentData.maxPhaseCurrent), 2);
     Html.writeCheckbox(CFG_IS_3PHASE, F("Three phases"), (PersistentData.phaseCount == 3));
     Html.writeTextBox(CFG_GAS_CALORIFIC, F("Gas kWh per m3"), String(PersistentData.gasCalorificValue, 3), 6);
@@ -748,7 +739,7 @@ void handleHttpConfigFormRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, F("text/html"), HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 void copyString(const String& input, char* buffer, size_t bufferSize)
@@ -769,13 +760,11 @@ void handleHttpConfigFormPost()
     copyString(WebServer.arg(CFG_FTP_USER), PersistentData.ftpUser, sizeof(PersistentData.ftpUser)); 
     copyString(WebServer.arg(CFG_FTP_PASSWORD), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword)); 
 
-    String tzOffset = WebServer.arg(CFG_TZ_OFFSET);
     String maxCurrent = WebServer.arg(CFG_MAX_CURRENT);
     String isThreePhase = WebServer.arg(CFG_IS_3PHASE);
     String gasCalorific = WebServer.arg(CFG_GAS_CALORIFIC);
     String powerLogDelta = WebServer.arg(CFG_POWER_LOG_DELTA);
 
-    PersistentData.timeZoneOffset = tzOffset.toInt();
     PersistentData.maxPhaseCurrent = maxCurrent.toInt();
     PersistentData.phaseCount = (isThreePhase == "true") ? 3 : 1;
     PersistentData.gasCalorificValue = gasCalorific.toFloat();
@@ -785,8 +774,6 @@ void handleHttpConfigFormPost()
     PersistentData.writeToEEPROM();
 
     handleHttpConfigFormRequest();
-
-    WiFiSM.reset();
 }
 
 

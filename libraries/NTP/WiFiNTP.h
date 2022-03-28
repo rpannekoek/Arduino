@@ -7,13 +7,14 @@
 class WiFiNTP
 {
   public:
-    int8_t timeZoneOffset = 0;
+    int8_t timeZoneOffset = 0; // Legacy (no longer used)
+    const char* timeZone = "CET-1CEST,M3.5.0,M10.5.0/3"; // Amsterdam TZ
+    const char* NTPServer = nullptr;
 
     // Constructors
+    WiFiNTP();
     WiFiNTP(int serverSyncInterval);
     WiFiNTP(const char* ntpServer, int serverSyncInterval);
-
-    const char* NTPServer = nullptr;
 
     bool beginGetServerTime();
     time_t endGetServerTime();
@@ -21,20 +22,14 @@ class WiFiNTP
     time_t getCurrentTime();
 
   private:
-    static const unsigned int LOCAL_PORT = 2390;
-    static const int NTP_PACKET_SIZE = 48;
+    int _serverSyncInterval;
+    bool _isInitialized = false;
+    bool _serverTimeReceived = false;
 
-    WiFiUDP _udp;
-    const char* _ntpServer = nullptr;
-    IPAddress _timeServerIP;
-    uint8_t _packetBuffer[NTP_PACKET_SIZE];
-    long  _serverSyncInterval;
-    long _lastServerSync;
-    long _lastServerTry;
-    time_t _lastServerTime;
+    void initialize();
+    void onServerTimeReceived();
 
-    void sendPacket();
-    unsigned long readPacket();
+    friend void _settimeofday_callback();
 };
 
 #endif

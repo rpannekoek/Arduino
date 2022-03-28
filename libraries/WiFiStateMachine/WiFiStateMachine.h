@@ -6,8 +6,6 @@
 #include <WiFiNTP.h>
 #include <Log.h>
 
-#define AP_SSID "ESP-Config"
-
 enum struct WiFiInitState
 {
     Booting = 0,

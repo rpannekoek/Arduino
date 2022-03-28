@@ -5,6 +5,7 @@
 #include <WiFiStateMachine.h>
 #include <WiFiNTP.h>
 #include <WiFiFTP.h>
+#include <TimeUtils.h>
 #include <Tracer.h>
 #include <StringBuilder.h>
 #include <HtmlWriter.h>
@@ -44,13 +45,12 @@
 #define CFG_FTP_SERVER F("FTPServer")
 #define CFG_FTP_USER F("FTPUser")
 #define CFG_FTP_PASSWORD F("FTPPassword")
-#define CFG_TZ_OFFSET F("tzOffset")
 #define CFG_MAX_TEMP F("tBufferMax")
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 
 ESPWebServer WebServer(80); // Default HTTP port
-WiFiNTP TimeServer(SECONDS_PER_DAY); // Synchronize daily
+WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, 40);
@@ -79,14 +79,6 @@ float tOutput = 0;
 float tBuffer = 0;
 float pOutKW = 0;
 float pInKW = 0;
-
-
-const char* formatTime(const char* format, time_t time)
-{
-    static char timeString[32];
-    strftime(timeString, sizeof(timeString), format, gmtime(&time));
-    return timeString;
-}
 
 
 void logEvent(String msg)
@@ -194,7 +186,6 @@ void setup()
 
     PersistentData.begin();
     TimeServer.NTPServer = PersistentData.ntpServer;
-    TimeServer.timeZoneOffset = PersistentData.timeZoneOffset;
     Html.setTitlePrefix(PersistentData.hostName);
 
     SPIFFS.begin();
@@ -289,18 +280,30 @@ void loop()
 }
 
 
-void onTimeServerSynced()
+void newHeatLogEntry()
 {
-    // Create first heat log entry
     lastHeatLogEntryPtr = new HeatLogEntry();
     lastHeatLogEntryPtr->time = currentTime - (currentTime % HEAT_LOG_INTERVAL);
     HeatLog.add(lastHeatLogEntryPtr);
-    heatLogTime = currentTime;
+}
 
-    // Create first energy log entry (starting 00:00 current day)
+
+// Create new energy log entry (starting 00:00 current day)
+void newEnergyLogEntry()
+{
     lastEnergyLogEntryPtr = new EnergyLogEntry();
     lastEnergyLogEntryPtr->time = currentTime - (currentTime % SECONDS_PER_DAY);
     EnergyLog.add(lastEnergyLogEntryPtr);
+}
+
+
+void onTimeServerSynced()
+{
+    heatLogTime = currentTime;
+
+    // Create first heat log and energy log entries
+    newHeatLogEntry();
+    newEnergyLogEntry();
 }
 
 
@@ -329,9 +332,7 @@ void updateHeatLog()
 
     if (currentTime >= lastHeatLogEntryPtr->time + HEAT_LOG_INTERVAL)
     {
-        lastHeatLogEntryPtr = new HeatLogEntry();
-        lastHeatLogEntryPtr->time = currentTime;
-        HeatLog.add(lastHeatLogEntryPtr);
+        newHeatLogEntry();
     }
     lastHeatLogEntryPtr->update(tInput, tOutput, tBuffer, flowRate, pOutKW, pInKW, maxTempValveActivated);
 }
@@ -342,9 +343,7 @@ void updateEnergyLog()
     if (currentTime >= lastEnergyLogEntryPtr->time + SECONDS_PER_DAY)
     {
         Energy_Meter.resetEnergy();
-        lastEnergyLogEntryPtr = new EnergyLogEntry();
-        lastEnergyLogEntryPtr->time = currentTime;
-        EnergyLog.add(lastEnergyLogEntryPtr);
+        newEnergyLogEntry();
     }
 
     lastEnergyLogEntryPtr->energyOut += pOutKW / 3600;
@@ -837,10 +836,9 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1);
     Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
     Html.writeTextBox(CFG_NTP_SERVER, F("NTP server"), PersistentData.ntpServer, sizeof(PersistentData.ntpServer) - 1);
-    Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
-    Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
-    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
-    Html.writeTextBox(CFG_TZ_OFFSET, F("Timezone offset"), String(PersistentData.timeZoneOffset), 3);
+    //Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
+    //Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
+    //Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
     Html.writeTextBox(CFG_MAX_TEMP, F("Buffer max"), String(PersistentData.tBufferMax), 3);
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
@@ -876,13 +874,10 @@ void handleHttpConfigFormPost()
     copyString(WebServer.arg(CFG_FTP_USER), PersistentData.ftpUser, sizeof(PersistentData.ftpUser)); 
     copyString(WebServer.arg(CFG_FTP_PASSWORD), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword)); 
 
-    PersistentData.timeZoneOffset = WebServer.arg(CFG_TZ_OFFSET).toInt();
     PersistentData.tBufferMax = WebServer.arg(CFG_MAX_TEMP).toFloat();
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();
-
-    TimeServer.timeZoneOffset = PersistentData.timeZoneOffset; 
 
     handleHttpConfigFormRequest();
 }
