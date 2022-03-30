@@ -42,14 +42,28 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName)
     event += getResetReason();
     logEvent(event);
 
-    ArduinoOTA.onStart([]() 
+    ArduinoOTA.onStart(
+        [this]() 
         {
             TRACE(F("OTA start %d\n"), ArduinoOTA.getCommand());
             if (ArduinoOTA.getCommand() == U_SPIFFS)
                 SPIFFS.end();
+            setState(WiFiInitState::Updating, true);
         });
-    ArduinoOTA.onEnd([]() { TRACE(F("OTA end %d\n"), ArduinoOTA.getCommand()); });
-    ArduinoOTA.onError([](ota_error_t error) { TRACE(F("OTA error %u\n"), error); });
+
+    ArduinoOTA.onEnd(
+        [this]()
+        {
+            TRACE(F("OTA end %d\n"), ArduinoOTA.getCommand());
+            setState(WiFiInitState::Initialized);
+        });
+
+    ArduinoOTA.onError(
+        [this](ota_error_t error)
+        {
+            TRACE(F("OTA error %u\n"), error);
+            setState(WiFiInitState::Initialized);
+        });
     
     setState(WiFiInitState::Initializing);
 }
@@ -88,11 +102,17 @@ void WiFiStateMachine::logEvent(String msg)
 }
 
 
-void WiFiStateMachine::setState(WiFiInitState newState)
+void WiFiStateMachine::setState(WiFiInitState newState, bool callHandler)
 {
     _state = newState;
     _stateChangeTime = millis();
     TRACE(F("WiFi state: %u @ %u ms\n"), _state, _stateChangeTime);
+    if (callHandler)
+    {
+        int state = static_cast<int>(_state);
+        if (_handlers[state] != nullptr)
+            _handlers[state]();
+    }
 }
 
 

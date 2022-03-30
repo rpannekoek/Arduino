@@ -10,7 +10,7 @@ struct PersistentDataStruct : PersistentDataBase
     char ftpServer[32];
     char ftpUser[32];
     char ftpPassword[32];
-    int16_t timeZoneOffset; // hours
+    int16_t timeZoneOffset; // Not used
     uint16_t openThermLogInterval; // seconds
     char weatherApiKey[16];
     char weatherLocation[16];

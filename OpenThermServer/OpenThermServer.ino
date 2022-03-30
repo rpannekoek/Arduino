@@ -5,6 +5,7 @@
 #include <WiFiStateMachine.h>
 #include <WiFiNTP.h>
 #include <WiFiFTP.h>
+#include <TimeUtils.h>
 #include <Tracer.h>
 #include <StringBuilder.h>
 #include <HtmlWriter.h>
@@ -18,7 +19,7 @@
 #define ICON "/apple-touch-icon.png"
 #define CSS "/styles.css"
 #define SECONDS_PER_DAY (24 * 3600)
-#define WATCHDOG_INTERVAL_MS 1000
+#define OTGW_WATCHDOG_INTERVAL 30
 #define OTGW_STARTUP_TIME 5
 #define OTGW_TIMEOUT 60
 #define HTTP_POLL_INTERVAL 60
@@ -41,7 +42,6 @@
 #define CFG_FTP_SERVER F("FTPServer")
 #define CFG_FTP_USER F("FTPUser")
 #define CFG_FTP_PASSWORD F("FTPPassword")
-#define CFG_TZ_OFFSET F("tzOffset")
 #define CFG_OT_LOG_INTERVAL F("otLogInterval")
 #define CFG_FTP_SYNC_ENTRIES F("ftpSyncEntries")
 #define CFG_WEATHER_API_KEY F("weatherApiKey")
@@ -66,7 +66,7 @@ const int boilerTSet[5] = {0, 40, 50, 60, 0};
 
 OpenThermGateway OTGW(Serial, 14);
 ESPWebServer WebServer(80); // Default HTTP port
-WiFiNTP TimeServer(SECONDS_PER_DAY); // Synchronize daily
+WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 WeatherAPI WeatherService(2000); // 2 sec request timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
@@ -82,7 +82,7 @@ uint16_t boilerResponses[256];
 uint16_t otgwRequests[256];
 uint16_t otgwResponses[256];
 
-uint32_t watchdogFeedTime = 0;
+time_t watchdogFeedTime = 0;
 time_t currentTime = 0;
 time_t otLogTime = 0;
 time_t globalLogTime = 0;
@@ -111,13 +111,6 @@ uint32_t totalOverrideDuration = 0;
 char stringBuffer[128];
 String otgwResponse;
 
-const char* formatTime(const char* format, time_t time)
-{
-    static char timeString[32];
-    strftime(timeString, sizeof(timeString), format, gmtime(&time));
-    return timeString;
-}
-
 
 void logEvent(String msg)
 {
@@ -143,7 +136,6 @@ void setup()
 
     PersistentData.begin();
     TimeServer.NTPServer = PersistentData.ntpServer;
-    TimeServer.timeZoneOffset = PersistentData.timeZoneOffset;
     Html.setTitlePrefix(PersistentData.hostName);
 
     SPIFFS.begin();
@@ -175,7 +167,17 @@ void setup()
     WiFiSM.on(WiFiInitState::TimeServerInitializing, onTimeServerInit);
     WiFiSM.on(WiFiInitState::TimeServerSynced, onTimeServerSynced);
     WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
+    WiFiSM.on(WiFiInitState::Updating, onWiFiUpdating);
     WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
+
+    if (!OTGW.initWatchdog(OTGW_WATCHDOG_INTERVAL * 4))
+    {
+        logEvent(F("ERROR: Initializing OTGW Watchdog failed."));
+    }
+
+    //String otgwWatchdogEvent = F("Resets by OTGW Watchdog: ");
+    //otgwWatchdogEvent += OTGW.readWatchdogData(14); // TargetResetCount
+    //logEvent(otgwWatchdogEvent);
 
     Tracer::traceFreeHeap();
 
@@ -192,10 +194,10 @@ void loop()
     // This also calls the onXXX methods below
     WiFiSM.run();
 
-    if (millis() >= watchdogFeedTime)
+    if (currentTime >= watchdogFeedTime)
     {
         OTGW.feedWatchdog();
-        watchdogFeedTime = millis() + WATCHDOG_INTERVAL_MS;
+        watchdogFeedTime = currentTime + OTGW_WATCHDOG_INTERVAL;
     }
 
     if (Serial.available())
@@ -209,7 +211,6 @@ void loop()
 
     if (currentTime >= otgwTimeout)
     {
-        TRACE(F("currentTime=%u; otgwTimeout=%u\n"), currentTime, otgwTimeout);
         logEvent(F("OTGW Timeout"));
         resetOpenThermGateway();
         return;
@@ -241,6 +242,14 @@ void loop()
 }
 
 
+void newGlobalLogEntry()
+{
+    lastGlobalLogEntryPtr = new GlobalLogEntry();
+    lastGlobalLogEntryPtr->time = currentTime - (currentTime % GLOBAL_LOG_INTERVAL);
+    GlobalLog.add(lastGlobalLogEntryPtr);
+}
+
+
 void onTimeServerInit()
 {
     // Time server initialization (DNS lookup) make take a few seconds
@@ -261,10 +270,15 @@ void onTimeServerSynced()
         boilerOverrideStartTime = currentTime;
 
     // Create first global log entry
-    lastGlobalLogEntryPtr = new GlobalLogEntry();
-    lastGlobalLogEntryPtr->time = currentTime - (currentTime % GLOBAL_LOG_INTERVAL);
-    GlobalLog.add(lastGlobalLogEntryPtr);
+    newGlobalLogEntry();
     globalLogTime = currentTime;
+}
+
+
+void onWiFiUpdating()
+{
+    // Feed the OTGW watchdog just before OTA update
+    OTGW.feedWatchdog();
 }
 
 
@@ -483,9 +497,7 @@ void updateGlobalLog()
 
     if (currentTime >= lastGlobalLogEntryPtr->time + GLOBAL_LOG_INTERVAL)
     {
-        lastGlobalLogEntryPtr = new GlobalLogEntry();
-        lastGlobalLogEntryPtr->time = currentTime;
-        GlobalLog.add(lastGlobalLogEntryPtr);
+        newGlobalLogEntry();
     }
     lastGlobalLogEntryPtr->update(tWater, tReturn, flame);
 }
@@ -1219,7 +1231,6 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
     Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
     Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
-    Html.writeTextBox(CFG_TZ_OFFSET, F("Timezone offset"), String(PersistentData.timeZoneOffset), 3);
     Html.writeTextBox(CFG_OT_LOG_INTERVAL, F("OpenTherm Log Interval (s)"), String(PersistentData.openThermLogInterval), 4);
     Html.writeTextBox(CFG_FTP_SYNC_ENTRIES, F("FTP Sync Entries"), String(PersistentData.ftpSyncEntries), 4);
     Html.writeTextBox(CFG_WEATHER_API_KEY, F("Weather API Key"), PersistentData.weatherApiKey, 16);
@@ -1269,7 +1280,6 @@ void handleHttpConfigFormPost()
     copyString(WebServer.arg(CFG_FTP_USER), PersistentData.ftpUser, sizeof(PersistentData.ftpUser)); 
     copyString(WebServer.arg(CFG_FTP_PASSWORD), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword)); 
 
-    PersistentData.timeZoneOffset = WebServer.arg(CFG_TZ_OFFSET).toInt();
     PersistentData.openThermLogInterval = WebServer.arg(CFG_OT_LOG_INTERVAL).toInt();
     PersistentData.ftpSyncEntries = WebServer.arg(CFG_FTP_SYNC_ENTRIES).toInt();
 
@@ -1278,8 +1288,6 @@ void handleHttpConfigFormPost()
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();
-
-    TimeServer.timeZoneOffset = PersistentData.timeZoneOffset; 
 
     handleHttpConfigFormRequest();
 }

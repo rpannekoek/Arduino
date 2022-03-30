@@ -18,7 +18,8 @@ enum struct WiFiInitState
     TimeServerSyncing = 7,
     TimeServerSyncFailed = 8,
     TimeServerSynced = 9,
-    Initialized = 10
+    Initialized = 10,
+    Updating = 11
 };
 
 
@@ -76,14 +77,14 @@ class WiFiStateMachine
         WiFiNTP& _timeServer;
         ESPWebServer& _webServer;
         Log<const char>& _eventLog;
-        void (*_handlers[static_cast<int>(WiFiInitState::Initialized) + 1])(void); // function pointers indexed by state
+        void (*_handlers[static_cast<int>(WiFiInitState::Updating) + 1])(void); // function pointers indexed by state
         bool _isTimeServerAvailable = false;
         bool _isInAccessPointMode = false;
         IPAddress _ipAddress;
 
         void initializeAP();
         void initializeSTA();
-        void setState(WiFiInitState newState);
+        void setState(WiFiInitState newState, bool callHandler = false);
         void blinkLED(int tOn, int tOff);
         String getResetReason();
 };

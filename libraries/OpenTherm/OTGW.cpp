@@ -5,7 +5,10 @@
 #include <Wire.h>
 
 #define BUFFER_SIZE 32
-#define WATCHDOG_I2C_ADDRESS 38
+#define WATCHDOG_I2C_ADDRESS 0x26
+
+// For I2C Watchdog protocol/implementation, see:
+// https://github.com/rvdbreemen/ESPEasySlaves/blob/master/TinyI2CWatchdog/TinyI2CWatchdog.ino
 
 static const char* _masterStatusNames[5] = {"CH", "DHW", "Cool", "OTC", "CH2"};
 static const char* _slaveStatusNames[7] = {"Fault", "CH", "DHW", "Flame", "Cool", "CH2", "Diag"};
@@ -35,13 +38,46 @@ void OpenThermGateway::reset()
 }
 
 
-void OpenThermGateway::feedWatchdog()
+bool OpenThermGateway::initWatchdog(uint8_t timeoutSeconds)
+{
+    Tracer tracer(F("OpenThermGateway::initWatchdog"));
+
+    Wire.beginTransmission(WATCHDOG_I2C_ADDRESS);
+    Wire.write(6); // SettingsStruct.TimeOut
+    Wire.write(timeoutSeconds);
+    if (Wire.endTransmission() != 0) return false;
+
+    // Read back SettingsStruct.TimeOut to confirm it's set properly.
+    int timeOutReg = readWatchdogData(6);
+    return timeOutReg == timeoutSeconds;
+}
+
+
+int OpenThermGateway::readWatchdogData(uint8_t addr)
+{
+    Tracer tracer(F("OpenThermGateway::readWatchdogData"));
+
+    Wire.beginTransmission(WATCHDOG_I2C_ADDRESS);
+    Wire.write(0x83); // Set pointer for byte to read
+    Wire.write(addr);
+    uint8_t err = Wire.endTransmission();  
+    if (err != 0) return -err;
+    
+    // Request one byte
+    if (Wire.requestFrom(WATCHDOG_I2C_ADDRESS, 1) == 0)
+        return -10;
+    
+    return Wire.read(); // Read one byte
+}
+
+
+uint8_t OpenThermGateway::feedWatchdog()
 {
     Tracer tracer(F("OpenThermGateway::feedWatchdog"));
 
     Wire.beginTransmission(WATCHDOG_I2C_ADDRESS);
-    Wire.write(0xA5);
-    Wire.endTransmission();
+    Wire.write(0xA5); // Reset watchdog timer
+    return Wire.endTransmission();
 }
 
 
