@@ -12,6 +12,7 @@
 #include <OTGW.h>
 #include <Log.h>
 #include <WeatherAPI.h>
+#include <Wire.h>
 #include "PersistentData.h"
 #include "OpenThermLogEntry.h"
 #include "GlobalLogEntry.h"
@@ -19,7 +20,7 @@
 #define ICON "/apple-touch-icon.png"
 #define CSS "/styles.css"
 #define SECONDS_PER_DAY (24 * 3600)
-#define OTGW_WATCHDOG_INTERVAL 30
+#define OTGW_WATCHDOG_INTERVAL 10
 #define OTGW_STARTUP_TIME 5
 #define OTGW_TIMEOUT 60
 #define HTTP_POLL_INTERVAL 60
@@ -46,22 +47,25 @@
 #define CFG_FTP_SYNC_ENTRIES F("ftpSyncEntries")
 #define CFG_WEATHER_API_KEY F("weatherApiKey")
 #define CFG_WEATHER_LOC F("weatherLocation")
+#define CFG_MAX_TSET F("maxTSet")
+#define CFG_MIN_TSET F("minTSet")
+#define CFG_BOILER_ON_DELAY F("boilerOnDelay")
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeText = "text/plain";
 
-const char* BoilerLevelNames[5] = {"Off", "Low", "Medium", "High", "Thermostat"};
+const char* BoilerLevelNames[5] = {"Off", "Pump only", "Low", "High", "Thermostat"};
 
 enum BoilerLevel // Unscoped enum so it can be used as array index without casting
 {
-    Off,
-    Low,
-    Medium,
-    High,
-    Thermostat
+    Off = 0,
+    PumpOnly = 1,
+    Low = 2,
+    High = 3,
+    Thermostat = 4
 };
 
-const int boilerTSet[5] = {0, 40, 50, 60, 0};
+int boilerTSet[5] = {0, 15, 40, 60,  0}; // See initBoilerLevels()
 
 
 OpenThermGateway OTGW(Serial, 14);
@@ -118,6 +122,17 @@ void logEvent(String msg)
 }
 
 
+void initBoilerLevels()
+{
+    boilerTSet[BoilerLevel::Low] = PersistentData.minTSet;
+    if (boilerTSet[BoilerLevel::High] != PersistentData.maxTSet)
+    {
+        boilerTSet[BoilerLevel::High] = PersistentData.maxTSet;
+        if (otgwInitializeTime == 0) otgwInitializeTime = currentTime;
+    }    
+}
+
+
 // Boot code
 void setup() 
 {
@@ -137,11 +152,13 @@ void setup()
     PersistentData.begin();
     TimeServer.NTPServer = PersistentData.ntpServer;
     Html.setTitlePrefix(PersistentData.hostName);
+    initBoilerLevels();
 
     SPIFFS.begin();
 
     const char* cacheControl = "max-age=86400, public";
     WebServer.on("/", handleHttpRootRequest);
+    WebServer.on("/i2c", handleHttpI2cScanRequest);
     WebServer.on("/ot", handleHttpOpenThermRequest);
     WebServer.on("/traffic", handleHttpOpenThermTrafficRequest);
     WebServer.on("/log", handleHttpOpenThermLogRequest);
@@ -170,10 +187,10 @@ void setup()
     WiFiSM.on(WiFiInitState::Updating, onWiFiUpdating);
     WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
 
-    if (!OTGW.initWatchdog(OTGW_WATCHDOG_INTERVAL * 4))
-    {
-        logEvent(F("ERROR: Initializing OTGW Watchdog failed."));
-    }
+    //if (!OTGW.initWatchdog(240)) // 4 minutes timeout (almost max possible)
+    //{
+    //    logEvent(F("Initializing OTGW Watchdog failed."));
+    //}
 
     //String otgwWatchdogEvent = F("Resets by OTGW Watchdog: ");
     //otgwWatchdogEvent += OTGW.readWatchdogData(14); // TargetResetCount
@@ -419,7 +436,19 @@ bool setTOutside(float temperature)
 
 bool setBoilerLevel(BoilerLevel level)
 {
+    setBoilerLevel(level, 0);
+}
+
+bool setBoilerLevel(BoilerLevel level, time_t duration)
+{
     Tracer tracer(F("setBoilerLevel"));
+    TRACE(F("level: %d, duration: %d\n"), level, duration);
+
+    if (duration != 0)
+    {
+        changeBoilerLevel = BoilerLevel::Thermostat;
+        changeBoilerLevelTime = currentTime + duration;
+    }
 
     if (level == currentBoilerLevel)
         return true;
@@ -663,57 +692,52 @@ void test(String message)
     }
 }
 
+bool isThermostatLowLoadMode()
+{
+    return thermostatRequests[OpenThermDataId::MaxRelModulation] == 0;
+}
 
 void handleThermostatRequest(OpenThermGatewayMessage otFrame)
 {
     Tracer tracer(F("handleThermostatRequest"));
     
-    // Prevent thermostat on/off switching behavior
     if (otFrame.dataId == OpenThermDataId::Status)
     {
         bool masterCHEnable = otFrame.dataValue & OpenThermStatus::MasterCHEnable;
         bool lastMasterCHEnable = thermostatRequests[OpenThermDataId::Status] & OpenThermStatus::MasterCHEnable;
-        if (!masterCHEnable && lastMasterCHEnable)
+        if (masterCHEnable && !lastMasterCHEnable)
+        {
+            // Thermostat switched CH on
+            if (isThermostatLowLoadMode())
+            {
+                // Keep boiler at Low level for a while (prevent on/off modulation)
+                setBoilerLevel(BoilerLevel::Low, KEEP_TSET_LOW_DURATION);
+            }
+            else if (PersistentData.boilerOnDelay != 0)
+            {
+                // Keep boiler at PumpOnly level for a while (give heat pump a headstart)
+                setBoilerLevel(BoilerLevel::PumpOnly, PersistentData.boilerOnDelay);
+            }
+        }
+        else if (!masterCHEnable && lastMasterCHEnable)
         {
             // Thermostat switched CH off
-            // Keep boiler at Low level for a while.
-            if (currentBoilerLevel != BoilerLevel::Low)
-                setBoilerLevel(BoilerLevel::Low);
-            changeBoilerLevel = BoilerLevel::Thermostat;
-            changeBoilerLevelTime = currentTime + KEEP_TSET_LOW_DURATION;
-        }
+            if (isThermostatLowLoadMode())
+            {
+                // Keep boiler at Low level for a while (prevent on/off modulation)
+                setBoilerLevel(BoilerLevel::Low, KEEP_TSET_LOW_DURATION);
+            }
+        }        
     }
-    else if (otFrame.dataId == OpenThermDataId::TSet)
+    else if (otFrame.dataId == OpenThermDataId::MaxRelModulation)
     {
-        if (getInteger(otFrame.dataValue) < boilerTSet[BoilerLevel::Low])
+        if (otFrame.dataValue != 0)
         {
-            // TSet set below Low level; keep boiler at Low level
-            bool lastMasterCHEnable = thermostatRequests[OpenThermDataId::Status] & OpenThermStatus::MasterCHEnable;
-            if (lastMasterCHEnable && (currentBoilerLevel != BoilerLevel::Low))
+            // Thermostat is requesting more than minimal Modulation (no longer in "Low Load Mode").
+            if (currentBoilerLevel == BoilerLevel::Low)
             {
-                setBoilerLevel(BoilerLevel::Low);
-            }
-        }
-        else
-        {
-            // TSet set above Low level
-            if (thermostatRequests[OpenThermDataId::MaxRelModulation] == 0)
-            {
-                // Thermostat is in "Low Load Mode" (using on/off switching)
-                // Keep boiler at Low level for a while before letting thermostat control TSet again.
-                if (currentBoilerLevel != BoilerLevel::Low)
-                {
-                    setBoilerLevel(BoilerLevel::Low);
-                    changeBoilerLevel = BoilerLevel::Thermostat;
-                    changeBoilerLevelTime = currentTime + KEEP_TSET_LOW_DURATION;
-                }
-            }
-            else
-            {
-                // Thermostat is requesting more than minimal Modulation (not in "Low Load Mode").
                 // Let thermostat control boiler TSet again.
-                if (currentBoilerLevel != BoilerLevel::Thermostat)
-                    setBoilerLevel(BoilerLevel::Thermostat);
+                setBoilerLevel(BoilerLevel::Thermostat);
             }
         }
     }
@@ -808,6 +832,13 @@ void handleHttpRootRequest()
     {
         overrideTimeLeft = changeBoilerLevelTime - currentTime;
     }
+    const char* ftpSyncTime;
+    if (PersistentData.ftpSyncEntries == 0)
+        ftpSyncTime = "Disabled";
+    else if (lastOTLogSyncTime == 0)
+        ftpSyncTime = "Not yet";
+    else
+        ftpSyncTime = formatTime("%H:%M", lastOTLogSyncTime);
 
     Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
 
@@ -818,10 +849,7 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><th>OTGW Resets</th><td>%u</td></tr>\r\n"), OTGW.resets);
     HttpResponse.printf(F("<tr><th>ESP Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.printf(F("<tr><th>ESP Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
-    if (PersistentData.ftpSyncEntries == 0)
-        HttpResponse.println(F("<tr><th>FTP Sync</th><td>Disabled</td></tr>"));
-    else
-        HttpResponse.printf(F("<tr><th>FTP Sync</th><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastOTLogSyncTime));
+    HttpResponse.printf(F("<tr><th><a href=\"/log/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSyncTime);
     HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
     HttpResponse.printf(F("<tr><th><a href=\"/log\">OpenTherm log</a></th><td>%d</td></tr>\r\n"), OpenThermLog.count());
     HttpResponse.println(F("</table>"));
@@ -860,8 +888,10 @@ void handleHttpRootRequest()
         tOutside
         );
     HttpResponse.printf(
-        F("<tr><th>Override</sub></th><td>%d s</td><td class=\"graph\">"),
-        overrideTimeLeft
+        F("<tr><th>Override</sub></th><td>%02d:%02d:%02d</td><td class=\"graph\">"),
+        overrideTimeLeft / 3600,
+        (overrideTimeLeft / 60) % 60,
+        overrideTimeLeft % 60
         );
     Html.writeBar(float(overrideTimeLeft) / KEEP_TSET_LOW_DURATION, F("overrideBar"), true, false);
     HttpResponse.println(F("</td></tr>"));
@@ -897,6 +927,31 @@ void handleHttpRootRequest()
         HttpResponse.println(F("</td></tr>"));
         logEntryPtr = GlobalLog.getNextEntry();
     }
+    HttpResponse.println(F("</table>"));
+
+    Html.writeFooter();
+
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
+}
+
+
+void handleHttpI2cScanRequest()
+{
+    Html.writeHeader(F("I2C scan"), true, true);
+
+    HttpResponse.println(F("<table>"));
+
+    for (int i = 1; i < 127; i++)
+    {
+        Wire.beginTransmission(i);
+        uint8_t err = Wire.endTransmission();
+
+        HttpResponse.printf(
+            F("<tr><td>%d</td><td>%d</td></tr>\r\n"),
+            i,
+            err);
+    }
+
     HttpResponse.println(F("</table>"));
 
     Html.writeFooter();
@@ -1041,6 +1096,8 @@ void handleHttpOpenThermLogRequest()
     HttpResponse.println(F("</table>"));
 
     Html.writeFooter();
+
+    TRACE(F("Response size: %u\n"), strlen(HttpResponse));
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
@@ -1235,6 +1292,9 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_FTP_SYNC_ENTRIES, F("FTP Sync Entries"), String(PersistentData.ftpSyncEntries), 4);
     Html.writeTextBox(CFG_WEATHER_API_KEY, F("Weather API Key"), PersistentData.weatherApiKey, 16);
     Html.writeTextBox(CFG_WEATHER_LOC, F("Weather Location"), PersistentData.weatherLocation, 16);
+    Html.writeTextBox(CFG_MAX_TSET, F("Max TSet"), String(PersistentData.maxTSet), 2);
+    Html.writeTextBox(CFG_MIN_TSET, F("Min TSet"), String(PersistentData.minTSet), 2);
+    Html.writeTextBox(CFG_BOILER_ON_DELAY, F("Boiler on delay (s)"), String(PersistentData.boilerOnDelay), 4);
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
     HttpResponse.println(F("</form>"));
@@ -1286,8 +1346,14 @@ void handleHttpConfigFormPost()
     copyString(WebServer.arg(CFG_WEATHER_API_KEY), PersistentData.weatherApiKey, sizeof(PersistentData.weatherApiKey));
     copyString(WebServer.arg(CFG_WEATHER_LOC), PersistentData.weatherLocation, sizeof(PersistentData.weatherLocation));
 
+    PersistentData.maxTSet = WebServer.arg(CFG_MAX_TSET).toInt();
+    PersistentData.minTSet = WebServer.arg(CFG_MIN_TSET).toInt();
+    PersistentData.boilerOnDelay = WebServer.arg(CFG_BOILER_ON_DELAY).toInt();
+
     PersistentData.validate();
     PersistentData.writeToEEPROM();
+
+    initBoilerLevels();
 
     handleHttpConfigFormRequest();
 }

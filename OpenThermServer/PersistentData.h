@@ -10,11 +10,13 @@ struct PersistentDataStruct : PersistentDataBase
     char ftpServer[32];
     char ftpUser[32];
     char ftpPassword[32];
-    int16_t timeZoneOffset; // Not used
+    uint16_t boilerOnDelay; // seconds
     uint16_t openThermLogInterval; // seconds
     char weatherApiKey[16];
     char weatherLocation[16];
     uint16_t ftpSyncEntries;
+    uint16_t maxTSet;
+    uint16_t minTSet;
 
     PersistentDataStruct() : PersistentDataBase(
         sizeof(wifiSSID) +
@@ -24,11 +26,13 @@ struct PersistentDataStruct : PersistentDataBase
         sizeof(ftpServer) + 
         sizeof(ftpUser) + 
         sizeof(ftpPassword) + 
-        sizeof(timeZoneOffset) +
+        sizeof(boilerOnDelay) +
         sizeof(openThermLogInterval) +
         sizeof(weatherApiKey) +
         sizeof(weatherLocation) +
-        sizeof(ftpSyncEntries)
+        sizeof(ftpSyncEntries) +
+        sizeof(maxTSet) +
+        sizeof(minTSet)
         ) {}
 
     virtual void initialize()
@@ -40,11 +44,13 @@ struct PersistentDataStruct : PersistentDataBase
         ftpServer[0] = 0;
         ftpUser[0] = 0;
         ftpPassword[0] = 0;
-        timeZoneOffset = 1;
+        boilerOnDelay = 0;
         openThermLogInterval = 60;
         weatherApiKey[0] = 0;
         weatherLocation[0] = 0; 
         ftpSyncEntries = 0; // FTP sync disabled
+        maxTSet = 60;
+        minTSet = 40;
     }
 
     virtual void validate()
@@ -58,13 +64,14 @@ struct PersistentDataStruct : PersistentDataBase
         ftpUser[sizeof(ftpUser) - 1] = 0;
         ftpPassword[sizeof(ftpPassword) - 1] = 0;
 
-        if (timeZoneOffset < -12) timeZoneOffset = -12;
-        if (timeZoneOffset > 14) timeZoneOffset = 14;
         if (openThermLogInterval < 5) openThermLogInterval = 5;
         if (openThermLogInterval > 900) openThermLogInterval = 900;
         if (weatherApiKey[0] == 0xFF) weatherApiKey[0] = 0;
         if (weatherLocation[0] == 0xFF) weatherLocation[0] = 0;
         if (ftpSyncEntries > 255) ftpSyncEntries = 0;
+        if (boilerOnDelay > 3600) boilerOnDelay = 3600;
+        maxTSet = std::min(std::max(maxTSet, (uint16_t)40), (uint16_t)80); 
+        minTSet = std::min(std::max(minTSet, (uint16_t)20), (uint16_t)40); 
     }
 };
 
