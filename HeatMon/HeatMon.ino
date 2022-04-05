@@ -48,6 +48,7 @@
 #define CFG_MAX_TEMP F("tBufferMax")
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
+const char* ContentTypeJson = "application/json";
 
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
@@ -192,6 +193,7 @@ void setup()
 
     const char* cacheControl = "max-age=86400, public";
     WebServer.on("/", handleHttpRootRequest);
+    WebServer.on("/json", handleHttpJsonRequest);
     WebServer.on("/calibrate", HTTP_GET, handleHttpCalibrateFormRequest);
     WebServer.on("/calibrate", HTTP_POST, handleHttpCalibrateFormPost);
     WebServer.on("/heatlog", handleHttpHeatLogRequest);
@@ -559,6 +561,28 @@ void handleHttpRootRequest()
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
+}
+
+
+void writeJsonFloat(String name, float value)
+{
+    HttpResponse.printf(F("\"%s\": %0.1f,"), name.c_str(), value);
+}
+
+void handleHttpJsonRequest()
+{
+    Tracer tracer(F("handleHttpJsonRequest"));
+
+    HttpResponse.clear();
+    HttpResponse.print(F("{ "));
+    writeJsonFloat(F("Tin"), tInput);
+    writeJsonFloat(F("Tout"), tOutput);
+    writeJsonFloat(F("Tbuffer"), tBuffer);
+    writeJsonFloat(F("Flow"), Flow_Sensor.getFlowRate());
+    writeJsonFloat(F("Pin"), pInKW);
+    HttpResponse.printf(F(" \"Valve\": %s }"), maxTempValveActivated ? "true" : "false");
+
+    WebServer.send(200, ContentTypeJson, HttpResponse);
 }
 
 
