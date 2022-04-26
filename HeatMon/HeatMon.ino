@@ -67,6 +67,8 @@ EnergyMeter Energy_Meter(D2);
 
 time_t currentTime = 0;
 time_t heatLogTime = 0;
+time_t syncFTPTime = 0;
+time_t lastFTPSyncTime = 0;
 
 HeatLogEntry* lastHeatLogEntryPtr = nullptr;
 EnergyLogEntry* lastEnergyLogEntryPtr = nullptr;
@@ -194,6 +196,7 @@ void setup()
     const char* cacheControl = "max-age=86400, public";
     WebServer.on("/", handleHttpRootRequest);
     WebServer.on("/json", handleHttpJsonRequest);
+    WebServer.on("/sync", handleHttpFtpSyncRequest);
     WebServer.on("/calibrate", HTTP_GET, handleHttpCalibrateFormRequest);
     WebServer.on("/calibrate", HTTP_POST, handleHttpCalibrateFormPost);
     WebServer.on("/heatlog", handleHttpHeatLogRequest);
@@ -317,6 +320,77 @@ void onWiFiInitialized()
         updateHeatLog();
         updateEnergyLog();
     }
+
+    if ((syncFTPTime != 0) && (currentTime >= syncFTPTime))
+    {
+        if (trySyncFTP(nullptr))
+        {
+            logEvent(F("FTP synchronized"));
+            syncFTPTime = 0;
+        }
+        else
+        {
+            String event = F("FTP sync failed: ");
+            event += FTPClient.getLastResponse();
+            logEvent(event);
+            syncFTPTime += FTP_RETRY_INTERVAL;
+        }
+    }
+
+}
+
+
+bool trySyncFTP(Print* printTo)
+{
+    Tracer tracer(F("trySyncFTP"));
+
+    char filename[32];
+    snprintf(filename, sizeof(filename), "%s.csv", PersistentData.hostName);
+
+    if (!FTPClient.begin(
+        PersistentData.ftpServer,
+        PersistentData.ftpUser,
+        PersistentData.ftpPassword,
+        FTP_DEFAULT_CONTROL_PORT,
+        printTo))
+    {
+        FTPClient.end();
+        return false;
+    }
+
+    bool success = true;
+    WiFiClient& dataClient = FTPClient.append(filename);
+    if (dataClient.connected())
+    {
+        if (EnergyLog.count() > 1)
+        {
+            EnergyLogEntry* energyLogEntryPtr = EnergyLog.getEntryFromEnd(2);
+            if (energyLogEntryPtr != nullptr)
+            {
+                dataClient.printf(
+                    "\"%s\";%0.1f;%0.1f\r\n",
+                    formatTime("%F", energyLogEntryPtr->time),
+                    energyLogEntryPtr->energyIn,
+                    energyLogEntryPtr->energyOut
+                    );
+            }
+        }
+        else if (printTo != nullptr)
+            printTo->println("Nothing to sync.");
+        dataClient.stop();
+
+        if (FTPClient.readServerResponse() == 226)
+            lastFTPSyncTime = currentTime;
+        else
+        {
+            TRACE(F("FTP Append command failed: %s\n"), FTPClient.getLastResponse());
+            success = false;
+        }
+    }
+
+    FTPClient.end();
+
+    return success;
 }
 
 
@@ -346,6 +420,8 @@ void updateEnergyLog()
     {
         Energy_Meter.resetEnergy();
         newEnergyLogEntry();
+        if (PersistentData.ftpServer[0] != 0)
+            syncFTPTime = currentTime + (SECONDS_PER_DAY / 2);
     }
 
     lastEnergyLogEntryPtr->energyOut += pOutKW / 3600;
@@ -448,6 +524,14 @@ void handleHttpRootRequest()
     float flowRate = Flow_Sensor.getFlowRate();
     float cop = (pInKW == 0) ? 0 : pOutKW / pInKW;
 
+    const char* ftpSync;
+    if (PersistentData.ftpServer[0] == 0)
+        ftpSync = "Disabled";
+    else if (lastFTPSyncTime == 0)
+        ftpSync = "Not yet";
+    else
+        ftpSync = formatTime("%H:%M", lastFTPSyncTime);
+
     Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
 
     HttpResponse.println(F("<h1>Heat Monitor status</h1>"));
@@ -455,6 +539,7 @@ void handleHttpRootRequest()
     HttpResponse.println(F("<table>"));
     HttpResponse.printf(F("<tr><th>ESP Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.printf(F("<tr><th>ESP Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
+    HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync);
     HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
     HttpResponse.printf(F("<tr><th><a href=\"/heatlog\">Heat log</a></th><td>%d</td></p>\r\n"), HeatLog.count());
     HttpResponse.printf(F("<tr><th><a href=\"/templog\">Temperature log</a></th><td>%d</td></p>\r\n"), HeatLog.count());
@@ -585,6 +670,30 @@ void handleHttpJsonRequest()
     WebServer.send(200, ContentTypeJson, HttpResponse);
 }
 
+
+void handleHttpFtpSyncRequest()
+{
+    Tracer tracer(F("handleHttpFtpSyncRequest"));
+
+    Html.writeHeader(F("FTP Sync"), true, true);
+
+    HttpResponse.println(F("<div><pre>"));
+    bool success = trySyncFTP(&HttpResponse); 
+    HttpResponse.println(F("</pre></div>"));
+
+    if (success)
+    {
+        HttpResponse.println(F("<p>Success!</p>"));
+        syncFTPTime = 0; // Cancel scheduled sync (if any)
+    }
+    else
+        HttpResponse.println(F("<p>Failed!</p>"));
+ 
+    Html.writeFooter();
+
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
+
+}
 
 void handleHttpHeatLogRequest()
 {
@@ -860,9 +969,9 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1);
     Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
     Html.writeTextBox(CFG_NTP_SERVER, F("NTP server"), PersistentData.ntpServer, sizeof(PersistentData.ntpServer) - 1);
-    //Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
-    //Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
-    //Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
+    Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
+    Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
+    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
     Html.writeTextBox(CFG_MAX_TEMP, F("Buffer max"), String(PersistentData.tBufferMax), 3);
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
