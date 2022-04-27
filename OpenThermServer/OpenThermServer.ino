@@ -26,6 +26,7 @@
 #define HTTP_POLL_INTERVAL 60
 #define DATA_VALUE_NONE 0xFFFF
 #define EVENT_LOG_LENGTH 50
+#define OTGW_MESSAGE_LOG_LENGTH 60
 #define OT_LOG_LENGTH 240
 #define KEEP_TSET_LOW_DURATION (15 * 60)
 #define WEATHER_SERVICE_POLL_INTERVAL (15 * 60)
@@ -76,6 +77,7 @@ WeatherAPI WeatherService(2000); // 2 sec request timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, 40);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
+Log<String> OTGWMessageLog(OTGW_MESSAGE_LOG_LENGTH);
 Log<OpenThermLogEntry> OpenThermLog(OT_LOG_LENGTH);
 Log<GlobalLogEntry> GlobalLog(24 * 2);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
@@ -164,6 +166,7 @@ void setup()
     WebServer.on("/log", handleHttpOpenThermLogRequest);
     WebServer.on("/log/sync", handleHttpOpenThermLogSyncRequest);
     WebServer.on("/log-csv", handleHttpOpenThermLogCsvRequest);
+    WebServer.on("/log-otgw", handleHttpOTGWMessageLogRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
     WebServer.on("/cmd", HTTP_GET, handleHttpCommandFormRequest);
     WebServer.on("/cmd", HTTP_POST, handleHttpCommandFormPost);
@@ -623,6 +626,7 @@ void handleSerialData()
     Tracer tracer(F("handleSerialData"));
 
     OpenThermGatewayMessage otgwMessage = OTGW.readMessage();
+    OTGWMessageLog.add(new String(otgwMessage.message));
 
     switch (otgwMessage.direction)
     {
@@ -692,10 +696,28 @@ void test(String message)
     }
 }
 
-bool isThermostatLowLoadMode()
+
+bool handleThermostatLowLoadMode()
 {
-    return thermostatRequests[OpenThermDataId::MaxRelModulation] == 0;
+    bool isThermostatLowLoadMode = thermostatRequests[OpenThermDataId::MaxRelModulation] == 0;
+
+    if (isThermostatLowLoadMode)
+    {
+        if (currentBoilerLevel == BoilerLevel::PumpOnly)
+        {
+            // Keep Pump Only level, but switch to Low level afterwards.
+            changeBoilerLevel = BoilerLevel::Low;
+        }
+        else
+        {
+            // Keep boiler at Low level for a while (prevent on/off modulation)
+            setBoilerLevel(BoilerLevel::Low, KEEP_TSET_LOW_DURATION);
+        }
+    }
+
+    return isThermostatLowLoadMode;
 }
+
 
 void handleThermostatRequest(OpenThermGatewayMessage otFrame)
 {
@@ -708,25 +730,16 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
         if (masterCHEnable && !lastMasterCHEnable)
         {
             // Thermostat switched CH on
-            if (isThermostatLowLoadMode())
+            if (!handleThermostatLowLoadMode() && PersistentData.boilerOnDelay != 0)
             {
-                // Keep boiler at Low level for a while (prevent on/off modulation)
-                setBoilerLevel(BoilerLevel::Low, KEEP_TSET_LOW_DURATION);
-            }
-            else if (PersistentData.boilerOnDelay != 0)
-            {
-                // Keep boiler at PumpOnly level for a while (give heat pump a headstart)
+                // Keep boiler at Pump Only level for a while (give heat pump a headstart)
                 setBoilerLevel(BoilerLevel::PumpOnly, PersistentData.boilerOnDelay);
             }
         }
         else if (!masterCHEnable && lastMasterCHEnable)
         {
             // Thermostat switched CH off
-            if (isThermostatLowLoadMode())
-            {
-                // Keep boiler at Low level for a while (prevent on/off modulation)
-                setBoilerLevel(BoilerLevel::Low, KEEP_TSET_LOW_DURATION);
-            }
+            handleThermostatLowLoadMode();
         }        
     }
     else if (otFrame.dataId == OpenThermDataId::MaxRelModulation)
@@ -908,7 +921,6 @@ void handleHttpRootRequest()
         time_t seconds = std::min(currentTime + 1 - logEntryPtr->time, (time_t)GLOBAL_LOG_INTERVAL);
         float avgTWater = logEntryPtr->sumTWater / seconds;
         float avgTReturn = logEntryPtr->sumTReturn / seconds;
-        float avgDeltaT = avgTWater - avgTReturn;
 
         HttpResponse.printf(
             F("<tr><td>%s</td><td>%d %%</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td class=\"graph\">"),
@@ -922,7 +934,13 @@ void handleHttpRootRequest()
             avgTReturn
             );
 
-        Html.writeStackedBar(getBarValue(avgTReturn), getBarValue(avgDeltaT), F("returnBar"), F("waterBar"), false, false);
+        Html.writeStackedBar(
+            getBarValue(avgTReturn),
+            getBarValue(avgTWater - avgTReturn, 0),
+            F("returnBar"),
+            F("waterBar"),
+            false,
+            false);
 
         HttpResponse.println(F("</td></tr>"));
         logEntryPtr = GlobalLog.getNextEntry();
@@ -1194,6 +1212,25 @@ void writeCsvDataLine(OpenThermLogEntry* otLogEntryPtr, time_t time, Print& dest
         statusCH,
         statusDHW
         );
+}
+
+
+void handleHttpOTGWMessageLogRequest()
+{
+    Tracer tracer(F("handleHttpOTGWMessageLogRequest"));
+
+    HttpResponse.clear();
+
+    String* otgwMessage = OTGWMessageLog.getFirstEntry();
+    while (otgwMessage != nullptr)
+    {
+        HttpResponse.print(*otgwMessage);
+        otgwMessage = OTGWMessageLog.getNextEntry();
+    }
+
+    OTGWMessageLog.clear();
+
+    WebServer.send(200, ContentTypeText, HttpResponse);
 }
 
 
