@@ -11,12 +11,13 @@ struct PersistentDataStruct : PersistentDataBase
     char ftpUser[32];
     char ftpPassword[32];
     uint16_t boilerOnDelay; // seconds
-    uint16_t openThermLogInterval; // seconds
+    uint16_t openThermLogInterval; // Not used
     char weatherApiKey[16];
     char weatherLocation[16];
     uint16_t ftpSyncEntries;
     uint16_t maxTSet;
     uint16_t minTSet;
+    char heatmonHost[32];
 
     PersistentDataStruct() : PersistentDataBase(
         sizeof(wifiSSID) +
@@ -32,7 +33,8 @@ struct PersistentDataStruct : PersistentDataBase
         sizeof(weatherLocation) +
         sizeof(ftpSyncEntries) +
         sizeof(maxTSet) +
-        sizeof(minTSet)
+        sizeof(minTSet) +
+        sizeof(heatmonHost)
         ) {}
 
     virtual void initialize()
@@ -51,6 +53,7 @@ struct PersistentDataStruct : PersistentDataBase
         ftpSyncEntries = 0; // FTP sync disabled
         maxTSet = 60;
         minTSet = 40;
+        heatmonHost[0] = 0;
     }
 
     virtual void validate()
@@ -63,6 +66,7 @@ struct PersistentDataStruct : PersistentDataBase
         ftpServer[sizeof(ftpServer) - 1] = 0;
         ftpUser[sizeof(ftpUser) - 1] = 0;
         ftpPassword[sizeof(ftpPassword) - 1] = 0;
+        heatmonHost[sizeof(heatmonHost) - 1] = 0;
 
         if (openThermLogInterval < 5) openThermLogInterval = 5;
         if (openThermLogInterval > 900) openThermLogInterval = 900;

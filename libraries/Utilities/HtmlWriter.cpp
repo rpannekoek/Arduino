@@ -198,3 +198,38 @@ void HtmlWriter::writeSlider(String name, String label, String unitOfMeasure, in
     else
         _output.printf(F("<div>%0.3f %s</div></td></tr>\r\n"), float(value) / denominator, unitOfMeasure.c_str());
 }
+
+
+void HtmlWriter::writeHeaderCell(String value)
+{
+    _output.print(F("<th>"));
+    _output.print(value);
+    _output.print(F("</th>"));
+}
+
+
+void HtmlWriter::writeCell(const char* value)
+{
+    _output.print(F("<td>"));
+    _output.print(value);
+    _output.print(F("</td>"));
+}
+
+
+void HtmlWriter::writeCell(int value)
+{
+    _output.print(F("<td>"));
+    _output.printf(F("%d"), value);
+    _output.print(F("</td>"));
+}
+
+
+void HtmlWriter::writeCell(float value, const __FlashStringHelper* format)
+{
+    if (format == nullptr)
+        format = F("%0.1f");
+
+    _output.print(F("<td>"));
+    _output.printf(format, value);
+    _output.print(F("</td>"));
+}

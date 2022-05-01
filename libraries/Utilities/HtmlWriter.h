@@ -23,6 +23,11 @@ class HtmlWriter
         void writeRadioButtons(String name, String label, const char** values, int numValues, int index);
         void writeSlider(String name, String label, String unitOfMeasure, int value, int minValue, int maxValue, int denominator = 1);
 
+        void writeHeaderCell(String value);
+        void writeCell(const char* value);
+        void writeCell(int value);
+        void writeCell(float value, const __FlashStringHelper* format = nullptr);
+
     private:
         StringBuilder& _output;
         const char* _icon;

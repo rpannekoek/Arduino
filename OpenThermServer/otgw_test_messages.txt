@@ -7,6 +7,13 @@ T10011900 - TSet 25
 T100E6400 - Max rel modulation 100%
 T100E0000 - Max rel modulation 0%
 
+== From Boiler ==
+B40000102 - CH on
+B40000000 - CH off
+B40192800 - Tboiler 40
+B401A3700 - Tdhw 55
+B401A1900 - Treturn 25
+
 = OT Frame =
 Byte 0: PARITY MSG-TYPE SPARE(0000)
 Byte 1: DATAID

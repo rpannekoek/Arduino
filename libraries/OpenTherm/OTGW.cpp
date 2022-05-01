@@ -95,8 +95,11 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
         result.direction = OpenThermGatewayDirection::Unexpected;
         return result;
     }
-    otgwMessage[bytesRead] = 0;
-    TRACE(F("Message from OTGW: %s\n"), otgwMessage);
+    if (otgwMessage[bytesRead - 1] == '\n')
+        otgwMessage[bytesRead - 1] = 0;
+    else
+        otgwMessage[bytesRead] = 0;
+    TRACE(F("Message from OTGW: '%s'\n"), otgwMessage);
     result.message = otgwMessage;
 
     // Check for gateway errors
@@ -209,6 +212,34 @@ bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* res
 }
 
 
+bool OpenThermGateway::setResponse(OpenThermDataId dataId, float value)
+{
+    char valueBuffer[16];
+
+    switch (dataId)
+    {
+        case OpenThermDataId::MaxTSet:
+            snprintf(valueBuffer, sizeof(valueBuffer), "%0.0f", value);
+            return sendCommand("SH", valueBuffer); 
+
+        case OpenThermDataId::TOutside:
+            snprintf(valueBuffer, sizeof(valueBuffer), "%0.1f", value);
+            return sendCommand("OT", valueBuffer); 
+
+        default:
+            int16_t dataValue = value * 256.0f;
+            snprintf(
+                valueBuffer,
+                sizeof(valueBuffer),
+                "%d:%d,%d",
+                dataId,
+                dataValue >> 8,
+                dataValue & 0xFF);
+            return sendCommand("SR", valueBuffer); 
+    }
+}
+
+
 const char* OpenThermGateway::getMasterStatus(uint16_t dataValue)
 {
     return printFlags((dataValue >> 8), _masterStatusNames, 5, ",");
@@ -217,7 +248,7 @@ const char* OpenThermGateway::getMasterStatus(uint16_t dataValue)
 
 const char* OpenThermGateway::getSlaveStatus(uint16_t dataValue)
 {
-    return printFlags(dataValue, _slaveStatusNames, 7, ",");
+    return printFlags(dataValue & 0xFF, _slaveStatusNames, 7, ",");
 }
 
 

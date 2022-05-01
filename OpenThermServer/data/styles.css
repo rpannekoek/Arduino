@@ -45,13 +45,19 @@ td.graph
     color: red;
 }
 
+.powerBar
+{
+	background-color: red;
+    color: red;
+}
+
 .waterBar
 {
 	background-color: blue;
     color: blue;
 }
 
-.returnBar
+.outsideBar
 {
 	background-color: green;
     color: green;

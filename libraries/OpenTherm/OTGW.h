@@ -27,6 +27,7 @@ enum OpenThermDataId // Unscoped enum so it can be used as array index without c
     TRoomSet = 16,
     TRoom = 24,
     TBoiler = 25,
+    Tdhw = 26,
     TOutside = 27,
     TReturn = 28,
     MaxTSet = 57,
@@ -81,6 +82,7 @@ class OpenThermGateway
         uint8_t feedWatchdog();
         OpenThermGatewayMessage readMessage();
         bool sendCommand(const char* cmd, const char* value, char* response = nullptr, size_t bufferSize = 2);
+        bool setResponse(OpenThermDataId dataId, float value);
 
         static const char* getMasterStatus(uint16_t dataValue);
         static const char* getSlaveStatus(uint16_t dataValue);
