@@ -95,12 +95,10 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
         result.direction = OpenThermGatewayDirection::Unexpected;
         return result;
     }
-    if (otgwMessage[bytesRead - 1] == '\n')
-        otgwMessage[bytesRead - 1] = 0;
-    else
-        otgwMessage[bytesRead] = 0;
-    TRACE(F("Message from OTGW: '%s'\n"), otgwMessage);
+    otgwMessage[bytesRead] = 0;
     result.message = otgwMessage;
+    result.message.trim();
+    TRACE(F("Message from OTGW: '%s'\n"), result.message.c_str());
 
     // Check for gateway errors
     unsigned int errorCode;

@@ -28,7 +28,7 @@
 #define DATA_VALUE_NONE 0xFFFF
 #define EVENT_LOG_LENGTH 50
 #define OTGW_MESSAGE_LOG_LENGTH 40
-#define OT_LOG_LENGTH 150
+#define OT_LOG_LENGTH 250
 #define OT_LOG_PAGE_SIZE 50
 #define KEEP_TSET_LOW_DURATION (15 * 60)
 #define WEATHER_SERVICE_POLL_INTERVAL (15 * 60)
@@ -95,9 +95,9 @@ WeatherAPI WeatherService(2000); // 2 sec request timeout
 StringBuilder HttpResponse(12288); // 12KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, 40);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
-Log<String> OTGWMessageLog(OTGW_MESSAGE_LOG_LENGTH);
-Log<OpenThermLogEntry> OpenThermLog(OT_LOG_LENGTH);
-Log<StatusLogEntry> StatusLog(7); // 7 days
+StringLog OTGWMessageLog(OTGW_MESSAGE_LOG_LENGTH, 10);
+StaticLog<OpenThermLogEntry> OpenThermLog(OT_LOG_LENGTH);
+StaticLog<StatusLogEntry> StatusLog(7); // 7 days
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 HeatMonClient HeatMon(1000); // 1 sec timeout
 
@@ -315,7 +315,7 @@ void onTimeServerSynced()
     if (boilerOverrideStartTime != 0)
         boilerOverrideStartTime = currentTime;
     
-    updateLogTime = currentTime;
+    updateLogTime = currentTime + 1;
     heatmonPollTime = currentTime + 10;
 }
 
@@ -545,10 +545,11 @@ void updateStatusLog(time_t time, uint16_t status)
         (time / SECONDS_PER_DAY) > (lastStatusLogEntryPtr->startTime / SECONDS_PER_DAY))
     {
         time_t startOfDay = time - (time % SECONDS_PER_DAY);
-        lastStatusLogEntryPtr = new StatusLogEntry();
-        lastStatusLogEntryPtr->startTime = startOfDay;
-        lastStatusLogEntryPtr->stopTime = startOfDay;
-        StatusLog.add(lastStatusLogEntryPtr);
+        StatusLogEntry* logEntryPtr = new StatusLogEntry();
+        logEntryPtr->startTime = startOfDay;
+        logEntryPtr->stopTime = startOfDay;
+        lastStatusLogEntryPtr = StatusLog.add(logEntryPtr);
+        delete logEntryPtr;
     }
 
     if (status & OpenThermStatus::SlaveCHMode)
@@ -566,12 +567,6 @@ void updateStatusLog(time_t time, uint16_t status)
 
 void logOpenThermValues(bool forceCreate)
 {
-    uint16_t thermostatTSet;
-    if (thermostatRequests[OpenThermDataId::Status] & OpenThermStatus::MasterCHEnable)
-        thermostatTSet = thermostatRequests[OpenThermDataId::TSet];
-    else
-        thermostatTSet = 0; // CH disabled
-
     OpenThermLogEntry* otLogEntryPtr = new OpenThermLogEntry();
     otLogEntryPtr->time = currentTime;
     otLogEntryPtr->thermostatTSet = thermostatRequests[OpenThermDataId::TSet];
@@ -584,15 +579,9 @@ void logOpenThermValues(bool forceCreate)
     otLogEntryPtr->tOutside = getResponse(OpenThermDataId::TOutside);
     otLogEntryPtr->pHeatPump = HeatMon.pIn * 256;
 
-    if ((lastOTLogEntryPtr != nullptr) && (lastOTLogEntryPtr->equals(otLogEntryPtr)) && !forceCreate)
+    if ((lastOTLogEntryPtr == nullptr) || !lastOTLogEntryPtr->equals(otLogEntryPtr) || forceCreate)
     {
-        // Log entry is same as last one; discard.
-        delete otLogEntryPtr;
-    }
-    else
-    {
-        OpenThermLog.add(otLogEntryPtr);
-        lastOTLogEntryPtr = otLogEntryPtr;
+        lastOTLogEntryPtr = OpenThermLog.add(otLogEntryPtr);
         if (++otLogEntriesToSync == PersistentData.ftpSyncEntries)
             otLogSyncTime = currentTime;
         if (otLogEntriesToSync > OT_LOG_LENGTH)
@@ -600,6 +589,9 @@ void logOpenThermValues(bool forceCreate)
 
         TRACE(F("%d OpenTherm log entries.\n"), OpenThermLog.count());
     }
+
+    // Entry is copied into the log, so can be discarded here.
+    delete otLogEntryPtr;
 }
 
 
@@ -654,7 +646,7 @@ void handleSerialData()
     Tracer tracer(F("handleSerialData"));
 
     OpenThermGatewayMessage otgwMessage = OTGW.readMessage();
-    OTGWMessageLog.add(new String(otgwMessage.message));
+    OTGWMessageLog.add(otgwMessage.message.c_str());
 
     switch (otgwMessage.direction)
     {
@@ -714,7 +706,9 @@ void test(String message)
         OTGW.feedWatchdog();
         for (int i = 0; i < OTGW_MESSAGE_LOG_LENGTH; i++)
         {
-            OTGWMessageLog.add(new String("B40000102"));
+            char testMessage[12];
+            snprintf(testMessage, sizeof(testMessage), "T%08X", i);
+            OTGWMessageLog.add(testMessage);
         }
     }
     else if (message.startsWith("testW"))
@@ -1289,10 +1283,10 @@ void handleHttpOTGWMessageLogRequest()
 
     HttpResponse.clear();
 
-    String* otgwMessage = OTGWMessageLog.getFirstEntry();
+    const char* otgwMessage = OTGWMessageLog.getFirstEntry();
     while (otgwMessage != nullptr)
     {
-        HttpResponse.println(*otgwMessage);
+        HttpResponse.println(otgwMessage);
         otgwMessage = OTGWMessageLog.getNextEntry();
     }
 
