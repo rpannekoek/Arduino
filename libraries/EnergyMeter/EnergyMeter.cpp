@@ -4,6 +4,7 @@
 uint8_t EnergyMeter::_pinInterrupt;
 uint16_t EnergyMeter::_pulsesPerKWh;
 float EnergyMeter::_measureInterval;
+uint32_t EnergyMeter::_lastPulseMillis;
 uint32_t EnergyMeter::_pulseCount;
 uint32_t EnergyMeter::_energyPulseCount;
 float EnergyMeter::_power;
@@ -24,6 +25,7 @@ bool EnergyMeter::begin(uint16_t resolutionWatt, uint16_t pulsesPerKWh)
 
     _pulsesPerKWh = pulsesPerKWh;
     _measureInterval =  3600000.0 / float(resolutionWatt * pulsesPerKWh);
+    _lastPulseMillis = 0;
     _energyPulseCount = 0;
     _pulseCount = 0;
     _power = 0;
@@ -47,8 +49,15 @@ void EnergyMeter::end()
 
 void EnergyMeter::pulseISR()
 {
-    _pulseCount++;
-    _energyPulseCount++;
+    // Pulses less than 500 ms apart are ignored (software debounce)
+    // 500 ms apart => 7.2 kW
+    uint32_t currentMillis = millis();
+    if ((currentMillis - _lastPulseMillis) >= 500)
+    {
+        _pulseCount++;
+        _energyPulseCount++;
+    }
+    _lastPulseMillis = currentMillis;
 } 
 
 

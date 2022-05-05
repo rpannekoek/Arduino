@@ -31,6 +31,7 @@ class EnergyMeter
         static uint8_t _pinInterrupt;
         static uint16_t _pulsesPerKWh;
         static float _measureInterval;
+        static uint32_t _lastPulseMillis;
         static uint32_t _pulseCount;
         static uint32_t _energyPulseCount;
         static float _power;

@@ -56,8 +56,8 @@ WiFiFTPClient FTPClient(2000); // 2 sec timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, 40);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
-Log<HeatLogEntry> HeatLog(24 * 2); // 24 hrs
-Log<EnergyLogEntry> EnergyLog(31); // 31 days
+StaticLog<HeatLogEntry> HeatLog(24 * 2); // 24 hrs
+StaticLog<EnergyLogEntry> EnergyLog(31); // 31 days
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
 OneWire OneWireBus(D7);
@@ -287,18 +287,18 @@ void loop()
 
 void newHeatLogEntry()
 {
-    lastHeatLogEntryPtr = new HeatLogEntry();
-    lastHeatLogEntryPtr->time = currentTime - (currentTime % HEAT_LOG_INTERVAL);
-    HeatLog.add(lastHeatLogEntryPtr);
+    HeatLogEntry newHeatLogEntry;
+    newHeatLogEntry.time = currentTime - (currentTime % HEAT_LOG_INTERVAL);
+    lastHeatLogEntryPtr = HeatLog.add(&newHeatLogEntry);
 }
 
 
 // Create new energy log entry (starting 00:00 current day)
 void newEnergyLogEntry()
 {
-    lastEnergyLogEntryPtr = new EnergyLogEntry();
-    lastEnergyLogEntryPtr->time = currentTime - (currentTime % SECONDS_PER_DAY);
-    EnergyLog.add(lastEnergyLogEntryPtr);
+    EnergyLogEntry newEnergyLogEntry;
+    newEnergyLogEntry.time = currentTime - (currentTime % SECONDS_PER_DAY);
+    lastEnergyLogEntryPtr = EnergyLog.add(&newEnergyLogEntry);
 }
 
 
