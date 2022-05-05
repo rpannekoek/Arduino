@@ -15,8 +15,19 @@
 
 // Constructor
 WiFiStateMachine::WiFiStateMachine(WiFiNTP& timeServer, ESPWebServer& webServer, Log<const char>& eventLog)
-    : _timeServer(timeServer), _webServer(webServer), _eventLog(eventLog)
+    : _timeServer(timeServer), _webServer(webServer)
 {
+    _eventLogPtr = &eventLog;
+    _eventStringLogPtr = nullptr;
+    memset(_handlers, 0, sizeof(_handlers));
+}
+
+// Constructor
+WiFiStateMachine::WiFiStateMachine(WiFiNTP& timeServer, ESPWebServer& webServer, StringLog& eventLog)
+    : _timeServer(timeServer), _webServer(webServer)
+{
+    _eventStringLogPtr = &eventLog;
+    _eventLogPtr = nullptr;
     memset(_handlers, 0, sizeof(_handlers));
 }
 
@@ -96,9 +107,17 @@ void WiFiStateMachine::logEvent(String msg)
     
     strcat(event, msg.c_str());
 
-    _eventLog.add(event);
-
-    TRACE(F("%u event log entries\n"), _eventLog.count());
+    if (_eventStringLogPtr == nullptr)
+    {
+        _eventLogPtr->add(event);
+        TRACE(F("%u event log entries\n"), _eventLogPtr->count());
+    }
+    else
+    {
+        _eventStringLogPtr->add(event);
+        delete[] event;
+        TRACE(F("%u event log entries\n"), _eventStringLogPtr->count());
+    }
 }
 
 

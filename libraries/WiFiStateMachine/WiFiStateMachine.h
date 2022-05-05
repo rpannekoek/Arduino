@@ -29,6 +29,9 @@ class WiFiStateMachine
         // Constructor
         WiFiStateMachine(WiFiNTP& timeServer, ESPWebServer& webServer, Log<const char>& eventLog);
 
+        // Constructor
+        WiFiStateMachine(WiFiNTP& timeServer, ESPWebServer& webServer, StringLog& eventLog);
+
         void on(WiFiInitState state, void (*handler)(void));
  
         void begin(String ssid, String password, String hostName);
@@ -76,7 +79,8 @@ class WiFiStateMachine
         String _hostName;
         WiFiNTP& _timeServer;
         ESPWebServer& _webServer;
-        Log<const char>& _eventLog;
+        Log<const char>* _eventLogPtr;
+        StringLog* _eventStringLogPtr;
         void (*_handlers[static_cast<int>(WiFiInitState::Updating) + 1])(void); // function pointers indexed by state
         bool _isTimeServerAvailable = false;
         bool _isInAccessPointMode = false;
