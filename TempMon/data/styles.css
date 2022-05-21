@@ -1,0 +1,59 @@
+html 
+{
+    color: black;
+    background-color: lightblue;
+    font-family: sans-serif;
+    font-size: 12pt;
+}
+
+h1
+{
+	font-size: 18pt;
+}
+
+h2
+{
+	font-size: 14pt;
+}
+
+table
+{
+    border-collapse: collapse;
+}
+
+td,th
+{
+	padding-left: 0.5em;
+	padding-right: 0.5em;
+    border: thin solid gray;
+}
+
+td.graph
+{
+    border: none;
+}
+
+
+.tInsideBar
+{
+	background-color: yellow;
+    color: yellow;
+}
+
+.tOutsideBar
+{
+	background-color: green;
+    color: green;
+}
+
+.barFill
+{
+	background-color: gray;
+    color: gray;
+}
+
+.emptyBar
+{
+    background-color: lightblue;
+    color: lightblue;
+}
