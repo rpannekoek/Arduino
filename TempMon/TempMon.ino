@@ -16,6 +16,7 @@
 #include <DallasTemperature.h>
 #include "PersistentData.h"
 #include "TempLogEntry.h"
+#include "DayStatistics.h"
 
 #define ICON "/apple-touch-icon.png"
 #define CSS "/styles.css"
@@ -25,6 +26,7 @@
 #define EVENT_LOG_LENGTH 50
 #define FTP_RETRY_INTERVAL (60 * 60)
 #define TEMP_LOG_INTERVAL (30 * 60)
+#define TEMP_POLL_INTERVAL 10
 
 #define LED_ON 0
 #define LED_OFF 1
@@ -47,14 +49,15 @@ StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, 40);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
 StaticLog<TempLogEntry> TempLog(24 * 2); // 24 hrs
+DayStatistics DayStats;
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
 OneWire OneWireBus(D7);
 DallasTemperature TempSensors(&OneWireBus);
-U8G2_SSD1327_MIDAS_128X128_F_HW_I2C Display(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+U8G2_SSD1327_MIDAS_128X128_F_HW_I2C Display(U8G2_R1, /* reset=*/ U8X8_PIN_NONE);
 
 time_t currentTime = 0;
-time_t tempLogTemp = 0;
+time_t pollTempTime = 0;
 time_t syncFTPTime = 0;
 time_t lastFTPSyncTime = 0;
 
@@ -62,9 +65,14 @@ TempLogEntry* lastTempLogEntryPtr = nullptr;
 
 bool newSensorFound = false;
 bool hasOutsideSensor = false;
+bool measuringTemp = false;
 
 float tInside = 0;
 float tOutside = 0;
+
+char stringBuffer[16];
+int displayPage = 0;
+
 
 void logEvent(String msg)
 {
@@ -131,7 +139,6 @@ void initTempSensors()
     }
 }
 
-
 // Boot code
 void setup() 
 {
@@ -147,12 +154,6 @@ void setup()
     Tracer::traceTo(DEBUG_ESP_PORT);
     Tracer::traceFreeHeap();
     #endif
-
-    Display.begin();
-    Display.clearBuffer();
-    Display.setFont(u8g2_font_10x20_tf);
-    Display.drawStr(0, 20, "Booting...");
-    Display.sendBuffer();
 
     PersistentData.begin();
     TimeServer.NTPServer = PersistentData.ntpServer;
@@ -173,6 +174,7 @@ void setup()
     WebServer.serveStatic(CSS, SPIFFS, CSS, cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
     
+    WiFiSM.on(WiFiInitState::TimeServerSynced, onWiFiTimeSynced);
     WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
     WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
 
@@ -185,7 +187,9 @@ void setup()
     logSensorInfo("Inside", PersistentData.tInsideSensorAddress, PersistentData.tInsideOffset);
     logSensorInfo("Outside", PersistentData.tOutsideSensorAddress, PersistentData.tOutsideOffset);    
 
-    TempSensors.requestTemperatures();
+    Display.setBusClock(400000);
+    Display.begin();
+    displayMessage("Booting...");
 
     Tracer::traceFreeHeap();
 
@@ -208,8 +212,35 @@ void loop()
         test(message);
     }
 
-    if (TempSensors.getDS18Count() > 0 && TempSensors.isConversionComplete())
+    delay(10);
+}
+
+void onWiFiTimeSynced()
+{
+    pollTempTime = currentTime;
+}
+
+
+void onWiFiInitialized()
+{
+    if (currentTime % SECONDS_PER_DAY == 0)
     {
+        DayStats.reset();
+    }
+
+    if (currentTime >= pollTempTime)
+    {
+        pollTempTime += TEMP_POLL_INTERVAL;
+        if (TempSensors.getDS18Count() > 0)
+        {
+            TempSensors.requestTemperatures();
+            measuringTemp = true;
+        }
+    }
+
+    if (measuringTemp && TempSensors.isConversionComplete())
+    {
+        measuringTemp = false;
         digitalWrite(LED_BUILTIN, LED_ON);
 
         float tInsideMeasured = TempSensors.getTempC(PersistentData.tInsideSensorAddress);
@@ -220,20 +251,11 @@ void loop()
         if (tOutsideMeasured != DEVICE_DISCONNECTED_C)
             tOutside = tOutsideMeasured + PersistentData.tOutsideOffset;
 
-        TempSensors.requestTemperatures();
         digitalWrite(LED_BUILTIN, LED_OFF);
-    }
 
-    delay(10);
-}
-
-
-void onWiFiInitialized()
-{
-    if (currentTime >= tempLogTemp)
-    {
-        tempLogTemp++;
         updateTempLog();
+        DayStats.update(tInside, tOutside, currentTime);
+        displayData();
     }
 
     if ((syncFTPTime != 0) && (currentTime >= syncFTPTime))
@@ -251,7 +273,115 @@ void onWiFiInitialized()
             syncFTPTime += FTP_RETRY_INTERVAL;
         }
     }
+}
 
+
+float getBarValue(float t, float tMin = 10, float tMax = 30)
+{
+    float result = std::max(t - tMin, 0.0F) / (tMax - tMin);
+    TRACE(F("getBarValue(%0.1f, %0.1f, %0.1f) = %0.2f\n"), t, tMin, tMax, result);
+    return result;
+}
+
+
+void displayMessage(const char* msg)
+{
+    Tracer tracer(F("displayMessage"), msg);
+
+    Display.clearBuffer();
+    Display.setFont(u8g2_font_10x20_tf);
+    Display.drawStr(0, 20, msg);
+    Display.sendBuffer();
+}
+
+
+void displayData()
+{
+    Tracer tracer(F("displayData"));
+
+    Display.clearBuffer();
+
+    Display.setFont(u8g2_font_logisoso58_tr);
+    snprintf(stringBuffer, sizeof(stringBuffer), "%0.1f", tInside);
+    Display.drawStr(0, 60, stringBuffer);
+
+    if (displayPage++ == 0)
+        drawDayStats();
+    else
+    {
+        drawTempGraph();
+        displayPage = 0;
+    }
+
+    Display.sendBuffer();
+}
+
+
+void drawDayStats()
+{
+    char strBuf[16];
+
+    Display.setFont(u8g2_font_5x7_tr);
+    Display.drawStr(0, 79, "Min");
+    Display.drawStr(0, 111, "Max");
+
+    Display.setFont(u8g2_font_10x20_tr);
+    snprintf(
+        stringBuffer,
+        sizeof(stringBuffer),
+        "%0.1f @ %s",
+        DayStats.tInsideMin,
+        formatTime("%H:%M", DayStats.insideMinTime) 
+        );
+    Display.drawStr(0, 95, stringBuffer);
+    snprintf(
+        stringBuffer,
+        sizeof(stringBuffer),
+        "%0.1f @ %s",
+        DayStats.tInsideMax,
+        formatTime("%H:%M", DayStats.insideMaxTime) 
+        );
+    Display.drawStr(0, 127, stringBuffer);
+}
+
+
+void drawTempGraph()
+{
+    const uint8_t graphX = 29;
+    const uint8_t graphWidth = 48 * 2;
+    const uint8_t graphHeight = 64;
+
+    float tMin, tMax;
+    getTemperatureRange(tMin, tMax);
+
+    Display.setFont(u8g2_font_5x7_tr);
+    snprintf(stringBuffer, sizeof(stringBuffer), "%0.1f", tMin);
+    Display.drawStr(0, Display.getDisplayHeight() - 1, stringBuffer);
+    snprintf(stringBuffer, sizeof(stringBuffer), "%0.1f", tMax);
+    Display.drawStr(0, Display.getDisplayHeight() - graphHeight + 8, stringBuffer);
+
+    Display.drawFrame(
+        graphX,
+        Display.getDisplayHeight() - graphHeight - 2,
+        graphWidth + 2,
+        graphHeight + 2);
+
+    int x = graphX + 1;
+    int lastY = 0;
+    TempLogEntry* logEntryPtr = TempLog.getFirstEntry();
+    while (logEntryPtr != nullptr)
+    {
+        int y = Display.getDisplayHeight() - 2 - getBarValue(logEntryPtr->getAvgTInside(), tMin, tMax) * graphHeight;
+
+        if (lastY == 0)
+            Display.drawPixel(x, y);
+        else
+            Display.drawLine(x-2, lastY, x, y);
+
+        x += 2;
+        lastY = y;
+        logEntryPtr = TempLog.getNextEntry();
+    }
 }
 
 
@@ -337,19 +467,19 @@ void test(String message)
     else if (message.startsWith("testT"))
     {
         float tInside = 15;
-        for (int i = 0; i < TEMP_LOG_INTERVAL; i++)
+        for (int i = 0; i < 48; i++)
         {
-            float tOutside = tInside - 10;
-            lastTempLogEntryPtr->update(tInside, tOutside);
+            TempLogEntry tempLogEntry;
+            tempLogEntry.time = currentTime + (i * 1800);
+            tempLogEntry.update(tInside, tInside - 10);
+            lastTempLogEntryPtr = TempLog.add(&tempLogEntry);
             if (tInside++ == 40) tInside = 15;
         }
     }
-}
-
-
-float getBarValue(float t, float tMin = 10, float tMax = 30)
-{
-    return std::max(t - tMin, 0.0F) / (tMax - tMin);
+    else if (message.startsWith("testR"))
+    {
+        WiFiSM.reset();
+    }
 }
 
 
@@ -360,15 +490,19 @@ void getTemperatureRange(float& tMin, float& tMax)
     TempLogEntry* logEntryPtr = TempLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
-        tMin = std::min(tMin, logEntryPtr->minTInside);
-        tMax = std::max(tMax, logEntryPtr->maxTInside);
+        float avgTInside = logEntryPtr->getAvgTInside();
+        tMin = std::min(tMin, avgTInside);
+        tMax = std::max(tMax, avgTInside);
         if (hasOutsideSensor)
         {
-            tMin = std::min(tMin, logEntryPtr->minTOutside);
-            tMax = std::max(tMax, logEntryPtr->maxTOutside);
+            float avgTOutside = logEntryPtr->getAvgTOutside();
+            tMin = std::min(tMin, avgTOutside);
+            tMax = std::max(tMax, avgTOutside);
         }
         logEntryPtr = TempLog.getNextEntry();
     }
+
+    tMax = std::max(tMax, tMin + 0.1F); // Prevent division by zero
 }
 
 
@@ -407,8 +541,32 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
     HttpResponse.println(F("</table>"));
 
-    HttpResponse.println(F("<h1>Current values</h1>"));
+    if (WiFiSM.shouldPerformAction("reset"))
+    {
+        Display.begin();
+        displayMessage("Reset");
+        HttpResponse.println(F("<p>Display reset.</p>"));
+    }
+    else
+        HttpResponse.printf(F("<p><a href=\"?reset=%u\">Reset display</a></p>\r\n"), currentTime);
 
+    HttpResponse.println(F("<h1>Current values</h1>"));
+    writeCurrentValues();
+
+    HttpResponse.println(F("<h1>Today</h1>"));
+    writeDayStats();
+
+    HttpResponse.println(F("<h1>Last 24 hours</h1>"));
+    writeTempLog();
+
+    Html.writeFooter();
+
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
+}
+
+
+void writeCurrentValues()
+{
     HttpResponse.println(F("<table>"));
     HttpResponse.printf(
         F("<tr><th>T<sub>inside</sub></th><td>%0.1f °C</td><td class=\"graph\">"),
@@ -426,38 +584,71 @@ void handleHttpRootRequest()
         HttpResponse.println(F("</td></tr>"));
     }
     HttpResponse.println(F("</table>"));
+}
 
+
+void writeDayStats()
+{
+    HttpResponse.println(F("<table>"));
+    HttpResponse.println(F("<tr><th/><th>Min</th><th>Max</th></tr>"));
+    HttpResponse.printf(
+        F("<tr><th>Inside</th><td>%0.1f°C @ %s</td>"),
+        DayStats.tInsideMin,
+        formatTime("%H:%M", DayStats.insideMinTime)
+        );
+    HttpResponse.printf(
+        F("<td>%0.1f°C @ %s</td></tr>\r\n"),
+        DayStats.tInsideMax,
+        formatTime("%H:%M", DayStats.insideMaxTime)
+        );
+
+    if (hasOutsideSensor)
+    {
+        HttpResponse.printf(
+            F("<tr><th>Outside</th><td>%0.1f°C @ %s</td>"),
+            DayStats.tOutsideMin,
+            formatTime("%H:%M", DayStats.outsideMinTime)
+            );
+        HttpResponse.printf(
+            F("<td>%0.1f°C @ %s</td></tr>\r\n"),
+            DayStats.tOutsideMax,
+            formatTime("%H:%M", DayStats.outsideMaxTime)
+            );
+    }
+    HttpResponse.println(F("</table>"));
+}
+
+
+void writeTempLog()
+{
     float tMin, tMax;
     getTemperatureRange(tMin, tMax);
 
-    HttpResponse.println(F("<h1>Last 24 hours</h1>"));
-    HttpResponse.printf(F("<p>Min: %0.1f °C, Max: %0.1f °C</p>\r\n"), tMin, tMax);
+    HttpResponse.printf(F("<p>Min: %0.1f°C, Max: %0.1f°C</p>\r\n"), tMin, tMax);
     HttpResponse.println(F("<table>"));
     HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th colspan='3'>T<sub>inside</sub> (°C)</th><th colspan='3'>T<sub>outside</sub> (°C)</th></tr>"));
     HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
 
-    tMax = std::max(tMax, tMin + 1); // Prevent division by zero
     TempLogEntry* logEntryPtr = TempLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
-        time_t seconds = std::min(currentTime + 1 - logEntryPtr->time, (time_t)TEMP_LOG_INTERVAL);
-        float avgTInside = logEntryPtr->sumTInside / seconds;
-        float avgTOutside = logEntryPtr->sumTOutside / seconds;
-
         HttpResponse.printf(
             F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td class=\"graph\">"),
             formatTime("%H:%M", logEntryPtr->time),
             logEntryPtr->minTInside,
             logEntryPtr->maxTInside,
-            avgTInside,
+            logEntryPtr->getAvgTInside(),
             logEntryPtr->minTOutside,
             logEntryPtr->maxTOutside,
-            avgTOutside
+            logEntryPtr->getAvgTOutside()
             );
 
+        float outsideBar = hasOutsideSensor ? getBarValue(logEntryPtr->getAvgTOutside(), tMin, tMax) : 0;
+        float insideBar = getBarValue(logEntryPtr->getAvgTInside(), tMin, tMax);  
+
         Html.writeStackedBar(
-            getBarValue(avgTOutside, tMin, tMax),
-            getBarValue(avgTInside, tMin, tMax) - getBarValue(avgTOutside, tMin, tMax),
+            outsideBar,
+            insideBar - outsideBar,
             F("tOutsideBar"),
             F("tInsideBar"),
             false,
@@ -468,10 +659,6 @@ void handleHttpRootRequest()
         logEntryPtr = TempLog.getNextEntry();
     }
     HttpResponse.println(F("</table>"));
-
-    Html.writeFooter();
-
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 

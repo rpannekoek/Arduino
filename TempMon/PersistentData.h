@@ -55,8 +55,8 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         ftpUser[sizeof(ftpUser) - 1] = 0;
         ftpPassword[sizeof(ftpPassword) - 1] = 0;
 
-        tInsideOffset = std::max(std::min(tInsideOffset, 2.0F), -2.0F);
-        tOutsideOffset = std::max(std::min(tOutsideOffset, 2.0F), -2.0F);
+        tInsideOffset = std::max(std::min(tInsideOffset, 10.0F), -10.0F);
+        tOutsideOffset = std::max(std::min(tOutsideOffset, 10.0F), -10.0F);
     }
 };
 
