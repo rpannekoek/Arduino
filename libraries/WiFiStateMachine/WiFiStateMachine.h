@@ -34,7 +34,7 @@ class WiFiStateMachine
 
         void on(WiFiInitState state, void (*handler)(void));
  
-        void begin(String ssid, String password, String hostName);
+        void begin(String ssid, String password, String hostName, WiFiSleepType_t sleepType = WIFI_MODEM_SLEEP);
         void run();
         void reset();
 
@@ -69,6 +69,7 @@ class WiFiStateMachine
 
     private:
         WiFiInitState _state = WiFiInitState::Booting;
+        WiFiSleepType_t _sleepType;
         uint32_t _stateChangeTime = 0;
         uint32_t _retryTimeout;
         uint32_t _resetTime = 0;

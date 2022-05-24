@@ -38,10 +38,11 @@ void WiFiStateMachine::on(WiFiInitState state, void (*handler)(void))
 }
 
 
-void WiFiStateMachine::begin(String ssid, String password, String hostName)
+void WiFiStateMachine::begin(String ssid, String password, String hostName, WiFiSleepType_t sleepType)
 {
     Tracer tracer(F("WiFiStateMachine::begin"), hostName.c_str());
 
+    _sleepType = sleepType;
     _ssid = ssid;
     _password = password;
     _hostName = hostName;
@@ -155,8 +156,10 @@ void WiFiStateMachine::initializeAP()
 
 void WiFiStateMachine::initializeSTA()
 {
-    TRACE(F("Connecting to WiFi network '%s' ...\n"), _ssid.c_str());
+    TRACE(F("Connecting to WiFi network '%s' (sleep type: %d) ...\n"), _ssid.c_str(), _sleepType);
     WiFi.persistent(false);
+    if (!WiFi.setSleepMode(_sleepType))
+        TRACE(F("Unabled to set sleep type %d\n"), _sleepType);
     if (!WiFi.setAutoReconnect(true))
         TRACE(F("Unable to set auto reconnect\n"));
     if (!WiFi.mode(WIFI_STA))

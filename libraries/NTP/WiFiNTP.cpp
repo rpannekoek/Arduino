@@ -81,8 +81,6 @@ bool WiFiNTP::beginGetServerTime()
 
 time_t WiFiNTP::endGetServerTime()
 {
-    Tracer tracer(F("WiFiNTP::endGetServerTime"));
-
     return _serverTimeReceived ? time(nullptr) : (time_t)0;
 }
 
