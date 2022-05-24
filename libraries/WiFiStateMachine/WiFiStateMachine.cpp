@@ -38,11 +38,12 @@ void WiFiStateMachine::on(WiFiInitState state, void (*handler)(void))
 }
 
 
-void WiFiStateMachine::begin(String ssid, String password, String hostName, WiFiSleepType_t sleepType)
+void WiFiStateMachine::begin(String ssid, String password, String hostName, WiFiSleepType_t sleepType, uint32_t reconnectInterval)
 {
     Tracer tracer(F("WiFiStateMachine::begin"), hostName.c_str());
 
     _sleepType = sleepType;
+    _reconnectInterval = reconnectInterval;
     _ssid = ssid;
     _password = password;
     _hostName = hostName;
@@ -160,7 +161,7 @@ void WiFiStateMachine::initializeSTA()
     WiFi.persistent(false);
     if (!WiFi.setSleepMode(_sleepType))
         TRACE(F("Unabled to set sleep type %d\n"), _sleepType);
-    if (!WiFi.setAutoReconnect(true))
+    if (!WiFi.setAutoReconnect(_reconnectInterval == 0))
         TRACE(F("Unable to set auto reconnect\n"));
     if (!WiFi.mode(WIFI_STA))
         TRACE(F("Unable to set WiFi mode\n"));
@@ -291,6 +292,38 @@ void WiFiStateMachine::run()
                 logEvent(event);
             }
             setState(WiFiInitState::Initialized);
+            break;
+
+        case WiFiInitState::Initialized:
+            if (!WiFi.isConnected())
+            {
+                TRACE(F("WiFi connection lost. Status: %d\n"), WiFi.status());
+                if (_reconnectInterval != 0)
+                    _reconnectTime = currentMillis + 1000; // Try first reconnect after 1s
+                setState(WiFiInitState::ConnectionLost);
+            }
+            break;
+
+        case WiFiInitState::ConnectionLost:
+            if ((_reconnectTime != 0) && (currentMillis >= _reconnectTime))
+            {
+                _reconnectTime += _reconnectInterval * 1000;
+                TRACE(F("Attempting WiFi reconnect @ %u ms...\n"), currentMillis);
+                WiFi.reconnect();
+            }
+            else if (WiFi.isConnected())
+            {
+                TRACE(F("WiFi connection restored.\n"));
+                _reconnectTime = 0;
+                setState(WiFiInitState::Initialized);
+            }
+            else
+            {
+                // Still also trigger Initialized handler (for backwards compatibility)
+                int state = static_cast<int>(WiFiInitState::Initialized);
+                if (_handlers[state] != nullptr)
+                    _handlers[state]();
+            }
             break;
 
         default:

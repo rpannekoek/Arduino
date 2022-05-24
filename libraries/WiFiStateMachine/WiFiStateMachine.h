@@ -13,13 +13,14 @@ enum struct WiFiInitState
     AwaitingConnection = 2,
     Connecting = 3,
     ConnectFailed = 4,
-    Connected = 5,
-    TimeServerInitializing = 6,
-    TimeServerSyncing = 7,
-    TimeServerSyncFailed = 8,
-    TimeServerSynced = 9,
-    Initialized = 10,
-    Updating = 11
+    ConnectionLost = 5,
+    Connected = 6,
+    TimeServerInitializing = 7,
+    TimeServerSyncing = 8,
+    TimeServerSyncFailed = 9,
+    TimeServerSynced = 10,
+    Initialized = 11,
+    Updating = 12
 };
 
 
@@ -34,7 +35,7 @@ class WiFiStateMachine
 
         void on(WiFiInitState state, void (*handler)(void));
  
-        void begin(String ssid, String password, String hostName, WiFiSleepType_t sleepType = WIFI_MODEM_SLEEP);
+        void begin(String ssid, String password, String hostName, WiFiSleepType_t sleepType = WIFI_MODEM_SLEEP, uint32_t reconnectInterval = 60);
         void run();
         void reset();
 
@@ -70,6 +71,8 @@ class WiFiStateMachine
     private:
         WiFiInitState _state = WiFiInitState::Booting;
         WiFiSleepType_t _sleepType;
+        uint32_t _reconnectInterval = 0;
+        uint32_t _reconnectTime = 0;
         uint32_t _stateChangeTime = 0;
         uint32_t _retryTimeout;
         uint32_t _resetTime = 0;
