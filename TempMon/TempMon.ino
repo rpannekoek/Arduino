@@ -258,6 +258,9 @@ void onWiFiInitialized()
         displayData();
     }
 
+    if (WiFiSM.getState() == WiFiInitState::ConnectionLost)
+        return;
+
     if ((syncFTPTime != 0) && (currentTime >= syncFTPTime))
     {
         if (trySyncFTP(nullptr))
@@ -298,6 +301,10 @@ void displayMessage(const char* msg)
 void displayData()
 {
     Tracer tracer(F("displayData"));
+
+    bool nightMode = WiFiSM.getState() == WiFiInitState::ConnectionLost;
+    Display.setPowerSave(nightMode ? 1 : 0);
+    if (nightMode) return;
 
     Display.clearBuffer();
 
@@ -345,37 +352,41 @@ void drawDayStats()
 }
 
 
+void drawDottedLine(uint8_t startX, uint8_t y, uint8_t length, uint8_t interval)
+{
+    for (int x = startX; x < (startX + length); x += interval)
+        Display.drawPixel(x, y);
+}
+
+
 void drawTempGraph()
 {
     const uint8_t graphX = 29;
     const uint8_t graphWidth = 48 * 2;
     const uint8_t graphHeight = 64;
+    uint8_t graphY = Display.getDisplayHeight() - 1;
 
     float tMin, tMax;
     getTemperatureRange(tMin, tMax);
 
+    // Draw Y axis labels
     Display.setFont(u8g2_font_5x7_tr);
     snprintf(stringBuffer, sizeof(stringBuffer), "%0.1f", tMin);
-    Display.drawStr(0, Display.getDisplayHeight() - 1, stringBuffer);
+    Display.drawStr(0, graphY, stringBuffer);
     snprintf(stringBuffer, sizeof(stringBuffer), "%0.1f", tMax);
-    Display.drawStr(0, Display.getDisplayHeight() - graphHeight + 8, stringBuffer);
+    Display.drawStr(0, graphY - graphHeight + 8, stringBuffer);
 
-    Display.drawFrame(
-        graphX,
-        Display.getDisplayHeight() - graphHeight - 2,
-        graphWidth + 2,
-        graphHeight + 2);
+    drawDottedLine(graphX, graphY, graphWidth, 4);
+    drawDottedLine(graphX, graphY - graphHeight, graphWidth, 4);
 
-    int x = graphX + 1;
-    int lastY = 0;
+    uint8_t x = graphX;
+    uint8_t lastY = 0;
     TempLogEntry* logEntryPtr = TempLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
-        int y = Display.getDisplayHeight() - 2 - getBarValue(logEntryPtr->getAvgTInside(), tMin, tMax) * graphHeight;
+        uint8_t y = graphY - getBarValue(logEntryPtr->getAvgTInside(), tMin, tMax) * graphHeight;
 
-        if (lastY == 0)
-            Display.drawPixel(x, y);
-        else
+        if (lastY != 0)
             Display.drawLine(x-2, lastY, x, y);
 
         x += 2;
