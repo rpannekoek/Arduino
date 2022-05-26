@@ -211,8 +211,6 @@ void loop()
         String message = Serial.readStringUntil('\n');
         test(message);
     }
-
-    delay(10);
 }
 
 void onWiFiTimeSynced()
@@ -258,7 +256,7 @@ void onWiFiInitialized()
         displayData();
     }
 
-    if (WiFiSM.getState() == WiFiInitState::ConnectionLost)
+    if (WiFiSM.getState() < WiFiInitState::Connected)
         return;
 
     if ((syncFTPTime != 0) && (currentTime >= syncFTPTime))
@@ -302,7 +300,7 @@ void displayData()
 {
     Tracer tracer(F("displayData"));
 
-    bool nightMode = WiFiSM.getState() == WiFiInitState::ConnectionLost;
+    bool nightMode = WiFiSM.getState() < WiFiInitState::Connected;
     Display.setPowerSave(nightMode ? 1 : 0);
     if (nightMode) return;
 

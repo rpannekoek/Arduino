@@ -14,13 +14,14 @@ enum struct WiFiInitState
     Connecting = 3,
     ConnectFailed = 4,
     ConnectionLost = 5,
-    Connected = 6,
-    TimeServerInitializing = 7,
-    TimeServerSyncing = 8,
-    TimeServerSyncFailed = 9,
-    TimeServerSynced = 10,
-    Initialized = 11,
-    Updating = 12
+    Reconnecting = 6,
+    Connected = 7,
+    TimeServerInitializing = 8,
+    TimeServerSyncing = 9,
+    TimeServerSyncFailed = 10,
+    TimeServerSynced = 11,
+    Initialized = 12,
+    Updating = 13
 };
 
 
@@ -72,7 +73,6 @@ class WiFiStateMachine
         WiFiInitState _state = WiFiInitState::Booting;
         WiFiSleepType_t _sleepType;
         uint32_t _reconnectInterval = 0;
-        uint32_t _reconnectTime = 0;
         uint32_t _stateChangeTime = 0;
         uint32_t _retryTimeout;
         uint32_t _resetTime = 0;

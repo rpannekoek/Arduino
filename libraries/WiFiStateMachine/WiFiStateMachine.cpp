@@ -188,9 +188,8 @@ void WiFiStateMachine::run()
     String event;
 
     // First trigger custom handler (if any)
-    int state = static_cast<int>(_state);
-    if (_handlers[state] != nullptr)
-        _handlers[state]();
+    void (*handler)(void) = _handlers[static_cast<int>(_state)]; 
+    if (handler != nullptr) handler();
 
     switch (_state)
     {
@@ -221,12 +220,54 @@ void WiFiStateMachine::run()
             break;
 
         case WiFiInitState::Connecting:
-            if (WiFi.status() == WL_CONNECTED)
+            if (WiFi.isConnected())
+            {
+                TRACE(F("WiFi connected in %u ms.\n"), currentMillis - _stateChangeTime);
                 setState(WiFiInitState::Connected);
+            }
             else if (currentMillis >= (_stateChangeTime + 15000))
             {
                 TRACE(F("Timeout connecting WiFi\n"));
                 setState(WiFiInitState::ConnectFailed);
+            }
+            break;
+
+        case WiFiInitState::Reconnecting:
+            if (WiFi.isConnected())
+            {
+                TRACE(F("WiFi reconnected in %u ms.\n"), currentMillis - _stateChangeTime);
+                setState(WiFiInitState::Initialized);
+            }
+            else if (currentMillis >= (_stateChangeTime + 5000))
+            {
+                TRACE(F("Timeout reconnecting WiFi\n"));
+                if (!WiFi.forceSleepBegin())
+                    TRACE(F("forceSleepBegin() failed.\n"));
+                setState(WiFiInitState::ConnectionLost);
+            }
+            else
+            {
+                // Still also trigger Initialized handler (for backwards compatibility)
+                void (*initHandler)(void) = _handlers[static_cast<int>(WiFiInitState::Initialized)]; 
+                if (initHandler != nullptr) initHandler();
+            }
+            break;
+
+        case WiFiInitState::ConnectionLost:
+            if (WiFi.isConnected())
+                setState(WiFiInitState::Initialized);
+            else if ((_reconnectInterval != 0) && (currentMillis >= _stateChangeTime + _reconnectInterval * 1000))
+            {
+                TRACE(F("Attempting WiFi reconnect...\n"));
+                if (!WiFi.forceSleepWake())
+                    TRACE(F("forceSleepWake() failed.\n"));
+                setState(WiFiInitState::Reconnecting);
+            }
+            else
+            {
+                // Still also trigger Initialized handler (for backwards compatibility)
+                void (*initHandler)(void) = _handlers[static_cast<int>(WiFiInitState::Initialized)]; 
+                if (initHandler != nullptr) initHandler();
             }
             break;
 
@@ -299,30 +340,11 @@ void WiFiStateMachine::run()
             {
                 TRACE(F("WiFi connection lost. Status: %d\n"), WiFi.status());
                 if (_reconnectInterval != 0)
-                    _reconnectTime = currentMillis + 1000; // Try first reconnect after 1s
+                {
+                    if (!WiFi.forceSleepBegin())
+                        TRACE(F("forceSleepBegin() failed.\n"));
+                }
                 setState(WiFiInitState::ConnectionLost);
-            }
-            break;
-
-        case WiFiInitState::ConnectionLost:
-            if ((_reconnectTime != 0) && (currentMillis >= _reconnectTime))
-            {
-                _reconnectTime += _reconnectInterval * 1000;
-                TRACE(F("Attempting WiFi reconnect @ %u ms...\n"), currentMillis);
-                WiFi.reconnect();
-            }
-            else if (WiFi.isConnected())
-            {
-                TRACE(F("WiFi connection restored.\n"));
-                _reconnectTime = 0;
-                setState(WiFiInitState::Initialized);
-            }
-            else
-            {
-                // Still also trigger Initialized handler (for backwards compatibility)
-                int state = static_cast<int>(WiFiInitState::Initialized);
-                if (_handlers[state] != nullptr)
-                    _handlers[state]();
             }
             break;
 
@@ -331,16 +353,23 @@ void WiFiStateMachine::run()
             break;
     }
 
+    // Automatic Modem/Light sleep leverages delay() to reduce power
     if (_state > WiFiInitState::Connected)
     {
         _webServer.handleClient();
         ArduinoOTA.handle();
+        delay(10);
     }
+    else
+        delay(100);
 
     if ((_resetTime > 0) && (currentMillis >= _resetTime))
     {
         TRACE(F("Resetting...\n"));
         ESP.restart();
+        // From non-OS SDK Reference:
+        // The ESP8266 will not restart immediately. Please do not call other functions after calling this API. 
+        delay(1000); 
     }
 }
 
