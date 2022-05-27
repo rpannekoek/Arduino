@@ -2,7 +2,6 @@
 #include <ESPWiFi.h>
 #include <Arduino.h>
 #include <Tracer.h>
-#include <coredecls.h>  // settimeofday_cb()
 #include <sntp.h>
 
 WiFiNTP* _instancePtr = nullptr;
@@ -12,6 +11,16 @@ void _settimeofday_callback()
     if (_instancePtr != nullptr)
         _instancePtr->onServerTimeReceived();
 }
+
+#ifdef ESP8266
+#include <coredecls.h>  // settimeofday_cb()
+#else 
+void _sntp_sync_time_cb(timeval* tv)
+{
+    _settimeofday_callback();
+}
+#endif
+
 
 // Constructor
 WiFiNTP::WiFiNTP()
@@ -37,10 +46,15 @@ void WiFiNTP::initialize()
 {
     Tracer tracer(F("WiFiNTP::initialize"));
     _instancePtr = this;
-    settimeofday_cb(_settimeofday_callback);
     // TODO: use _serverSyncInterval
     // sntp_set_update_delay(_serverSyncInterval * 1000);
+#ifdef ESP8266
+    settimeofday_cb(_settimeofday_callback);
     configTime(timeZone, NTPServer);
+#else
+    sntp_set_time_sync_notification_cb(_sntp_sync_time_cb);
+    configTzTime(timeZone, NTPServer);
+#endif
     _isInitialized = true;
 }
 
@@ -48,19 +62,6 @@ void WiFiNTP::initialize()
 void WiFiNTP::onServerTimeReceived()
 {
     Tracer tracer(F("WiFiNTP::onServerTimeReceived"));
-
-    if (!_serverTimeReceived)
-    {
-        // First time we receive NTP server time
-        IPAddress ntpServerIP = sntp_getserver(0)->addr;
-        const char* ntpServerName = sntp_getservername(0);
-
-        NTPServer = (ntpServerName == nullptr)
-            ? ntpServerIP.toString().c_str()
-            : ntpServerName; 
-
-        TRACE("NTP Server: '%s'\n", NTPServer);
-    }
 
     _serverTimeReceived = true;
 }

@@ -38,11 +38,10 @@ void WiFiStateMachine::on(WiFiInitState state, void (*handler)(void))
 }
 
 
-void WiFiStateMachine::begin(String ssid, String password, String hostName, WiFiSleepType_t sleepType, uint32_t reconnectInterval)
+void WiFiStateMachine::begin(String ssid, String password, String hostName, uint32_t reconnectInterval)
 {
     Tracer tracer(F("WiFiStateMachine::begin"), hostName.c_str());
 
-    _sleepType = sleepType;
     _reconnectInterval = reconnectInterval;
     _ssid = ssid;
     _password = password;
@@ -125,9 +124,15 @@ void WiFiStateMachine::logEvent(String msg)
 
 void WiFiStateMachine::setState(WiFiInitState newState, bool callHandler)
 {
-    _state = newState;
+    uint32_t prevStateChangeTime = _stateChangeTime;
     _stateChangeTime = millis();
-    TRACE(F("WiFi state: %u @ %u ms\n"), _state, _stateChangeTime);
+    TRACE(
+        F("WiFi state: %d -> %d @ +%u ms\n"),
+        _state,
+        newState,
+        _stateChangeTime - prevStateChangeTime);
+
+    _state = newState;
     if (callHandler)
     {
         int state = static_cast<int>(_state);
@@ -145,7 +150,7 @@ void WiFiStateMachine::initializeAP()
     if (!WiFi.mode(WIFI_AP))
         TRACE(F("Unable to set WiFi mode\n"));
 
-    if (!WiFi.softAP(_hostName))
+    if (!WiFi.softAP(_hostName.c_str()))
         TRACE(F("Unable to start Access Point\n"));
 
     _ipAddress = WiFi.softAPIP();
@@ -157,10 +162,8 @@ void WiFiStateMachine::initializeAP()
 
 void WiFiStateMachine::initializeSTA()
 {
-    TRACE(F("Connecting to WiFi network '%s' (sleep type: %d) ...\n"), _ssid.c_str(), _sleepType);
+    TRACE(F("Connecting to WiFi network '%s' ...\n"), _ssid.c_str());
     WiFi.persistent(false);
-    if (!WiFi.setSleepMode(_sleepType))
-        TRACE(F("Unabled to set sleep type %d\n"), _sleepType);
     if (!WiFi.setAutoReconnect(_reconnectInterval == 0))
         TRACE(F("Unable to set auto reconnect\n"));
     if (!WiFi.mode(WIFI_STA))
@@ -221,10 +224,9 @@ void WiFiStateMachine::run()
 
         case WiFiInitState::Connecting:
             if (WiFi.isConnected())
-            {
-                TRACE(F("WiFi connected in %u ms.\n"), currentMillis - _stateChangeTime);
                 setState(WiFiInitState::Connected);
-            }
+            else if ((currentMillis >= (_stateChangeTime + 5000))  && (WiFi.status() == WL_CONNECT_FAILED))
+                setState(WiFiInitState::ConnectFailed); 
             else if (currentMillis >= (_stateChangeTime + 15000))
             {
                 TRACE(F("Timeout connecting WiFi\n"));
@@ -234,15 +236,14 @@ void WiFiStateMachine::run()
 
         case WiFiInitState::Reconnecting:
             if (WiFi.isConnected())
-            {
-                TRACE(F("WiFi reconnected in %u ms.\n"), currentMillis - _stateChangeTime);
                 setState(WiFiInitState::Initialized);
-            }
             else if (currentMillis >= (_stateChangeTime + 5000))
             {
                 TRACE(F("Timeout reconnecting WiFi\n"));
+#ifdef ESP8266
                 if (!WiFi.forceSleepBegin())
                     TRACE(F("forceSleepBegin() failed.\n"));
+#endif
                 setState(WiFiInitState::ConnectionLost);
             }
             else
@@ -259,8 +260,13 @@ void WiFiStateMachine::run()
             else if ((_reconnectInterval != 0) && (currentMillis >= _stateChangeTime + _reconnectInterval * 1000))
             {
                 TRACE(F("Attempting WiFi reconnect...\n"));
+#ifdef ESP8266
                 if (!WiFi.forceSleepWake())
                     TRACE(F("forceSleepWake() failed.\n"));
+#else
+                if (!WiFi.reconnect())
+                    TRACE(F("reconnect() failed.\n"));
+#endif
                 setState(WiFiInitState::Reconnecting);
             }
             else
@@ -341,8 +347,10 @@ void WiFiStateMachine::run()
                 TRACE(F("WiFi connection lost. Status: %d\n"), WiFi.status());
                 if (_reconnectInterval != 0)
                 {
+#ifdef ESP8266
                     if (!WiFi.forceSleepBegin())
                         TRACE(F("forceSleepBegin() failed.\n"));
+#endif
                 }
                 setState(WiFiInitState::ConnectionLost);
             }

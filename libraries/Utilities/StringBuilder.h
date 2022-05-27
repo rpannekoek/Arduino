@@ -23,6 +23,16 @@ class StringBuilder : public Print
         return _buffer;
     }
 
+#ifdef ESP32
+    // WebServer.send for ESP32 only accepts String references, so we provide a String cast operator here.
+    // The String constructor copies the contents of the buffer, which partially defeats the purpose of StringBuilder.
+    // However, an ESP32 typically has plenty of RAM, so this is not so much of an issue.
+    operator String() const
+    {
+        return String(_buffer);
+    }
+#endif
+
   protected:
     char* _buffer;
     size_t _capacity;
