@@ -24,6 +24,7 @@
 #define OTGW_WATCHDOG_INTERVAL 10
 #define OTGW_STARTUP_TIME 5
 #define OTGW_TIMEOUT 60
+#define WIFI_TIMEOUT_MS 2000
 #define HTTP_POLL_INTERVAL 60
 #define DATA_VALUE_NONE 0xFFFF
 #define EVENT_LOG_LENGTH 50
@@ -90,8 +91,9 @@ const char* logHeaders[] PROGMEM =
 OpenThermGateway OTGW(Serial, 14);
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
-WiFiFTPClient FTPClient(2000); // 2 sec timeout
-WeatherAPI WeatherService(2000); // 2 sec request timeout
+WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
+HeatMonClient HeatMon(WIFI_TIMEOUT_MS);
+WeatherAPI WeatherService(WIFI_TIMEOUT_MS);
 StringBuilder HttpResponse(12288); // 12KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, 40);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
@@ -99,7 +101,6 @@ StringLog OTGWMessageLog(OTGW_MESSAGE_LOG_LENGTH, 10);
 StaticLog<OpenThermLogEntry> OpenThermLog(OT_LOG_LENGTH);
 StaticLog<StatusLogEntry> StatusLog(7); // 7 days
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
-HeatMonClient HeatMon(1000); // 1 sec timeout
 
 // OpenTherm data values indexed by data ID
 uint16_t thermostatRequests[256];
@@ -291,8 +292,6 @@ void loop()
         setOtgwResponse(OpenThermDataId::Tdhw, HeatMon.tBuffer);
         return;
     }
-
-    delay(10);
 }
 
 
@@ -336,6 +335,10 @@ void onWiFiInitialized()
         updateStatusLog(currentTime, boilerResponses[OpenThermDataId::Status]);
         logOpenThermValues(false);
     }
+
+    // Stuff below needs a WiFi connection. If the connection is lost, we skip it.
+    if (WiFiSM.getState() < WiFiInitState::Connected)
+        return;
 
     if ((currentTime >= heatmonPollTime) && HeatMon.isInitialized)
     {
