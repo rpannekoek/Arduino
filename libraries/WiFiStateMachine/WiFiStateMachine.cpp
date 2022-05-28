@@ -86,7 +86,7 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName, uint
 #ifdef ESP8266
     _staDisconnectedEvent = WiFi.onStationModeDisconnected(&WiFiStateMachine::onStationDisconnected);
 #else
-    _staDisconnectedEvent = WiFi.onEvent(WiFiStateMachine::onStationDisconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+    _staDisconnectedEvent = WiFi.onEvent(WiFiStateMachine::onStationDisconnected, SYSTEM_EVENT_STA_DISCONNECTED);
 #endif
 
     setState(WiFiInitState::Initializing);
@@ -189,7 +189,8 @@ void WiFiStateMachine::initializeSTA()
     // ESP32 doesn't reliably set the status to WL_DISCONNECTED despite disconnect() call.
     WiFiSTAClass::_setStatus(WL_DISCONNECTED);
     // See https://github.com/espressif/arduino-esp32/issues/2537
-    if (!WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE))
+    IPAddress none = IPAddress(0,0,0,0);
+    if (!WiFi.config(none, none, none))
         TRACE(F("WiFi.config failed\n"));
     if (!WiFi.setHostname(_hostName.c_str()))
         TRACE(F("Unable to set host name ('%s')\n"), _hostName.c_str());
@@ -475,9 +476,9 @@ void WiFiStateMachine::onStationDisconnected(const WiFiEventStationModeDisconnec
     _staDisconnected = true;
 }
 #else
-void WiFiStateMachine::onStationDisconnected(arduino_event_id_t event, arduino_event_info_t info)
+void WiFiStateMachine::onStationDisconnected(system_event_id_t event, system_event_info_t info)
 {
-    TRACE(F("STA disconnected. Reason: %d\n"), info.wifi_sta_disconnected.reason);
+    TRACE(F("STA disconnected. Reason: %d\n"), info.disconnected.reason);
     _staDisconnected = true;
 }
 #endif
