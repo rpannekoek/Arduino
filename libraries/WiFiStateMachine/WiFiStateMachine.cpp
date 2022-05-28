@@ -11,7 +11,13 @@
     #define U_SPIFFS U_FS
 #endif
 
-#define MAX_RETRY_TIMEOUT 300000
+#define CONNECT_TIMEOUT_MS 10000
+#define NTP_TIMEOUT_MS 5000
+#define NTP_RETRY_INTERVAL_MS 10000
+#define MAX_RETRY_INTERVAL_MS 300000U
+
+bool WiFiStateMachine::_staDisconnected = false;
+
 
 // Constructor
 WiFiStateMachine::WiFiStateMachine(WiFiNTP& timeServer, ESPWebServer& webServer, Log<const char>& eventLog)
@@ -42,11 +48,11 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName, uint
 {
     Tracer tracer(F("WiFiStateMachine::begin"), hostName.c_str());
 
-    _reconnectInterval = reconnectInterval;
+    _reconnectInterval = reconnectInterval * 1000;
     _ssid = ssid;
     _password = password;
     _hostName = hostName;
-    _retryTimeout = 5000; // Start exponential backoff with 5 seconds
+    _retryInterval = 5000; // Start exponential backoff with 5 seconds
     _isTimeServerAvailable = false;
     _resetTime = 0;
 
@@ -76,7 +82,11 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName, uint
             TRACE(F("OTA error %u\n"), error);
             setState(WiFiInitState::Initialized);
         });
-    
+
+#ifdef ESP8266
+    _staDisconnectedEvent = WiFi.onStationModeDisconnected(&WiFiStateMachine::onStationDisconnected);
+#endif
+
     setState(WiFiInitState::Initializing);
 }
 
@@ -174,6 +184,8 @@ void WiFiStateMachine::initializeSTA()
     if (!WiFi.hostname(_hostName))
         TRACE(F("Unable to set host name\n"));
 #else
+    // ESP32 doesn't reliably set the status to WL_DISCONNECTED despite disconnect() call.
+    WiFiSTAClass::_setStatus(WL_DISCONNECTED);
      // See https://github.com/espressif/arduino-esp32/issues/2537
     if (!WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE))
         TRACE(F("WiFi.config failed\n"));
@@ -181,6 +193,7 @@ void WiFiStateMachine::initializeSTA()
         TRACE(F("Unable to set host name ('%s')\n"), _hostName.c_str());
 #endif
     ArduinoOTA.setHostname(_hostName.c_str());
+    _staDisconnected = false;
     WiFi.begin(_ssid.c_str(), _password.c_str());
 }
 
@@ -188,6 +201,8 @@ void WiFiStateMachine::initializeSTA()
 void WiFiStateMachine::run()
 {
     uint32_t currentMillis = millis();
+    uint32_t currentStateMillis = currentMillis - _stateChangeTime;
+    wl_status_t wifiStatus = WiFi.status();
     String event;
 
     // First trigger custom handler (if any)
@@ -209,6 +224,7 @@ void WiFiStateMachine::run()
                 _isInAccessPointMode = false;
                 setState(WiFiInitState::Connecting);
             }
+            TRACE(F("WiFi status: %d\n"), WiFi.status());
             break;
 
         case WiFiInitState::AwaitingConnection:
@@ -223,23 +239,26 @@ void WiFiStateMachine::run()
             break;
 
         case WiFiInitState::Connecting:
-            if (WiFi.isConnected())
+            if (wifiStatus == WL_CONNECTED)
                 setState(WiFiInitState::Connected);
-            else if ((currentMillis >= (_stateChangeTime + 5000))  && (WiFi.status() == WL_CONNECT_FAILED))
+            else if (_staDisconnected || (wifiStatus == WL_CONNECT_FAILED))
                 setState(WiFiInitState::ConnectFailed); 
-            else if (currentMillis >= (_stateChangeTime + 15000))
+            else if (currentStateMillis >= CONNECT_TIMEOUT_MS)
             {
-                TRACE(F("Timeout connecting WiFi\n"));
+                TRACE(F("Timeout connecting WiFi.\n"));
                 setState(WiFiInitState::ConnectFailed);
             }
             break;
 
         case WiFiInitState::Reconnecting:
-            if (WiFi.isConnected())
-                setState(WiFiInitState::Initialized);
-            else if (currentMillis >= (_stateChangeTime + 5000))
+            if (wifiStatus == WL_CONNECTED)
             {
-                TRACE(F("Timeout reconnecting WiFi\n"));
+                logEvent(F("WiFi reconnected"));
+                setState(WiFiInitState::Initialized);
+            }
+            else if (_staDisconnected || (wifiStatus == WL_NO_SSID_AVAIL) || (currentStateMillis >= CONNECT_TIMEOUT_MS))
+            {
+                TRACE(F("Reconnecting WiFi failed. Status: %d\n"), wifiStatus);
 #ifdef ESP8266
                 if (!WiFi.forceSleepBegin())
                     TRACE(F("forceSleepBegin() failed.\n"));
@@ -255,18 +274,25 @@ void WiFiStateMachine::run()
             break;
 
         case WiFiInitState::ConnectionLost:
-            if (WiFi.isConnected())
+            if (wifiStatus == WL_CONNECTED)
+            {
+                logEvent(F("WiFi reconnected"));
                 setState(WiFiInitState::Initialized);
-            else if ((_reconnectInterval != 0) && (currentMillis >= _stateChangeTime + _reconnectInterval * 1000))
+            }
+            else if ((_reconnectInterval != 0) && (currentStateMillis >= _reconnectInterval))
             {
                 TRACE(F("Attempting WiFi reconnect...\n"));
+                _staDisconnected = false;
 #ifdef ESP8266
                 if (!WiFi.forceSleepWake())
                     TRACE(F("forceSleepWake() failed.\n"));
 #else
+                // ESP32 doesn't reliably set status:
+                WiFiSTAClass::_setStatus(WL_CONNECTION_LOST);
                 if (!WiFi.reconnect())
                     TRACE(F("reconnect() failed.\n"));
 #endif
+                TRACE(F("WiFi status: %d\n"), WiFi.status());
                 setState(WiFiInitState::Reconnecting);
             }
             else
@@ -278,10 +304,10 @@ void WiFiStateMachine::run()
             break;
 
         case WiFiInitState::ConnectFailed:
-            if (currentMillis >= (_stateChangeTime + _retryTimeout))
+            if (currentStateMillis >= _retryInterval)
             {
-                _retryTimeout *= 2; // Exponential backoff
-                if (_retryTimeout > MAX_RETRY_TIMEOUT) _retryTimeout = MAX_RETRY_TIMEOUT;
+                // Exponential backoff
+                _retryInterval = std::min(_retryInterval * 2, MAX_RETRY_INTERVAL_MS);
                 setState(WiFiInitState::Initializing);
             }
             else
@@ -309,8 +335,7 @@ void WiFiStateMachine::run()
             _initTime = _timeServer.endGetServerTime(); 
             if (_initTime == 0)
             {
-                // Timeout after 5 seconds
-                if (currentMillis >= (_stateChangeTime + 5000))
+                if (currentStateMillis >= NTP_TIMEOUT_MS)
                 {
                     TRACE(F("Timeout waiting for NTP server response\n"));
                     setState(WiFiInitState::TimeServerSyncFailed);
@@ -324,8 +349,7 @@ void WiFiStateMachine::run()
             break;
         
         case WiFiInitState::TimeServerSyncFailed:
-            // Retry Time Server sync after 15 seconds
-            if (currentMillis >= (_stateChangeTime + 15000))
+            if (currentStateMillis >= NTP_RETRY_INTERVAL_MS)
                 setState(WiFiInitState::TimeServerInitializing);
             else
                 blinkLED(250, 250);
@@ -342,9 +366,10 @@ void WiFiStateMachine::run()
             break;
 
         case WiFiInitState::Initialized:
-            if (!WiFi.isConnected())
+            if (_staDisconnected || (wifiStatus != WL_CONNECTED))
             {
-                TRACE(F("WiFi connection lost. Status: %d\n"), WiFi.status());
+                logEvent(F("WiFi connection lost"));
+                TRACE(F("WiFi status: %d\n"), wifiStatus);
                 if (_reconnectInterval != 0)
                 {
 #ifdef ESP8266
@@ -361,7 +386,7 @@ void WiFiStateMachine::run()
             break;
     }
 
-    // Automatic Modem/Light sleep leverages delay() to reduce power
+    // Automatic Modem sleep leverages delay() to reduce power
     if (_state > WiFiInitState::Connected)
     {
         _webServer.handleClient();
@@ -425,6 +450,7 @@ String WiFiStateMachine::getResetReason()
 #endif
 }
 
+
 bool WiFiStateMachine::shouldPerformAction(String name)
 {
     if (!_webServer.hasArg(name))
@@ -438,3 +464,12 @@ bool WiFiStateMachine::shouldPerformAction(String name)
     _actionPerformedTime = actionTime;
     return true;
 }
+
+
+#ifdef ESP8266
+void WiFiStateMachine::onStationDisconnected(const WiFiEventStationModeDisconnected& evt)
+{
+    TRACE(F("STA disconnected. Reason: %d\n"), evt.reason);
+    _staDisconnected = true;
+}
+#endif

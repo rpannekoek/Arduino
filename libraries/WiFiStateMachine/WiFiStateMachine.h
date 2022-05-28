@@ -71,9 +71,10 @@ class WiFiStateMachine
 
     private:
         WiFiInitState _state = WiFiInitState::Booting;
+        static bool _staDisconnected;
         uint32_t _reconnectInterval = 0;
         uint32_t _stateChangeTime = 0;
-        uint32_t _retryTimeout;
+        uint32_t _retryInterval;
         uint32_t _resetTime = 0;
         time_t _initTime = 0;
         time_t _actionPerformedTime = 0;
@@ -94,6 +95,11 @@ class WiFiStateMachine
         void setState(WiFiInitState newState, bool callHandler = false);
         void blinkLED(int tOn, int tOff);
         String getResetReason();
+        
+#ifdef ESP8266
+        WiFiEventHandler _staDisconnectedEvent; 
+        static void onStationDisconnected(const WiFiEventStationModeDisconnected& evt);
+#endif
 };
 
 #endif
