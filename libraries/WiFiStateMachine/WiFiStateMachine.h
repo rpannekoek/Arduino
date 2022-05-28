@@ -104,6 +104,9 @@ class WiFiStateMachine
 #ifdef ESP8266
         WiFiEventHandler _staDisconnectedEvent; 
         static void onStationDisconnected(const WiFiEventStationModeDisconnected& evt);
+#else
+        wifi_event_id_t _staDisconnectedEvent;
+        static void onStationDisconnected(arduino_event_id_t event, arduino_event_info_t info);
 #endif
 };
 
