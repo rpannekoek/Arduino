@@ -69,6 +69,11 @@ class WiFiStateMachine
             return _ipAddress.toString();
         }
 
+        bool inline isConnected()
+        {
+            return _state >= WiFiInitState::Connected;
+        }
+
     private:
         WiFiInitState _state = WiFiInitState::Booting;
         static bool _staDisconnected;

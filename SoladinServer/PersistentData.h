@@ -3,22 +3,20 @@
 
 struct PersistentDataStruct : PersistentDataBase
 {
-    char hostName[20];
-    int16_t timeZoneOffset; // hours
+    char hostName[32];
 
     PersistentDataStruct() 
-        : PersistentDataBase(sizeof(hostName) + sizeof(timeZoneOffset)) {}
+        : PersistentDataBase(sizeof(hostName)) {}
 
     virtual void initialize()
     {
         strcpy(hostName, "SoladinServer");
-        timeZoneOffset = 1;
     }
 
     virtual void validate()
     {
-        if (timeZoneOffset < -12) timeZoneOffset = -12;
-        if (timeZoneOffset > 14) timeZoneOffset = 14;
+        // Ensure all strings are terminated
+        hostName[sizeof(hostName) - 1] = 0;
     }
 };
 

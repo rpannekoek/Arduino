@@ -1,45 +1,40 @@
+#include <math.h>
 #include <ESPWiFi.h>
 #include <ESPWebServer.h>
 #include <ESPFileSystem.h>
 #include <Soladin.h>
 #include <WiFiNTP.h>
 #include <WiFiFTP.h>
+#include <TimeUtils.h>
 #include <Tracer.h>
 #include <StringBuilder.h>
 #include <Log.h>
 #include <WiFiStateMachine.h>
 #include "PersistentData.h"
+#include "EnergyLogEntry.h"
 #include "WiFiCredentials.private.h"
-#include <math.h>
 
  // Use same baud rate for debug output as ROM boot code
 #define DEBUG_BAUDRATE 74880
 // 36 seconds poll interval => 100 polls per hour
 #define POLL_INTERVAL 36
 #define MIN_NIGHT_DURATION (4 * 3600)
-#define MAX_EVENT_LOG_SIZE 100
+#define MAX_EVENT_LOG_SIZE 50
 #define MAX_BAR_LENGTH 50
 #define ICON "/apple-touch-icon.png"
 #define NTP_SERVER "fritz.box"
 #define FTP_SERVER "fritz.box"
 #define FTP_RETRY_INTERVAL 3600
+#define WIFI_TIMEOUT_MS 2000
 
 const float POLLS_PER_HOUR = 3600 / POLL_INTERVAL;
 const float HOURS_PER_POLL = float(POLL_INTERVAL) / 3600;
-
-struct EnergyLogEntry
-{
-    time_t time;
-    float onDuration = 0; // hours
-    uint16_t maxPower = 0; // Watts
-    float energy = 0.0; // Wh or kWh
-};
-
+const char* ContentTypeHtml = "text/html;charset=UTF-8";
 
 SoladinComm Soladin;
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer(NTP_SERVER, 24 * 3600); // Synchronize daily
-WiFiFTPClient FTPClient(2000); // 2 sec timeout
+WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 Log<const char> EventLog(MAX_EVENT_LOG_SIZE);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
@@ -61,14 +56,6 @@ time_t soladinLastOnTime = 0;
 time_t syncFTPTime = 0;
 time_t lastFTPSyncTime = 0;
 float lastGridEnergy = 0;
-
-
-const char* formatTime(const char* format, time_t time)
-{
-    static char timeString[32];
-    strftime(timeString, sizeof(timeString), format, gmtime(&time));
-    return timeString;
-}
 
 
 void logEvent(String msg)
@@ -93,7 +80,6 @@ void setup()
     #endif
 
     PersistentData.begin();
-    TimeServer.timeZoneOffset = PersistentData.timeZoneOffset;
     
     SPIFFS.begin();
 
@@ -132,9 +118,9 @@ void loop()
         digitalWrite(LED_BUILTIN, 1);
     }
 
+    // Let WiFi State Machine handle initialization and web requests
+    // This also calls the onXXX methods below
     WiFiSM.run();
-
-    delay(10);
 }
 
 
@@ -160,7 +146,7 @@ void onWiFiInitialized()
         digitalWrite(LED_BUILTIN, 1);
     }
 
-    if ((syncFTPTime != 0) && (currentTime >= syncFTPTime))
+    if ((syncFTPTime != 0) && (currentTime >= syncFTPTime) && WiFiSM.isConnected())
     {
         if (trySyncFTP(nullptr))
         {
@@ -445,7 +431,7 @@ void writeHtmlRow(String label, float value, String unitOfMeasure, const char* v
     snprintf(valueString, sizeof(valueString), valueFormat, value);
 
     HttpResponse.printf(
-        F("<tr><td>%s</td><td>%s %s</td></tr>\r\n"),
+        F("<tr><th>%s</th><td>%s %s</td></tr>\r\n"),
         label.c_str(),
         valueString,
         unitOfMeasure.c_str()
@@ -474,7 +460,7 @@ void handleHttpRootRequest()
 
     HttpResponse.println(F("<h1>Soladin device stats</h1>"));
     HttpResponse.println(F("<table class=\"devstats\">"));
-    HttpResponse.printf(F("<tr><td>Status</td><td>%s</td></tr>\r\n"), status.c_str());
+    HttpResponse.printf(F("<tr><th>Status</th><td>%s</td></tr>\r\n"), status.c_str());
     writeHtmlRow(F("PV Voltage"), Soladin.pvVoltage, "V", "%0.1f");
     writeHtmlRow(F("PV Current"), Soladin.pvCurrent, "A", "%0.2f");
     writeHtmlRow(F("PV Power"), pvPower, "W", "%0.1f");
@@ -487,15 +473,19 @@ void handleHttpRootRequest()
         writeHtmlRow(F("Efficiency"), float(Soladin.gridPower) / pvPower * 100, "%", "%0.0f");
     HttpResponse.println(F("</table>"));
 
+    const char* ftpSync;
+    if (lastFTPSyncTime == 0)
+        ftpSync = "Not yet";
+    else
+        ftpSync = formatTime("%H:%M", lastFTPSyncTime);
+
     HttpResponse.println(F("<h1>Soladin server status</h1>"));
     HttpResponse.println(F("<table class=\"devstats\">"));
-    HttpResponse.printf(F("<tr><td>Free Heap</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><td>Uptime</td><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
-    if (lastFTPSyncTime != 0)
-        HttpResponse.printf(F("<tr><td>FTP Sync</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastFTPSyncTime));
+    HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
+    HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
+    HttpResponse.printf(F("<tr><th>FTP Sync</th><td>%s</td></tr>\r\n"), ftpSync);
+    HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged.</a></th><td>%d</td>\r\n"), EventLog.count());
     HttpResponse.println(F("</table>"));
-
-    HttpResponse.printf(F("<p class=\"events\"><a href=\"/events\">%d events logged.</a></p>\r\n"), EventLog.count());
 
     writeEnergyLogTable(F("Energy per hour"), EnergyPerHourLog, "%H:%M", "Wh");
     writeEnergyLogTable(F("Energy per day"), EnergyPerDayLog, "%a", "kWh");
@@ -504,7 +494,7 @@ void handleHttpRootRequest()
 
     writeHtmlFooter();
 
-    WebServer.send(200, "text/html", HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -583,7 +573,7 @@ void handleHttpSyncFTPRequest()
  
     writeHtmlFooter();
 
-    WebServer.send(200, "text/html", HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -604,7 +594,7 @@ void handleHttpEventLogRequest()
 
     writeHtmlFooter();
 
-    WebServer.send(200, "text/html", HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -635,22 +625,25 @@ void handleHttpConfigFormRequest()
 {
     Tracer tracer(F("handleHttpConfigFormRequest"));
 
-    char tzOffsetString[4];
-    sprintf(tzOffsetString, "%d", PersistentData.timeZoneOffset);
-
     writeHtmlHeader(F("Configuration"), true, true);
 
     HttpResponse.println(F("<form action=\"/config\" method=\"POST\">"));
     HttpResponse.println(F("<table>"));
     addTextBoxRow(HttpResponse, F("hostName"), PersistentData.hostName, F("Host name"));
-    addTextBoxRow(HttpResponse, F("tzOffset"), tzOffsetString, F("Timezone offset"));
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
     HttpResponse.println(F("</form>"));
 
     writeHtmlFooter();
 
-    WebServer.send(200, "text/html", HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
+}
+
+
+void copyString(const String& input, char* buffer, size_t bufferSize)
+{
+    strncpy(buffer, input.c_str(), bufferSize);
+    buffer[bufferSize - 1] = 0;
 }
 
 
@@ -658,16 +651,10 @@ void handleHttpConfigFormPost()
 {
     Tracer tracer(F("handleHttpConfigFormPost"));
 
-    String tzOffsetString = WebServer.arg("tzOffset");
-
-    strcpy(PersistentData.hostName, WebServer.arg("hostName").c_str()); 
-
-    PersistentData.timeZoneOffset = static_cast<int8_t>(atoi(tzOffsetString.c_str()));
+    copyString(WebServer.arg("hostName"), PersistentData.hostName, sizeof(PersistentData.hostName));
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();
-
-    TimeServer.timeZoneOffset = PersistentData.timeZoneOffset; 
 
     handleHttpConfigFormRequest();
 }
