@@ -137,8 +137,10 @@ void setup()
 void loop() 
 {
     currentTime = WiFiSM.getCurrentTime();
+
+    // Let WiFi State Machine handle initialization and web requests
+    // This also calls the onXXX methods below
     WiFiSM.run();
-    delay(10);
 }
 
 
@@ -339,7 +341,7 @@ void onWiFiInitialized()
         }
     }
 
-    if ((syncFTPTime != 0) && (currentTime >= syncFTPTime))
+    if ((syncFTPTime != 0) && (currentTime >= syncFTPTime) && WiFiSM.isConnected())
     {
         if (trySyncFTP(nullptr))
         {
@@ -562,6 +564,14 @@ void handleHttpRootRequest()
     int maxPhasePower = 230 * PersistentData.maxPhaseCurrent; 
     int maxTotalPower = maxPhasePower * PersistentData.phaseCount;
 
+    const char* ftpSync;
+    if (!isFTPEnabled)
+        ftpSync = "Disabled";
+    else if (lastFTPSyncTime == 0)
+        ftpSync = "Not yet";
+    else
+        ftpSync = formatTime("%H:%M", lastFTPSyncTime);
+
     Html.writeHeader(F("Home"), false, false, REFRESH_INTERVAL);
 
     HttpResponse.println(F("<h1>Current power</h1>"));
@@ -578,22 +588,14 @@ void handleHttpRootRequest()
 
     HttpResponse.println(F("<h1>Monitor status</h1>"));
     HttpResponse.println(F("<table class=\"status\">"));
-    HttpResponse.printf(F("<tr><td>Free Heap</td><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><td>Uptime</td><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
-    HttpResponse.printf(F("<tr><td><a href=\"/telegram\">Last Telegram</a></td><td>%s</td></tr>\r\n"), formatTime("%H:%M:%S", lastTelegramReceivedTime));
-    HttpResponse.printf(F("<tr><td>Last Gas Time</td><td>%s</td></tr>\r\n"), formatTime("%H:%M:%S", gasData.time));
-    if (isFTPEnabled)
-    {
-        HttpResponse.printf(F("<tr><td>FTP Sync Time</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastFTPSyncTime));
-        HttpResponse.printf(F("<tr><td><a href=\"/sync\">FTP Sync entries</a></td><td>%d</td></tr>\r\n"), logEntriesToSync);
-    }
-    else
-    {
-        HttpResponse.println(F("<tr><td>FTP Sync</td><td>Disabled</td></tr>"));
-    }
-    
-    HttpResponse.printf(F("<tr><td><a href=\"/powerlog\">Power entries</a></td><td>%d</td></tr>\r\n"), (powerLogIndex + 1));
-    HttpResponse.printf(F("<tr><td><a href=\"/events\">Events logged</a></td><td>%d</td></tr>\r\n"), EventLog.count());
+    HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
+    HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
+    HttpResponse.printf(F("<tr><th><a href=\"/telegram\">Last Telegram</a></th><td>%s</td></tr>\r\n"), formatTime("%H:%M:%S", lastTelegramReceivedTime));
+    HttpResponse.printf(F("<tr><th>Last Gas Time</th><td>%s</td></tr>\r\n"), formatTime("%H:%M:%S", gasData.time));
+    HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync);
+    HttpResponse.printf(F("<tr><th>FTP Sync entries</td><td>%d</th></tr>\r\n"), logEntriesToSync);
+    HttpResponse.printf(F("<tr><th><a href=\"/powerlog\">Power entries</a></th><td>%d</td></tr>\r\n"), (powerLogIndex + 1));
+    HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></tr>\r\n"), EventLog.count());
     HttpResponse.println(F("</table>"));
 
     writeHtmlEnergyLogTable(F("Energy per hour"), EnergyPerHourLog, "%H:%M", 1);

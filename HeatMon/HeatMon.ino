@@ -280,8 +280,6 @@ void loop()
         if ((tBuffer < (PersistentData.tBufferMax - MAX_TEMP_DELTA_T)) && maxTempValveActivated)
             setMaxTempValve(false);
     }
-
-    delay(10);
 }
 
 
@@ -321,7 +319,7 @@ void onWiFiInitialized()
         updateEnergyLog();
     }
 
-    if ((syncFTPTime != 0) && (currentTime >= syncFTPTime))
+    if ((syncFTPTime != 0) && (currentTime >= syncFTPTime) && WiFiSM.isConnected())
     {
         if (trySyncFTP(nullptr))
         {
@@ -421,7 +419,7 @@ void updateEnergyLog()
         Energy_Meter.resetEnergy();
         newEnergyLogEntry();
         if (PersistentData.ftpServer[0] != 0)
-            syncFTPTime = currentTime + (SECONDS_PER_DAY / 2);
+            syncFTPTime = currentTime;
     }
 
     lastEnergyLogEntryPtr->energyOut += pOutKW / 3600;
