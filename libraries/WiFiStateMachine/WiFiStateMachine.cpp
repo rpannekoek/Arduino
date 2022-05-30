@@ -261,7 +261,7 @@ void WiFiStateMachine::run()
         case WiFiInitState::Connecting:
             if (wifiStatus == WL_CONNECTED)
                 setState(WiFiInitState::Connected);
-            else if (_staDisconnected || (wifiStatus == WL_CONNECT_FAILED))
+            else if (wifiStatus == WL_CONNECT_FAILED)
                 setState(WiFiInitState::ConnectFailed); 
             else if (currentStateMillis >= CONNECT_TIMEOUT_MS)
             {
