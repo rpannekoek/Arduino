@@ -18,6 +18,7 @@
 #define DEBUG_BAUDRATE 74880
 // 36 seconds poll interval => 100 polls per hour
 #define POLL_INTERVAL 36
+#define TODAY_LOG_INTERVAL (30 * 60)
 #define MIN_NIGHT_DURATION (4 * 3600)
 #define MAX_EVENT_LOG_SIZE 50
 #define MAX_BAR_LENGTH 50
@@ -27,8 +28,13 @@
 #define FTP_RETRY_INTERVAL 3600
 #define WIFI_TIMEOUT_MS 2000
 
-const float POLLS_PER_HOUR = 3600 / POLL_INTERVAL;
-const float HOURS_PER_POLL = float(POLL_INTERVAL) / 3600;
+#define SHOW_ENERGY "showEnergy"
+#define TODAY F("today")
+#define DAY F("day")
+#define WEEK F("week")
+#define MONTH F("month")
+
+const float pollIntervalHours = float(POLL_INTERVAL) / 3600;
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 
 SoladinComm Soladin;
@@ -39,12 +45,12 @@ StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 Log<const char> EventLog(MAX_EVENT_LOG_SIZE);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
-Log<EnergyLogEntry> EnergyPerHourLog(16);
-Log<EnergyLogEntry> EnergyPerDayLog(7);
-Log<EnergyLogEntry> EnergyPerWeekLog(12);
-Log<EnergyLogEntry> EnergyPerMonthLog(12);
+StaticLog<EnergyLogEntry> EnergyTodayLog(16 * 2); // 16 hours ontime max
+StaticLog<EnergyLogEntry> EnergyPerDayLog(7);
+StaticLog<EnergyLogEntry> EnergyPerWeekLog(12);
+StaticLog<EnergyLogEntry> EnergyPerMonthLog(12);
 
-EnergyLogEntry* energyPerHourLogEntryPtr = nullptr;
+EnergyLogEntry* energyTodayLogEntryPtr = nullptr;
 EnergyLogEntry* energyPerDayLogEntryPtr = nullptr;
 EnergyLogEntry* energyPerWeekLogEntryPtr = nullptr;
 EnergyLogEntry* energyPerMonthLogEntryPtr = nullptr;
@@ -130,9 +136,10 @@ void onTimeServerSynced()
     pollSoladinTime = currentTime;
     soladinLastOnTime = currentTime; // Prevent immediate new day
 
-    initializeDay();
-    initializeWeek();
-    initializeMonth();
+    newEnergyTodayLogEntry();
+    newEnergyPerDayLogEntry();
+    newEnergyPerWeekLogEntry();
+    newEnergyPerMonthLogEntry();
 }
 
 
@@ -164,50 +171,47 @@ void onWiFiInitialized()
 }
 
 
-void initializeHour()
+void newEnergyTodayLogEntry()
 {
-    Tracer tracer(F("initializeHour"));
+    Tracer tracer(F("newEnergyTodayLogEntry"));
     
-    energyPerHourLogEntryPtr = new EnergyLogEntry();
-    energyPerHourLogEntryPtr->time = currentTime;
-
-    EnergyPerHourLog.add(energyPerHourLogEntryPtr);
+    EnergyLogEntry newEnergyLogEntry;
+    newEnergyLogEntry.time = (currentTime - (currentTime % TODAY_LOG_INTERVAL));
+ 
+    energyTodayLogEntryPtr = EnergyTodayLog.add(&newEnergyLogEntry);
 }
 
 
-void initializeDay()
+void newEnergyPerDayLogEntry()
 {
-    Tracer tracer(F("initializeDay"));
+    Tracer tracer(F("newEnergyPerDayLogEntry"));
     
-    EnergyPerHourLog.clear();
-    initializeHour();
-
-    energyPerDayLogEntryPtr = new EnergyLogEntry();
-    energyPerDayLogEntryPtr->time = currentTime;
-
-    EnergyPerDayLog.add(energyPerDayLogEntryPtr);
+    EnergyLogEntry newEnergyLogEntry;
+    newEnergyLogEntry.time = currentTime;
+ 
+    energyPerDayLogEntryPtr = EnergyPerDayLog.add(&newEnergyLogEntry);
 }
 
 
-void initializeWeek()
+void newEnergyPerWeekLogEntry()
 {
-    Tracer tracer(F("initializeWeek"));
+    Tracer tracer(F("newEnergyPerWeekLogEntry"));
 
-    energyPerWeekLogEntryPtr = new EnergyLogEntry();
-    energyPerWeekLogEntryPtr->time = currentTime;
-
-    EnergyPerWeekLog.add(energyPerWeekLogEntryPtr);
+    EnergyLogEntry newEnergyLogEntry;
+    newEnergyLogEntry.time = currentTime;
+ 
+    energyPerWeekLogEntryPtr = EnergyPerWeekLog.add(&newEnergyLogEntry);
 }
 
 
-void initializeMonth()
+void newEnergyPerMonthLogEntry()
 {
-    Tracer tracer(F("initializeMonth"));
+    Tracer tracer(F("newEnergyPerMonthLogEntry"));
 
-    energyPerMonthLogEntryPtr = new EnergyLogEntry();
-    energyPerMonthLogEntryPtr->time = currentTime;
-
-    EnergyPerMonthLog.add(energyPerMonthLogEntryPtr);
+    EnergyLogEntry newEnergyLogEntry;
+    newEnergyLogEntry.time = currentTime;
+ 
+    energyPerMonthLogEntryPtr = EnergyPerMonthLog.add(&newEnergyLogEntry);
 }
 
 
@@ -215,15 +219,18 @@ void startNewDay()
 {
     Tracer tracer(F("startNewDay"));
 
-    initializeDay();
+    EnergyTodayLog.clear();
+    newEnergyTodayLogEntry();
+
+    newEnergyPerDayLogEntry();
 
     if (currentTime >= (energyPerWeekLogEntryPtr->time + 561600)) // use 6.5 days to deal with sunrise earlier than last week
-        initializeWeek();
+        newEnergyPerWeekLogEntry();
 
     int currentMonth = gmtime(&currentTime)->tm_mon;
     int lastLogMonth = gmtime(&energyPerMonthLogEntryPtr->time)->tm_mon;
     if (currentMonth != lastLogMonth)
-        initializeMonth();
+        newEnergyPerMonthLogEntry();
 
     // Try to sync last day entry with FTP server
     syncFTPTime = currentTime;
@@ -293,34 +300,18 @@ void pollSoladin()
     
     if (currentTime > (soladinLastOnTime + MIN_NIGHT_DURATION))
         startNewDay();
-    else if (currentTime >= energyPerHourLogEntryPtr->time + 3600)
-        initializeHour();
+    else if (currentTime >= energyTodayLogEntryPtr->time + TODAY_LOG_INTERVAL)
+        newEnergyTodayLogEntry();
 
     soladinLastOnTime = currentTime;
 
-    float gridEnergyDelta = (lastGridEnergy == 0)  ? 0 : (Soladin.gridEnergy - lastGridEnergy); // kWh
-    lastGridEnergy = Soladin.gridEnergy;
-    TRACE(F("gridEnergyDelta = %f kWh\n"), gridEnergyDelta);
-    
-    updateEnergyLog(energyPerHourLogEntryPtr, float(Soladin.gridPower) / POLLS_PER_HOUR); // This has higher resolution than gridEnergyDelta
-    updateEnergyLog(energyPerDayLogEntryPtr, gridEnergyDelta);
-    updateEnergyLog(energyPerWeekLogEntryPtr, gridEnergyDelta);
-    updateEnergyLog(energyPerMonthLogEntryPtr, gridEnergyDelta);
+    energyTodayLogEntryPtr->update(Soladin.gridPower, pollIntervalHours, false);
+    energyPerDayLogEntryPtr->update(Soladin.gridPower, pollIntervalHours, true);
+    energyPerWeekLogEntryPtr->update(Soladin.gridPower, pollIntervalHours, true);
+    energyPerMonthLogEntryPtr->update(Soladin.gridPower, pollIntervalHours, true);
 
     if (Soladin.flags.length() > 0)
         logEvent(Soladin.flags);
-}
-
-
-void updateEnergyLog(EnergyLogEntry* energyLogEntryPtr, float energyDelta)
-{
-    if (Soladin.gridPower > 0)
-        energyLogEntryPtr->onDuration += HOURS_PER_POLL;
-
-    if (Soladin.gridPower > energyLogEntryPtr->maxPower)
-        energyLogEntryPtr->maxPower = Soladin.gridPower;
-
-    energyLogEntryPtr->energy += energyDelta; 
 }
 
 
@@ -331,7 +322,7 @@ void webTest()
     // Create some test data
     for (int i = 0; i < 7; i++)
     {
-        initializeDay();
+        newEnergyPerDayLogEntry();
         energyPerDayLogEntryPtr->energy = i;
         energyPerDayLogEntryPtr->onDuration = i;
         energyPerDayLogEntryPtr->maxPower = i;
@@ -339,15 +330,15 @@ void webTest()
 
     for (int i = 0; i < 16; i++)
     {
-        initializeHour();
-        energyPerHourLogEntryPtr->energy = i;
-        energyPerHourLogEntryPtr->onDuration = i;
-        energyPerHourLogEntryPtr->maxPower = i;
+        newEnergyTodayLogEntry();
+        energyTodayLogEntryPtr->energy = i;
+        energyTodayLogEntryPtr->onDuration = i;
+        energyTodayLogEntryPtr->maxPower = i;
     }
 
     for (int i = 0; i < 12; i++)
     {
-        initializeWeek();
+        newEnergyPerWeekLogEntry();
         energyPerWeekLogEntryPtr->energy = i;
         energyPerWeekLogEntryPtr->onDuration = i;
         energyPerWeekLogEntryPtr->maxPower = i;
@@ -355,7 +346,7 @@ void webTest()
 
     for (int i = 0; i < 12; i++)
     {
-        initializeMonth();
+        newEnergyPerMonthLogEntry();
         energyPerMonthLogEntryPtr->energy = i;
         energyPerMonthLogEntryPtr->onDuration = i;
         energyPerMonthLogEntryPtr->maxPower = i;
@@ -439,6 +430,12 @@ void writeHtmlRow(String label, float value, String unitOfMeasure, const char* v
 }
 
 
+void writeEnergyLink(String unit)
+{
+    HttpResponse.printf(F(" <a href=\"?%s=%s\">%s</a>"), SHOW_ENERGY, unit.c_str(), unit.c_str());
+}
+
+
 void handleHttpRootRequest()
 {
     Tracer tracer(F("handleHttpRootRequest"));
@@ -487,10 +484,22 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged.</a></th><td>%d</td>\r\n"), EventLog.count());
     HttpResponse.println(F("</table>"));
 
-    writeEnergyLogTable(F("Energy per hour"), EnergyPerHourLog, "%H:%M", "Wh");
-    writeEnergyLogTable(F("Energy per day"), EnergyPerDayLog, "%a", "kWh");
-    writeEnergyLogTable(F("Energy per week"), EnergyPerWeekLog, "%d %b", "kWh");
-    writeEnergyLogTable(F("Energy per month"), EnergyPerMonthLog, "%b", "kWh");
+    String showEnergy = WebServer.hasArg(SHOW_ENERGY) ? WebServer.arg(SHOW_ENERGY) : TODAY;
+    HttpResponse.print(F("<p>Show energy per"));
+    if (showEnergy != TODAY) writeEnergyLink(TODAY);
+    if (showEnergy != DAY) writeEnergyLink(DAY);
+    if (showEnergy != WEEK) writeEnergyLink(WEEK);
+    if (showEnergy != MONTH) writeEnergyLink(MONTH);
+    HttpResponse.println(F("</p>"));
+
+    if (showEnergy == TODAY)
+        writeEnergyLogTable(showEnergy, EnergyTodayLog, "%H:%M", "Wh");
+    if (showEnergy == DAY)
+        writeEnergyLogTable(showEnergy, EnergyPerDayLog, "%a", "kWh");
+    if (showEnergy == WEEK)
+        writeEnergyLogTable(showEnergy, EnergyPerWeekLog, "%d %b", "kWh");
+    if (showEnergy == MONTH)
+        writeEnergyLogTable(showEnergy, EnergyPerMonthLog, "%b", "kWh");
 
     writeHtmlFooter();
 
@@ -523,7 +532,7 @@ void writeGraphRow(EnergyLogEntry* energyLogEntryPtr, const char* labelFormat, c
 }
 
 
-void writeEnergyLogTable(String title, Log<EnergyLogEntry>& energyLog, const char* labelFormat, const char* unitOfMeasure)
+void writeEnergyLogTable(String unit, StaticLog<EnergyLogEntry>& energyLog, const char* labelFormat, const char* unitOfMeasure)
 {
     // Auto-ranging: determine max value from the log entries
     float maxValue = 0;
@@ -535,7 +544,7 @@ void writeEnergyLogTable(String title, Log<EnergyLogEntry>& energyLog, const cha
         energyLogEntryPtr = energyLog.getNextEntry();
     }
 
-    HttpResponse.printf(F("<h1>%s</h1>"), title.c_str());
+    HttpResponse.printf(F("<h1>Energy per %s</h1>\r\n"), unit.c_str());
     HttpResponse.println(F("<table class=\"nrg\">"));
 
     energyLogEntryPtr = energyLog.getFirstEntry();
