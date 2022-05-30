@@ -45,12 +45,12 @@ void PersistentDataBase::writeToEEPROM()
     printData();
  
     // Write magic
-    byte* bytePtr = (byte*) &magic;
+    uint8_t* bytePtr = (uint8_t*) &magic;
     for (size_t i = 0; i < sizeof(magic); i++)
         EEPROM.write(i, *bytePtr++);
 
     // Write actual data
-    bytePtr = ((byte*) &_dataSize) + sizeof(_dataSize);
+    bytePtr = ((uint8_t*) &_dataSize) + sizeof(_dataSize);
     for (size_t i = 0; i < _dataSize; i++)
         EEPROM.write(i + sizeof(magic), *bytePtr++);
     EEPROM.commit();
@@ -65,7 +65,7 @@ bool PersistentDataBase::readFromEEPROM()
     TRACE(F("Reading %u + %u bytes from EEPROM...\n"), _dataSize, sizeof(magic)); 
 
     // Read magic
-    byte* bytePtr = (byte*) &magic;
+    uint8_t* bytePtr = (uint8_t*) &magic;
     for (size_t i = 0; i < sizeof(magic); i++)
         *bytePtr++ = EEPROM.read(i);
 
@@ -74,7 +74,7 @@ bool PersistentDataBase::readFromEEPROM()
         return false;
 
     // Read actual data
-    bytePtr = ((byte*) &_dataSize) + sizeof(_dataSize);
+    bytePtr = ((uint8_t*) &_dataSize) + sizeof(_dataSize);
     for (size_t i = 0; i < _dataSize; i++)
         *bytePtr++ = EEPROM.read(i + sizeof(magic));
 
@@ -86,6 +86,6 @@ bool PersistentDataBase::readFromEEPROM()
 
 void PersistentDataBase::printData()
 {
-    byte* dataPtr = ((byte*) &_dataSize) + sizeof(_dataSize);
+    uint8_t* dataPtr = ((uint8_t*) &_dataSize) + sizeof(_dataSize);
     Tracer::hexDump(dataPtr, _dataSize);
 }

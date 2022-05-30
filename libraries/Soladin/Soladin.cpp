@@ -13,7 +13,7 @@ struct SoladinProbeResponse
   uint16_t sourceId;
   uint16_t commandId;
   uint16_t unknown;
-  byte checkSum; 
+  uint8_t checkSum; 
 };
 
 
@@ -29,11 +29,11 @@ struct SoladinDeviceStatsResponse
   uint16_t gridVoltage;
   uint16_t unknown1;
   uint16_t gridPower;
-  byte gridEnergy[3];
-  byte temperature;
+  uint8_t gridEnergy[3];
+  uint8_t temperature;
   uint32_t operatingTime;
   uint16_t unknown2;
-  byte checkSum; 
+  uint8_t checkSum; 
 };
 
 
@@ -73,7 +73,7 @@ bool SoladinComm::probe()
     Tracer tracer(F("SoladinComm::probe"));
 
     SoladinProbeResponse response;
-    return query((byte*) _cmdProbe, (byte*) &response, 9);
+    return query((uint8_t*) _cmdProbe, (uint8_t*) &response, 9);
 }
 
 
@@ -82,7 +82,7 @@ bool SoladinComm::getDeviceStats()
     Tracer tracer(F("SoladinComm::getDeviceStats"));
 
     SoladinDeviceStatsResponse response;
-    if (!query((byte*) _cmdDeviceStats, (byte*) &response, 31))
+    if (!query((uint8_t*) _cmdDeviceStats, (uint8_t*) &response, 31))
         return false;
     
     pvVoltage = float(response.pvVoltage) / 10;
@@ -110,7 +110,7 @@ bool SoladinComm::getDeviceStats()
 }
 
 
-bool SoladinComm::query(byte* cmd, byte* response, int responseSize)
+bool SoladinComm::query(uint8_t* cmd, uint8_t* response, int responseSize)
 {
     Tracer tracer(F("SoladinComm::query"));
 
