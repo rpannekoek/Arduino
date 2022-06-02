@@ -27,6 +27,7 @@
 #define FTP_RETRY_INTERVAL (60 * 60)
 #define TEMP_LOG_INTERVAL (30 * 60)
 #define TEMP_POLL_INTERVAL 10
+#define NIGHT_OFFSET_DELAY (10 * 60)
 
 #define LED_ON 0
 #define LED_OFF 1
@@ -57,6 +58,8 @@ DallasTemperature TempSensors(&OneWireBus);
 U8G2_SSD1327_MIDAS_128X128_F_HW_I2C Display(U8G2_R1, /* reset=*/ U8X8_PIN_NONE);
 
 time_t currentTime = 0;
+time_t nightTime = 0;
+time_t dayTime = 0;
 time_t pollTempTime = 0;
 time_t syncFTPTime = 0;
 time_t lastFTPSyncTime = 0;
@@ -243,7 +246,14 @@ void onWiFiInitialized()
 
         float tInsideMeasured = TempSensors.getTempC(PersistentData.tInsideSensorAddress);
         if (tInsideMeasured != DEVICE_DISCONNECTED_C)
-            tInside = tInsideMeasured + PersistentData.tInsideOffset;
+        {
+            // At "night time" (when WiFi is sleeping), the inside temperature sensor may sense less heat
+            // and thus may require a different offset.
+            if ((nightTime != 0) && (currentTime >= nightTime))
+                tInside = tInsideMeasured + PersistentData.tInsideNightOffset;
+            else
+                tInside = tInsideMeasured + PersistentData.tInsideOffset;
+        }
 
         float tOutsideMeasured = TempSensors.getTempC(PersistentData.tOutsideSensorAddress);
         if (tOutsideMeasured != DEVICE_DISCONNECTED_C)
@@ -256,8 +266,27 @@ void onWiFiInitialized()
         displayData();
     }
 
-    if (WiFiSM.getState() < WiFiInitState::Connected)
+    if (!WiFiSM.isConnected())
+    {
+        // WiFi connection is lost. 
+        // This starts "night time" after a while (to let the sensor cool down a bit). 
+        if (nightTime == 0) nightTime = currentTime  + NIGHT_OFFSET_DELAY;
+
+        // Skip stuff that requires a WiFi connection.
         return;
+    }
+
+    if (nightTime != 0)
+    {
+        // WiFi is connected. 
+        // This stops "night time" after a while (to let the sensor warm up a bit). 
+        if (dayTime == 0) dayTime = currentTime + NIGHT_OFFSET_DELAY;
+        else if (currentTime >= dayTime)
+        {
+            nightTime = 0;
+            dayTime = 0;
+        }
+    }
 
     if ((syncFTPTime != 0) && (currentTime >= syncFTPTime))
     {
@@ -735,17 +764,24 @@ void handleHttpCalibrateFormRequest()
         HttpResponse.println(F("<tr><th>Sensor</th><th>Measured</th><th>Offset</th><th>Effective</th></tr>"));
     
         HttpResponse.printf(
-            F("<tr><td>T<sub>in</sub></td><td>%0.2f °C<td><input type=\"text\" name=\"tInsideOffset\" value=\"%0.2f\" maxlength=\"5\"></td><td>%0.2f °C</td></tr>\r\n"),
+            F("<tr><td>Inside</td><td>%0.2f °C<td><input type=\"text\" name=\"tInsideOffset\" value=\"%0.2f\" maxlength=\"5\"></td><td>%0.2f °C</td></tr>\r\n"),
             tInsideMeasured,
             PersistentData.tInsideOffset,
             tInsideMeasured + PersistentData.tInsideOffset
             );
     
+        HttpResponse.printf(
+            F("<tr><td>Inside (night)</sub></td><td>%0.2f °C<td><input type=\"text\" name=\"tInsideNightOffset\" value=\"%0.2f\" maxlength=\"5\"></td><td>%0.2f °C</td></tr>\r\n"),
+            tInsideMeasured,
+            PersistentData.tInsideNightOffset,
+            tInsideMeasured + PersistentData.tInsideNightOffset
+            );
+
         if (hasOutsideSensor)
         {
             float tOutsideMeasured = TempSensors.getTempC(PersistentData.tOutsideSensorAddress);
             HttpResponse.printf(
-                F("<tr><td>T<sub>buffer</sub></td><td>%0.2f °C<td><input type=\"text\" name=\"tBufferOffset\" value=\"%0.2f\" maxlength=\"5\"></td><td>%0.2f °C</td></tr>\r\n"),
+                F("<tr><td>Outside</td><td>%0.2f °C<td><input type=\"text\" name=\"tOutsideOffset\" value=\"%0.2f\" maxlength=\"5\"></td><td>%0.2f °C</td></tr>\r\n"),
                 tOutsideMeasured,
                 PersistentData.tOutsideOffset,
                 tOutsideMeasured + PersistentData.tOutsideOffset        
@@ -775,6 +811,8 @@ void handleHttpCalibrateFormPost()
     Tracer tracer(F("handleHttpCalibrateFormPost"));
 
     PersistentData.tInsideOffset = WebServer.arg("tInsideOffset").toFloat();
+    PersistentData.tInsideNightOffset = WebServer.arg("tInsideNightOffset").toFloat();
+
     if (WebServer.hasArg("tOutsideOffset"))
     {
         PersistentData.tOutsideOffset = WebServer.arg("tOutsideOffset").toFloat();

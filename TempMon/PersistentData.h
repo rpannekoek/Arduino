@@ -14,6 +14,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
     DeviceAddress tOutsideSensorAddress;
     float tInsideOffset;
     float tOutsideOffset;
+    float tInsideNightOffset;
 
     PersistentDataStruct() : PersistentDataBase(
         sizeof(wifiSSID) +
@@ -26,7 +27,8 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         sizeof(tInsideSensorAddress) +
         sizeof(tOutsideSensorAddress) +
         sizeof(tInsideOffset) +
-        sizeof(tOutsideOffset)
+        sizeof(tOutsideOffset) +
+        sizeof(tInsideNightOffset)
         ) {}
 
     virtual void initialize()
@@ -42,6 +44,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         memset(tOutsideSensorAddress, 0, sizeof(tOutsideSensorAddress));
         tInsideOffset = 0;
         tOutsideOffset = 0;
+        tInsideNightOffset = 0;
     }
 
     virtual void validate()
@@ -57,6 +60,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
 
         tInsideOffset = std::max(std::min(tInsideOffset, 10.0F), -10.0F);
         tOutsideOffset = std::max(std::min(tOutsideOffset, 10.0F), -10.0F);
+        tInsideNightOffset = std::max(std::min(tInsideNightOffset, 10.0F), -10.0F);
     }
 };
 
