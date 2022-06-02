@@ -10,6 +10,7 @@
 #include <StringBuilder.h>
 #include <Log.h>
 #include <WiFiStateMachine.h>
+#include <HtmlWriter.h>
 #include "PersistentData.h"
 #include "EnergyLogEntry.h"
 #include "WiFiCredentials.private.h"
@@ -23,6 +24,7 @@
 #define MAX_EVENT_LOG_SIZE 50
 #define MAX_BAR_LENGTH 50
 #define ICON "/apple-touch-icon.png"
+#define CSS "/styles.css"
 #define NTP_SERVER "fritz.box"
 #define FTP_SERVER "fritz.box"
 #define FTP_RETRY_INTERVAL 3600
@@ -42,6 +44,7 @@ ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer(NTP_SERVER, 24 * 3600); // Synchronize daily
 WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
+HtmlWriter Html(HttpResponse, ICON, CSS, MAX_BAR_LENGTH);
 Log<const char> EventLog(MAX_EVENT_LOG_SIZE);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
@@ -86,6 +89,7 @@ void setup()
     #endif
 
     PersistentData.begin();
+    Html.setTitlePrefix(PersistentData.hostName);
     
     SPIFFS.begin();
 
@@ -96,9 +100,8 @@ void setup()
     WebServer.on("/events/clear", handleHttpEventLogClearRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
     WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
-    WebServer.serveStatic("/favicon.ico", SPIFFS, "/favicon.ico", cacheControl);
     WebServer.serveStatic(ICON, SPIFFS, ICON, cacheControl);
-    WebServer.serveStatic("/styles.css", SPIFFS, "/styles.css", cacheControl);
+    WebServer.serveStatic(CSS, SPIFFS, CSS, cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
 
     WiFiSM.on(WiFiInitState::TimeServerSynced, onTimeServerSynced);
@@ -389,33 +392,6 @@ void handleSerialRequest()
 }
 
 
-void writeHtmlHeader(String title, bool includeHomePageLink, bool includeHeading)
-{
-    HttpResponse.clear();
-    HttpResponse.println(F("<html>"));
-    
-    HttpResponse.println(F("<head>"));
-    HttpResponse.printf(F("<title>%s - %s</title>\r\n"), PersistentData.hostName, title.c_str());
-    HttpResponse.println(F("<link rel=\"stylesheet\" type=\"text/css\" href=\"/styles.css\">"));
-    HttpResponse.printf(F("<link rel=\"icon\" sizes=\"128x128\" href=\"%s\">\r\n<link rel=\"apple-touch-icon-precomposed\" sizes=\"128x128\" href=\"%s\">\r\n"), ICON, ICON);
-    HttpResponse.printf(F("<meta http-equiv=\"refresh\" content=\"%d\">\r\n") , POLL_INTERVAL);
-    HttpResponse.println(F("</head>"));
-    
-    HttpResponse.println(F("<body>"));
-    if (includeHomePageLink)
-        HttpResponse.println(F("<a href=\"/\"><img src=\"" ICON "\"></a>"));
-    if (includeHeading)
-        HttpResponse.printf(F("<h1>%s</h1>\r\n"), title.c_str());
-}
-
-
-void writeHtmlFooter()
-{
-    HttpResponse.println(F("</body>"));
-    HttpResponse.println(F("</html>"));
-}
-
-
 void writeHtmlRow(String label, float value, String unitOfMeasure, const char* valueFormat = "%0.0f")
 {
     char valueString[16];
@@ -453,7 +429,22 @@ void handleHttpRootRequest()
     else
         status = F("Off");
 
-    writeHtmlHeader(F("Home"), false, false);
+    Html.writeHeader(F("Home"), false, false, POLL_INTERVAL);
+
+    const char* ftpSync;
+    if (lastFTPSyncTime == 0)
+        ftpSync = "Not yet";
+    else
+        ftpSync = formatTime("%H:%M", lastFTPSyncTime);
+
+    HttpResponse.println(F("<h1>Soladin server status</h1>"));
+    HttpResponse.println(F("<table class=\"devstats\">"));
+    HttpResponse.printf(F("<tr><th>RSSI</th><td>%d</td></tr>\r\n"), static_cast<int>(WiFi.RSSI()));
+    HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
+    HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
+    HttpResponse.printf(F("<tr><th>FTP Sync</th><td>%s</td></tr>\r\n"), ftpSync);
+    HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged.</a></th><td>%d</td>\r\n"), EventLog.count());
+    HttpResponse.println(F("</table>"));
 
     HttpResponse.println(F("<h1>Soladin device stats</h1>"));
     HttpResponse.println(F("<table class=\"devstats\">"));
@@ -465,23 +456,9 @@ void handleHttpRootRequest()
     writeHtmlRow(F("Grid Frequency"), Soladin.gridFrequency, "Hz", "%0.2f");
     writeHtmlRow(F("Grid Power"), Soladin.gridPower, "W");
     writeHtmlRow(F("Grid Energy"), Soladin.gridEnergy, "kWh", "%0.2f");
-    writeHtmlRow(F("Temperature"), Soladin.temperature, "C");
+    writeHtmlRow(F("Temperature"), Soladin.temperature, "°C");
     if (pvPower > 0)
         writeHtmlRow(F("Efficiency"), float(Soladin.gridPower) / pvPower * 100, "%", "%0.0f");
-    HttpResponse.println(F("</table>"));
-
-    const char* ftpSync;
-    if (lastFTPSyncTime == 0)
-        ftpSync = "Not yet";
-    else
-        ftpSync = formatTime("%H:%M", lastFTPSyncTime);
-
-    HttpResponse.println(F("<h1>Soladin server status</h1>"));
-    HttpResponse.println(F("<table class=\"devstats\">"));
-    HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
-    HttpResponse.printf(F("<tr><th>FTP Sync</th><td>%s</td></tr>\r\n"), ftpSync);
-    HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged.</a></th><td>%d</td>\r\n"), EventLog.count());
     HttpResponse.println(F("</table>"));
 
     String showEnergy = WebServer.hasArg(SHOW_ENERGY) ? WebServer.arg(SHOW_ENERGY) : TODAY;
@@ -493,7 +470,7 @@ void handleHttpRootRequest()
     HttpResponse.println(F("</p>"));
 
     if (showEnergy == TODAY)
-        writeEnergyLogTable(showEnergy, EnergyTodayLog, "%H:%M", "Wh");
+        writeEnergyLogTable(TODAY, EnergyTodayLog, "%H:%M", "Wh");
     if (showEnergy == DAY)
         writeEnergyLogTable(showEnergy, EnergyPerDayLog, "%a", "kWh");
     if (showEnergy == WEEK)
@@ -501,59 +478,56 @@ void handleHttpRootRequest()
     if (showEnergy == MONTH)
         writeEnergyLogTable(showEnergy, EnergyPerMonthLog, "%b", "kWh");
 
-    writeHtmlFooter();
+    Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
-void writeGraphRow(EnergyLogEntry* energyLogEntryPtr, const char* labelFormat, const char* unitOfMeasure, float maxValue)
+void writeGraphRow(EnergyLogEntry* energyLogEntryPtr, const char* timeFormat, float maxValue)
 {
-    int barLength = 0;
-    if (maxValue != 0)
-    {
-        barLength = round((energyLogEntryPtr->energy / maxValue) * MAX_BAR_LENGTH);
-        barLength = min(barLength, MAX_BAR_LENGTH);
-    }
-
-    char bar[MAX_BAR_LENGTH + 1];
-    memset(bar, 'o', barLength);
-    bar[barLength] = 0;  
-
     HttpResponse.printf(
-        F("<tr><td>%s</td><td>%0.1f h</td><td>%d W max</td><td>%0.2f %s</td><td><span class=\"bar\">%s</span></td></tr>\r\n"), 
-        formatTime(labelFormat, energyLogEntryPtr->time),
-        energyLogEntryPtr->onDuration,
+        F("<tr><td>%s</td><td>%s</td><td>%d</td><td>%0.2f</td><td class=\"graph\">"), 
+        formatTime(timeFormat, energyLogEntryPtr->time),
+        formatTimeSpan(static_cast<int>(energyLogEntryPtr->onDuration * 3600)),
         energyLogEntryPtr->maxPower,
-        energyLogEntryPtr->energy,
-        unitOfMeasure,
-        bar
+        energyLogEntryPtr->energy
         );
+
+    Html.writeBar(energyLogEntryPtr->energy / maxValue, F("energyBar"), false, false);
+
+    HttpResponse.println(F("</td></tr>"));
 }
 
 
-void writeEnergyLogTable(String unit, StaticLog<EnergyLogEntry>& energyLog, const char* labelFormat, const char* unitOfMeasure)
+void writeEnergyLogTable(
+    String unit,
+    StaticLog<EnergyLogEntry>& energyLog,
+    const char* timeFormat,
+    const char* unitOfMeasure)
 {
     // Auto-ranging: determine max value from the log entries
-    float maxValue = 0;
+    float maxValue = 1; // Prevent division by zero
     EnergyLogEntry* energyLogEntryPtr = energyLog.getFirstEntry();
     while (energyLogEntryPtr != nullptr)
     {
-        if (energyLogEntryPtr->energy > maxValue)
-            maxValue  = energyLogEntryPtr->energy;
+        maxValue = std::max(maxValue, energyLogEntryPtr->energy);
         energyLogEntryPtr = energyLog.getNextEntry();
     }
 
     HttpResponse.printf(F("<h1>Energy per %s</h1>\r\n"), unit.c_str());
     HttpResponse.println(F("<table class=\"nrg\">"));
+    HttpResponse.printf(
+        F("<tr><th>%s</th><th>On time</th><th>P<sub>max</sub> (W)</th><th>E (%s)</th></tr>\r\n"),
+        (unit == TODAY) ? "Time" : unit.c_str(),
+        unitOfMeasure);
 
     energyLogEntryPtr = energyLog.getFirstEntry();
     while (energyLogEntryPtr != nullptr)
     {
         writeGraphRow(
             energyLogEntryPtr,
-            labelFormat,
-            unitOfMeasure,
+            timeFormat,
             maxValue
             );
         energyLogEntryPtr = energyLog.getNextEntry();
@@ -567,7 +541,7 @@ void handleHttpSyncFTPRequest()
 {
     Tracer tracer(F("handleHttpSyncFTPRequest"));
 
-    writeHtmlHeader("FTP Sync", true, true);
+    Html.writeHeader(F("FTP Sync"), true, true);
 
     HttpResponse.println("<div><pre>");
     bool success = trySyncFTP(&HttpResponse); 
@@ -580,7 +554,7 @@ void handleHttpSyncFTPRequest()
     else
         HttpResponse.println("<p>Failed!</p>");
  
-    writeHtmlFooter();
+    Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
@@ -590,7 +564,7 @@ void handleHttpEventLogRequest()
 {
     Tracer tracer(F("handleHttpEventLogRequest"));
 
-    writeHtmlHeader(F("Event log"), true, true);
+    Html.writeHeader(F("Event log"), true, true);
 
     const char* event = EventLog.getFirstEntry();
     while (event != nullptr)
@@ -601,7 +575,7 @@ void handleHttpEventLogRequest()
 
     HttpResponse.println(F("<p><a href=\"/events/clear\">Clear event log</a></p>"));
 
-    writeHtmlFooter();
+    Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
@@ -634,7 +608,7 @@ void handleHttpConfigFormRequest()
 {
     Tracer tracer(F("handleHttpConfigFormRequest"));
 
-    writeHtmlHeader(F("Configuration"), true, true);
+    Html.writeHeader(F("Configuration"), true, true);
 
     HttpResponse.println(F("<form action=\"/config\" method=\"POST\">"));
     HttpResponse.println(F("<table>"));
@@ -643,7 +617,7 @@ void handleHttpConfigFormRequest()
     HttpResponse.println(F("<input type=\"submit\">"));
     HttpResponse.println(F("</form>"));
 
-    writeHtmlFooter();
+    Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
