@@ -335,6 +335,9 @@ void WiFiStateMachine::run()
             break;
 
         case WiFiInitState::Connected:
+#ifdef DEBUG_ESP_PORT
+            WiFi.printDiag(DEBUG_ESP_PORT);
+#endif
             _ipAddress = WiFi.localIP();
             event = F("WiFi connected. IP address: ");
             event += getIPAddress();
