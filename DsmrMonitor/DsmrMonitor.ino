@@ -30,6 +30,12 @@
 #define LED_OFF 1
 #define P1_ENABLE 5
 
+#define SHOW_ENERGY "showEnergy"
+#define HOUR F("hour")
+#define DAY F("day")
+#define WEEK F("week")
+#define MONTH F("month")
+
 #define CFG_WIFI_SSID F("WifiSSID")
 #define CFG_WIFI_KEY F("WifiKey")
 #define CFG_HOST_NAME F("HostName")
@@ -54,10 +60,15 @@ WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
 P1Telegram LastP1Telegram;
 PowerLogEntry PowerLog[MAX_POWER_LOG_SIZE];
-Log<EnergyLogEntry> EnergyPerHourLog(25); // 24 + 1 so we can FTP sync daily
-Log<EnergyLogEntry> EnergyPerDayLog(7);
+StaticLog<EnergyLogEntry> EnergyPerHourLog(25); // 24 + 1 so we can FTP sync daily
+StaticLog<EnergyLogEntry> EnergyPerDayLog(7);
+StaticLog<EnergyLogEntry> EnergyPerWeekLog(12);
+StaticLog<EnergyLogEntry> EnergyPerMonthLog(12);
+
 EnergyLogEntry* energyPerHourLogEntryPtr = nullptr;
 EnergyLogEntry* energyPerDayLogEntryPtr = nullptr;
+EnergyLogEntry* energyPerWeekLogEntryPtr = nullptr;
+EnergyLogEntry* energyPerMonthLogEntryPtr = nullptr;
 
 uint32_t lastTelegramReceivedMillis = 0;
 time_t lastTelegramReceivedTime = 0;
@@ -69,7 +80,7 @@ PhaseData phaseData[3];
 GasData gasData;
 int logEntriesToSync = 0;
 bool isFTPEnabled = false;
-int powerLogIndex = 0;
+int powerLogIndex = -1;
 
 
 void logEvent(String msg)
@@ -144,29 +155,47 @@ void loop()
 }
 
 
-void initializeDay()
+void newEnergyPerHourLogEntry()
 {
-    Tracer tracer(F("initializeDay"));
+    Tracer tracer(F("newEnergyPerHourLogEntry"));
+    
+    EnergyLogEntry newEnergyLogEntry;
+    newEnergyLogEntry.time = currentTime - currentTime % SECONDS_PER_HOUR;
 
-    powerLogIndex = -1;
-
-    energyPerDayLogEntryPtr = new EnergyLogEntry();
-    // Set entry time to start of day (00:00)
-    energyPerDayLogEntryPtr->time = currentTime - currentTime % SECONDS_PER_DAY;
-
-    EnergyPerDayLog.add(energyPerDayLogEntryPtr);
+    energyPerHourLogEntryPtr = EnergyPerHourLog.add(&newEnergyLogEntry);
 }
 
 
-void initializeHour()
+void newEnergyPerDayLogEntry()
 {
-    Tracer tracer(F("initializeHour"));
-    
-    energyPerHourLogEntryPtr = new EnergyLogEntry();
-    // Set entry time to start of hour (xy:00)
-    energyPerHourLogEntryPtr->time = currentTime - currentTime % SECONDS_PER_HOUR;
+    Tracer tracer(F("newEnergyPerDayLogEntry"));
 
-    EnergyPerHourLog.add(energyPerHourLogEntryPtr);
+    EnergyLogEntry newEnergyLogEntry;
+    newEnergyLogEntry.time = currentTime - currentTime % SECONDS_PER_DAY;
+
+    energyPerDayLogEntryPtr = EnergyPerDayLog.add(&newEnergyLogEntry);
+}
+
+
+void newEnergyPerWeekLogEntry()
+{
+    Tracer tracer(F("newEnergyPerWeekLogEntry"));
+    
+    EnergyLogEntry newEnergyLogEntry;
+    newEnergyLogEntry.time = currentTime;
+
+    energyPerWeekLogEntryPtr = EnergyPerWeekLog.add(&newEnergyLogEntry);
+}
+
+
+void newEnergyPerMonthLogEntry()
+{
+    Tracer tracer(F("newEnergyPerMonthLogEntry"));
+    
+    EnergyLogEntry newEnergyLogEntry;
+    newEnergyLogEntry.time = currentTime;
+
+    energyPerMonthLogEntryPtr = EnergyPerMonthLog.add(&newEnergyLogEntry);
 }
 
 
@@ -224,6 +253,22 @@ void updateStatistics(P1Telegram& p1Telegram, float hoursSinceLastUpdate)
         hoursSinceLastUpdate,
         1000 // kWh
         );
+
+    energyPerWeekLogEntryPtr->update(
+        powerDelivered,
+        powerReturned,
+        gasData.power,
+        hoursSinceLastUpdate,
+        1000 // kWh
+        );
+
+    energyPerMonthLogEntryPtr->update(
+        powerDelivered,
+        powerReturned,
+        gasData.power,
+        hoursSinceLastUpdate,
+        1000 // kWh
+        );
 }
 
 
@@ -257,7 +302,7 @@ void testFillLogs()
 
     for (int hour = 0; hour <= 24; hour++)
     {
-        initializeHour();
+        newEnergyPerHourLogEntry();
         energyPerHourLogEntryPtr->time += hour * SECONDS_PER_HOUR;
         energyPerHourLogEntryPtr->maxPowerDelivered = hour * 10;
         energyPerHourLogEntryPtr->maxPowerReturned = 240 - hour * 10;
@@ -269,7 +314,7 @@ void testFillLogs()
 
     for (int day = 0; day <= 7; day++)
     {
-        initializeDay();
+        newEnergyPerDayLogEntry();
         energyPerDayLogEntryPtr->time += day * SECONDS_PER_DAY;
         energyPerDayLogEntryPtr->energyDelivered = day;
         energyPerDayLogEntryPtr->energyReturned = 7 - day;
@@ -284,8 +329,10 @@ void onTimeServerSynced()
 {
     currentTime = WiFiSM.getCurrentTime();
 
-    initializeDay();
-    initializeHour();
+    newEnergyPerDayLogEntry();
+    newEnergyPerHourLogEntry();
+    newEnergyPerWeekLogEntry();
+    newEnergyPerMonthLogEntry();
 
     // Flush any garbage from Serial input
     while (Serial.available())
@@ -300,17 +347,29 @@ void onTimeServerSynced()
 
 void onWiFiInitialized()
 {
-    if (currentTime >= energyPerDayLogEntryPtr->time + SECONDS_PER_DAY)
-        initializeDay();
     if (currentTime >= energyPerHourLogEntryPtr->time + SECONDS_PER_HOUR)
     {
-        initializeHour();
+        newEnergyPerHourLogEntry();
         if ((++logEntriesToSync == 24) && isFTPEnabled)
         {
             syncFTPTime = currentTime;
         }
         if (logEntriesToSync > 24) logEntriesToSync = 24;
     }
+
+    if (currentTime >= energyPerDayLogEntryPtr->time + SECONDS_PER_DAY)
+    {
+        newEnergyPerDayLogEntry();
+        powerLogIndex = -1;
+    }
+
+    if (currentTime >= energyPerWeekLogEntryPtr->time + (SECONDS_PER_DAY * 7))
+        newEnergyPerWeekLogEntry();
+
+    int currentMonth = gmtime(&currentTime)->tm_mon;
+    int lastLogMonth = gmtime(&energyPerMonthLogEntryPtr->time)->tm_mon;
+    if (currentMonth != lastLogMonth)
+        newEnergyPerMonthLogEntry();
 
     if (Serial.available())
     {
@@ -407,7 +466,7 @@ bool trySyncFTP(Print* printTo)
 }
 
 
-void writeCsvDataLines(Log<EnergyLogEntry>& energyLog, Print& destination)
+void writeCsvDataLines(StaticLog<EnergyLogEntry>& energyLog, Print& destination)
 {
     // Do not include the last entry, which is still in progress.
     EnergyLogEntry* energyLogEntryPtr = energyLog.getEntryFromEnd(logEntriesToSync + 1);
@@ -479,30 +538,23 @@ void writeHtmlGasData(float maxPower)
 
 void writeHtmlEnergyRow(
     EnergyLogEntry* energyLogEntryPtr,
-    const char* labelFormat,
-    float maxValue,
-    float hours
-    )
+    const char* timeFormat,
+    float maxValue)
 {
-    const char* unitOfMeasure = (hours == 1) ?  "Wh" : "kWh";    
-
-    HttpResponse.printf(F("<tr><td>%s</td>"), formatTime(labelFormat, energyLogEntryPtr->time));
+    HttpResponse.printf(F("<tr><td>%s</td>"), formatTime(timeFormat, energyLogEntryPtr->time));
 
     HttpResponse.printf(
-        F("<td><div>+%d W max</div><div>-%d W max</div><div>%d W max</div></td>"),
+        F("<td><div>+%d</div><div>-%d</div><div>%d</div></td>"),
         energyLogEntryPtr->maxPowerDelivered,
         energyLogEntryPtr->maxPowerReturned,
         energyLogEntryPtr->maxPowerGas
         );
 
     HttpResponse.printf(
-        F("<td><div>+%0.1f %s</div><div>-%0.1f %s</div><div>%0.1f %s</div></td><td class=\"graph\">"),
+        F("<td><div>+%0.1f</div><div>-%0.1f</div><div>%0.1f</div></td><td class=\"graph\">"),
         energyLogEntryPtr->energyDelivered,
-        unitOfMeasure,
         energyLogEntryPtr->energyReturned,
-        unitOfMeasure,
-        energyLogEntryPtr->energyGas,
-        unitOfMeasure
+        energyLogEntryPtr->energyGas
         );
 
     Html.writeBar(energyLogEntryPtr->energyDelivered / maxValue, F("deliveredBar"), false);
@@ -513,10 +565,14 @@ void writeHtmlEnergyRow(
 }
 
 
-void writeHtmlEnergyLogTable(String title, Log<EnergyLogEntry>& energyLog, const char* labelFormat, int hours)
+void writeHtmlEnergyLogTable(
+    String unit,
+    StaticLog<EnergyLogEntry>& energyLog,
+    const char* timeFormat,
+    const char* unitOfMeasure)
 {
     // Auto-ranging: determine max value from the log entries
-    float maxValue = 0;
+    float maxValue = 1; // Prevent division by zero
     EnergyLogEntry* energyLogEntryPtr = energyLog.getFirstEntry();
     while (energyLogEntryPtr != nullptr)
     {
@@ -526,22 +582,31 @@ void writeHtmlEnergyLogTable(String title, Log<EnergyLogEntry>& energyLog, const
         energyLogEntryPtr = energyLog.getNextEntry();
     }
 
-    HttpResponse.printf(F("<h1>%s</h1>"), title.c_str());
+    HttpResponse.printf(F("<h1>Energy per %s</h1>"), unit.c_str());
     HttpResponse.println(F("<table class=\"nrg\">"));
+    HttpResponse.printf(
+        F("<tr><th>%s</th><th>P<sub>max</sub> (W)</th><th>E (%s)</th></tr>\r\n"),
+        unit.c_str(),
+        unitOfMeasure
+        );
 
     energyLogEntryPtr = energyLog.getFirstEntry();
     while (energyLogEntryPtr != nullptr)
     {
         writeHtmlEnergyRow(
             energyLogEntryPtr,
-            labelFormat,
-            maxValue,
-            hours
-            );
+            timeFormat,
+            maxValue);
         energyLogEntryPtr = energyLog.getNextEntry();
     }
 
     HttpResponse.println(F("</table>"));
+}
+
+
+void writeEnergyLink(String unit)
+{
+    HttpResponse.printf(F(" <a href=\"?%s=%s\">%s</a>"), SHOW_ENERGY, unit.c_str(), unit.c_str());
 }
 
 
@@ -574,6 +639,19 @@ void handleHttpRootRequest()
 
     Html.writeHeader(F("Home"), false, false, REFRESH_INTERVAL);
 
+    HttpResponse.println(F("<h1>Monitor status</h1>"));
+    HttpResponse.println(F("<table class=\"status\">"));
+    HttpResponse.printf(F("<tr><th>RSSI</th><td>%d dBm</td></tr>\r\n"), static_cast<int>(WiFi.RSSI()));
+    HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
+    HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
+    HttpResponse.printf(F("<tr><th><a href=\"/telegram\">Last Telegram</a></th><td>%s</td></tr>\r\n"), formatTime("%H:%M:%S", lastTelegramReceivedTime));
+    HttpResponse.printf(F("<tr><th>Last Gas Time</th><td>%s</td></tr>\r\n"), formatTime("%H:%M:%S", gasData.time));
+    HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync);
+    HttpResponse.printf(F("<tr><th>FTP Sync entries</td><td>%d</th></tr>\r\n"), logEntriesToSync);
+    HttpResponse.printf(F("<tr><th><a href=\"/powerlog\">Power entries</a></th><td>%d</td></tr>\r\n"), (powerLogIndex + 1));
+    HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></tr>\r\n"), EventLog.count());
+    HttpResponse.println(F("</table>"));
+
     HttpResponse.println(F("<h1>Current power</h1>"));
     HttpResponse.println(F("<p><table class=\"power\">"));
     if (PersistentData.phaseCount == 3)
@@ -586,20 +664,23 @@ void handleHttpRootRequest()
     writeHtmlGasData(maxTotalPower);
     HttpResponse.println(F("</table></p>"));
 
-    HttpResponse.println(F("<h1>Monitor status</h1>"));
-    HttpResponse.println(F("<table class=\"status\">"));
-    HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
-    HttpResponse.printf(F("<tr><th><a href=\"/telegram\">Last Telegram</a></th><td>%s</td></tr>\r\n"), formatTime("%H:%M:%S", lastTelegramReceivedTime));
-    HttpResponse.printf(F("<tr><th>Last Gas Time</th><td>%s</td></tr>\r\n"), formatTime("%H:%M:%S", gasData.time));
-    HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync);
-    HttpResponse.printf(F("<tr><th>FTP Sync entries</td><td>%d</th></tr>\r\n"), logEntriesToSync);
-    HttpResponse.printf(F("<tr><th><a href=\"/powerlog\">Power entries</a></th><td>%d</td></tr>\r\n"), (powerLogIndex + 1));
-    HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></tr>\r\n"), EventLog.count());
-    HttpResponse.println(F("</table>"));
+    String showEnergy = WebServer.hasArg(SHOW_ENERGY) ? WebServer.arg(SHOW_ENERGY) : HOUR;
+    HttpResponse.print(F("<p>Show energy per"));
+    if (showEnergy != HOUR) writeEnergyLink(HOUR);
+    if (showEnergy != DAY) writeEnergyLink(DAY);
+    if (showEnergy != WEEK) writeEnergyLink(WEEK);
+    if (showEnergy != MONTH) writeEnergyLink(MONTH);
+    HttpResponse.println(F("</p>"));
 
-    writeHtmlEnergyLogTable(F("Energy per hour"), EnergyPerHourLog, "%H:%M", 1);
-    writeHtmlEnergyLogTable(F("Energy per day"), EnergyPerDayLog, "%a", 24);
+    if (showEnergy == HOUR)
+        writeHtmlEnergyLogTable(showEnergy, EnergyPerHourLog, "%H:%M", "Wh");
+    if (showEnergy == DAY)
+        writeHtmlEnergyLogTable(showEnergy, EnergyPerDayLog, "%a", "kWh");
+    if (showEnergy == WEEK)
+        writeHtmlEnergyLogTable(showEnergy, EnergyPerWeekLog, "%d %b", "kWh");
+    if (showEnergy == MONTH)
+        writeHtmlEnergyLogTable(showEnergy, EnergyPerMonthLog, "%b", "kWh");
+
 
     Html.writeFooter();
 
