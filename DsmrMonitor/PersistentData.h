@@ -11,7 +11,7 @@ struct PersistentDataStruct : PersistentDataBase
     char ftpServer[32];
     char ftpUser[32];
     char ftpPassword[32];
-    int16_t timeZoneOffset; // Not used
+    uint16_t ftpSyncEntries;
     uint16_t phaseCount; // 1 or 3
     uint16_t maxPhaseCurrent; // A (per phase)
     uint16_t powerLogDelta;
@@ -25,12 +25,17 @@ struct PersistentDataStruct : PersistentDataBase
         sizeof(ftpServer) + 
         sizeof(ftpUser) + 
         sizeof(ftpPassword) + 
-        sizeof(timeZoneOffset) +
+        sizeof(ftpSyncEntries) +
         sizeof(phaseCount) +
         sizeof(maxPhaseCurrent) +
         sizeof(powerLogDelta) +
         sizeof(gasCalorificValue)
         ) {}
+
+    inline bool isFTPEnabled()
+    {
+        return ftpSyncEntries != 0;
+    }
 
     virtual void initialize()
     {
@@ -41,7 +46,7 @@ struct PersistentDataStruct : PersistentDataBase
         ftpServer[0] = 0;
         ftpUser[0] = 0;
         ftpPassword[0] = 0;
-        timeZoneOffset = 1;
+        ftpSyncEntries = 0;
         phaseCount = 1;
         maxPhaseCurrent = 35;
         gasCalorificValue = DEFAULT_GAS_KWH_PER_M3;
@@ -59,8 +64,6 @@ struct PersistentDataStruct : PersistentDataBase
         ftpUser[sizeof(ftpUser) - 1] = 0;
         ftpPassword[sizeof(ftpPassword) - 1] = 0;
 
-        if (timeZoneOffset < -12) timeZoneOffset = -12;
-        if (timeZoneOffset > 14) timeZoneOffset = 14;
         if ((phaseCount != 1) && phaseCount !=3) phaseCount = 1;
         if (maxPhaseCurrent < 25) maxPhaseCurrent = 25;
         if (maxPhaseCurrent > 75) maxPhaseCurrent = 75;

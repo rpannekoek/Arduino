@@ -27,9 +27,15 @@ td,th
     border: thin solid gray;
 }
 
+td
+{
+    text-align: right;
+}
+
 td.graph
 {
     border: none;
+    text-align: left;
 }
 
 .deliveredBar

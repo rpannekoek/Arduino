@@ -43,6 +43,7 @@
 #define CFG_FTP_SERVER F("FTPServer")
 #define CFG_FTP_USER F("FTPUser")
 #define CFG_FTP_PASSWORD F("FTPPassword")
+#define CFG_FTP_SYNC_ENTRIES F("FTPSyncEntries")
 #define CFG_MAX_CURRENT F("MaxCurrent")
 #define CFG_IS_3PHASE F("Is3Phase")
 #define CFG_GAS_CALORIFIC F("GasCalorific")
@@ -59,12 +60,13 @@ Log<const char> EventLog(50); // Max 50 log entries
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
 P1Telegram LastP1Telegram;
-PowerLogEntry PowerLog[MAX_POWER_LOG_SIZE];
-StaticLog<EnergyLogEntry> EnergyPerHourLog(25); // 24 + 1 so we can FTP sync daily
+StaticLog<PowerLogEntry> PowerLog(MAX_POWER_LOG_SIZE);
+StaticLog<EnergyLogEntry> EnergyPerHourLog(24);
 StaticLog<EnergyLogEntry> EnergyPerDayLog(7);
 StaticLog<EnergyLogEntry> EnergyPerWeekLog(12);
 StaticLog<EnergyLogEntry> EnergyPerMonthLog(12);
 
+PowerLogEntry* powerLogEntryPtr = nullptr;
 EnergyLogEntry* energyPerHourLogEntryPtr = nullptr;
 EnergyLogEntry* energyPerDayLogEntryPtr = nullptr;
 EnergyLogEntry* energyPerWeekLogEntryPtr = nullptr;
@@ -79,8 +81,6 @@ time_t lastFTPSyncTime = 0;
 PhaseData phaseData[3];
 GasData gasData;
 int logEntriesToSync = 0;
-bool isFTPEnabled = false;
-int powerLogIndex = -1;
 
 
 void logEvent(String msg)
@@ -114,7 +114,6 @@ void setup()
     PersistentData.begin();
     TimeServer.NTPServer = PersistentData.ntpServer;
     Html.setTitlePrefix(PersistentData.hostName);
-    isFTPEnabled = PersistentData.ftpServer[0] != 0;
 
     SPIFFS.begin();
 
@@ -122,10 +121,8 @@ void setup()
     WebServer.on("/", handleHttpRootRequest);
     WebServer.on("/telegram", handleHttpViewTelegramRequest);
     WebServer.on("/powerlog", handleHttpPowerLogRequest);
-    WebServer.on("/powerlog/clear", handleHttpPowerLogClearRequest);
     WebServer.on("/sync", handleHttpSyncFTPRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
-    WebServer.on("/events/clear", handleHttpEventLogClearRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
     WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
     WebServer.serveStatic(ICON, SPIFFS, ICON, cacheControl);
@@ -227,13 +224,13 @@ void updateStatistics(P1Telegram& p1Telegram, float hoursSinceLastUpdate)
             );
     }
 
-    updatePowerLog();
-
     String gasTimestamp;
     float gasEnergy = p1Telegram.getFloatValue(P1Telegram::PropertyId::Gas, &gasTimestamp) * PersistentData.gasCalorificValue;
     TRACE(F("Gas: %0.3f kWh @ %s.\n"), gasEnergy, gasTimestamp.c_str());
     if (gasTimestamp != gasData.timestamp)
         gasData.update(gasTimestamp, currentTime, gasEnergy);
+
+    updatePowerLog();
 
     float powerDelivered = phaseData[0].powerDelivered + phaseData[1].powerDelivered + phaseData[2].powerDelivered;
     float powerReturned = phaseData[0].powerReturned + phaseData[1].powerReturned + phaseData[2].powerReturned;    
@@ -274,25 +271,37 @@ void updateStatistics(P1Telegram& p1Telegram, float hoursSinceLastUpdate)
 
 void updatePowerLog()
 {
-    if (powerLogIndex == MAX_POWER_LOG_SIZE - 1)
-        return; // Log is full
-
-    bool needNewLogEntry = powerLogIndex < 0;
-    if (!needNewLogEntry) 
-        needNewLogEntry =  exceedsDeltaThreshold(0) || exceedsDeltaThreshold(1) || exceedsDeltaThreshold(2); 
-    if (needNewLogEntry)
+    if ((powerLogEntryPtr == nullptr) || isPowerDeltaThresholdExceeded())
     {
-        PowerLogEntry& powerLogEntry = PowerLog[++powerLogIndex];
-        powerLogEntry.time = currentTime;
+        PowerLogEntry newPowerLogEntry;
+        newPowerLogEntry.time = currentTime;
         for (int phase = 0; phase < 3; phase++)
-            powerLogEntry.power[phase] = phaseData[phase].powerDelivered;
+        {
+            newPowerLogEntry.powerDelivered[phase] = phaseData[phase].powerDelivered;
+            newPowerLogEntry.powerReturned[phase] = phaseData[phase].powerReturned;
+        }
+        newPowerLogEntry.powerGas = gasData.power;
+
+        powerLogEntryPtr = PowerLog.add(&newPowerLogEntry);
+
+        logEntriesToSync = std::min(logEntriesToSync + 1, MAX_POWER_LOG_SIZE);
+        if (PersistentData.isFTPEnabled() && (logEntriesToSync == PersistentData.ftpSyncEntries))
+            syncFTPTime = currentTime;
     }
 }
 
 
-bool exceedsDeltaThreshold(int phase)
+bool isPowerDeltaThresholdExceeded()
 {
-    return std::abs(phaseData[phase].powerDelivered - PowerLog[powerLogIndex].power[phase]) >= PersistentData.powerLogDelta;
+    for (int phase = 0; phase < 3; phase++)
+    {
+        if (std::abs(phaseData[phase].powerDelivered - powerLogEntryPtr->powerDelivered[phase]) >= PersistentData.powerLogDelta)
+            return true;
+        if (std::abs(phaseData[phase].powerReturned - powerLogEntryPtr->powerReturned[phase]) >= PersistentData.powerLogDelta)
+            return true;
+    }
+
+    return std::abs(gasData.power - powerLogEntryPtr->powerGas) >= PersistentData.powerLogDelta;
 }
 
 
@@ -321,7 +330,17 @@ void testFillLogs()
         energyPerDayLogEntryPtr->energyGas = day;
     }
 
-    logEntriesToSync = 24;
+    for (int i = 0; i < MAX_POWER_LOG_SIZE; i++)
+    {
+        phaseData[0].powerDelivered = i * 10;
+        phaseData[1].powerDelivered = i * 5;
+        phaseData[2].powerDelivered = i;
+        phaseData[0].powerReturned = i * 10 + 1;
+        phaseData[1].powerReturned = i * 5 + 1;
+        phaseData[2].powerReturned = i + 1;
+        gasData.power = i * 2;
+        updatePowerLog();
+    }
 }
 
 
@@ -348,20 +367,10 @@ void onTimeServerSynced()
 void onWiFiInitialized()
 {
     if (currentTime >= energyPerHourLogEntryPtr->time + SECONDS_PER_HOUR)
-    {
         newEnergyPerHourLogEntry();
-        if ((++logEntriesToSync == 24) && isFTPEnabled)
-        {
-            syncFTPTime = currentTime;
-        }
-        if (logEntriesToSync > 24) logEntriesToSync = 24;
-    }
 
     if (currentTime >= energyPerDayLogEntryPtr->time + SECONDS_PER_DAY)
-    {
         newEnergyPerDayLogEntry();
-        powerLogIndex = -1;
-    }
 
     if (currentTime >= energyPerWeekLogEntryPtr->time + (SECONDS_PER_DAY * 7))
         newEnergyPerWeekLogEntry();
@@ -422,12 +431,6 @@ bool trySyncFTP(Print* printTo)
 {
     Tracer tracer(F("trySyncFTP"));
 
-    if (!isFTPEnabled)
-    {
-        logEvent(F("No FTP server configured.\n"));
-        return false;
-    }
-
     char filename[32];
     snprintf(filename, sizeof(filename), "%s.csv", PersistentData.hostName);
 
@@ -439,13 +442,19 @@ bool trySyncFTP(Print* printTo)
 
     bool success = false;
     if (logEntriesToSync == 0)
+    {
+        if (printTo != nullptr)
+            printTo->println(F("Nothing to sync."));
         success = true;
+    }
     else
     {
         WiFiClient& dataClient = FTPClient.append(filename);
         if (dataClient.connected())
         {
-            writeCsvDataLines(EnergyPerHourLog, dataClient);
+            PowerLogEntry* firstLogEntryPtr = PowerLog.getEntryFromEnd(logEntriesToSync);
+            writeCsvPowerLogEntries(firstLogEntryPtr, dataClient);
+
             dataClient.stop();
 
             if (FTPClient.readServerResponse() == 226)
@@ -466,46 +475,30 @@ bool trySyncFTP(Print* printTo)
 }
 
 
-void writeCsvDataLines(StaticLog<EnergyLogEntry>& energyLog, Print& destination)
+void writeCsvPowerLogHeader(Print& destination)
 {
-    // Do not include the last entry, which is still in progress.
-    EnergyLogEntry* energyLogEntryPtr = energyLog.getEntryFromEnd(logEntriesToSync + 1);
-    int i = logEntriesToSync;
-    while ((energyLogEntryPtr != nullptr) && (i-- > 0))
+    destination.print(F("Time;"));
+    for (int phase = 1; phase <= PersistentData.phaseCount; phase++)
+        destination.printf("Pd%d (W);Pr%d (W);", phase, phase);
+    destination.println("Pgas (W)");
+}
+
+
+void writeCsvPowerLogEntries(PowerLogEntry* logEntryPtr, Print& destination)
+{
+    while (logEntryPtr != nullptr)
     {
-        destination.printf(
-            "\"%s\";%d;%d;%d;%0.0f;%0.0f;%0.0f\r\n", 
-            formatTime("%F %H:%M", energyLogEntryPtr->time),
-            energyLogEntryPtr->maxPowerDelivered,
-            energyLogEntryPtr->maxPowerReturned,
-            energyLogEntryPtr->maxPowerGas,
-            energyLogEntryPtr->energyDelivered,
-            energyLogEntryPtr->energyReturned,
-            energyLogEntryPtr->energyGas
-            );
+        destination.print(formatTime("%F %H:%M:%S", logEntryPtr->time));
+        for (int phase = 0; phase < PersistentData.phaseCount; phase++)
+            destination.printf(";%d;%d", logEntryPtr->powerDelivered[phase], logEntryPtr->powerReturned[phase]);
+        destination.printf(";%d\r\n", logEntryPtr->powerGas);
         
-        energyLogEntryPtr = energyLog.getNextEntry();
+        logEntryPtr = PowerLog.getNextEntry();
     }
 }
 
 
-void writeCsvPowerLog(Print& destination)
-{
-    for (int i = 0; i <= powerLogIndex; i++)
-    {
-        PowerLogEntry& powerLogEntry = PowerLog[i];
-        destination.printf(
-            "%s;%d;%d;%d\r\n", 
-            formatTime("%H:%M:%S", powerLogEntry.time),
-            powerLogEntry.power[0],
-            powerLogEntry.power[1],
-            powerLogEntry.power[2]
-            );
-    }
-}
-
-
-void writeHtmlPhaseData(String label,PhaseData& phaseData, float maxPower)
+void writeHtmlPhaseData(String label, PhaseData& phaseData, float maxPower)
 {
     HttpResponse.printf(F("<tr><th>%s</th>"), label.c_str());
     HttpResponse.printf(F("<td>%0.1f V</td>"), phaseData.voltage);
@@ -629,11 +622,11 @@ void handleHttpRootRequest()
     int maxPhasePower = 230 * PersistentData.maxPhaseCurrent; 
     int maxTotalPower = maxPhasePower * PersistentData.phaseCount;
 
-    const char* ftpSync;
-    if (!isFTPEnabled)
-        ftpSync = "Disabled";
+    String ftpSync;
+    if (!PersistentData.isFTPEnabled())
+        ftpSync = F("Disabled");
     else if (lastFTPSyncTime == 0)
-        ftpSync = "Not yet";
+        ftpSync = F("Not yet");
     else
         ftpSync = formatTime("%H:%M", lastFTPSyncTime);
 
@@ -646,9 +639,9 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
     HttpResponse.printf(F("<tr><th><a href=\"/telegram\">Last Telegram</a></th><td>%s</td></tr>\r\n"), formatTime("%H:%M:%S", lastTelegramReceivedTime));
     HttpResponse.printf(F("<tr><th>Last Gas Time</th><td>%s</td></tr>\r\n"), formatTime("%H:%M:%S", gasData.time));
-    HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync);
+    HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync.c_str());
     HttpResponse.printf(F("<tr><th>FTP Sync entries</td><td>%d</th></tr>\r\n"), logEntriesToSync);
-    HttpResponse.printf(F("<tr><th><a href=\"/powerlog\">Power entries</a></th><td>%d</td></tr>\r\n"), (powerLogIndex + 1));
+    HttpResponse.printf(F("<tr><th><a href=\"/powerlog\">Power log</a></th><td>%d</td></tr>\r\n"), PowerLog.count());
     HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></tr>\r\n"), EventLog.count());
     HttpResponse.println(F("</table>"));
 
@@ -719,26 +712,26 @@ void handleHttpPowerLogRequest()
 
     Html.writeHeader(F("Power Log"), true, true, REFRESH_INTERVAL);
 
-    HttpResponse.println(F("<p><a href=\"/powerlog/clear\">Clear log</a></p>"));
-    HttpResponse.printf(F("<p>%d log entries (delta: %d W):</p>\r\n"), (powerLogIndex + 1), PersistentData.powerLogDelta);
+    if (WiFiSM.shouldPerformAction(F("clear")))
+    {
+        PowerLog.clear();
+        logEntriesToSync = 0;
+        HttpResponse.println(F("<p>Power Log cleared.</p>"));
+    }
+    else
+        HttpResponse.printf(F("<p><a href=\"?clear=%u\">Clear log</a></p>\r\n"), currentTime);
+
+    HttpResponse.printf(F("<p>%d log entries (delta: %d W):</p>\r\n"), PowerLog.count(), PersistentData.powerLogDelta);
 
     HttpResponse.println(F("<pre class=\"powerlog\">"));
-    HttpResponse.println(F("Time;P1 (W);P2 (W);P3 (W)"));
-
-    writeCsvPowerLog(HttpResponse);
-
+    writeCsvPowerLogHeader(HttpResponse);
+    PowerLogEntry* firstLogEntryPtr = PowerLog.getFirstEntry();
+    writeCsvPowerLogEntries(firstLogEntryPtr, HttpResponse);
     HttpResponse.println(F("</pre>"));
+
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
-}
-
-
-void handleHttpPowerLogClearRequest()
-{
-    Tracer tracer(F("handleHttpPowerLogClearRequest"));
-    powerLogIndex = -1;
-    handleHttpPowerLogRequest();
 }
 
 
@@ -771,6 +764,14 @@ void handleHttpEventLogRequest()
 
     Html.writeHeader(F("Event log"), true, true, REFRESH_INTERVAL);
 
+    if (WiFiSM.shouldPerformAction(F("clear")))
+    {
+        EventLog.clear();
+        logEvent(F("Event log cleared."));
+    }
+    else
+        HttpResponse.printf(F("<p><a href=\"?clear=%u\">Clear event log</a></p>\r\n"), currentTime);
+
     const char* event = EventLog.getFirstEntry();
     while (event != nullptr)
     {
@@ -778,22 +779,9 @@ void handleHttpEventLogRequest()
         event = EventLog.getNextEntry();
     }
 
-    HttpResponse.println(F("<p><a href=\"/events/clear\">Clear event log</a></p>"));
-
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
-}
-
-
-void handleHttpEventLogClearRequest()
-{
-    Tracer tracer(F("handleHttpEventLogClearRequest"));
-
-    EventLog.clear();
-    logEvent(F("Event log cleared."));
-
-    handleHttpEventLogRequest();
 }
 
 
@@ -812,6 +800,7 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
     Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
     Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
+    Html.writeTextBox(CFG_FTP_SYNC_ENTRIES, F("FTP sync entries"), String(PersistentData.ftpSyncEntries), 3);
     Html.writeTextBox(CFG_MAX_CURRENT, F("Max current"), String(PersistentData.maxPhaseCurrent), 2);
     Html.writeCheckbox(CFG_IS_3PHASE, F("Three phases"), (PersistentData.phaseCount == 3));
     Html.writeTextBox(CFG_GAS_CALORIFIC, F("Gas kWh per m3"), String(PersistentData.gasCalorificValue, 3), 6);
@@ -852,6 +841,7 @@ void handleHttpConfigFormPost()
     PersistentData.phaseCount = (isThreePhase == "true") ? 3 : 1;
     PersistentData.gasCalorificValue = gasCalorific.toFloat();
     PersistentData.powerLogDelta = powerLogDelta.toInt();
+    PersistentData.ftpSyncEntries = WebServer.arg(CFG_FTP_SYNC_ENTRIES).toInt();
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();
