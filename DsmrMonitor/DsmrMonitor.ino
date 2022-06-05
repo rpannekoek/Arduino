@@ -25,6 +25,7 @@
 #define SECONDS_PER_HOUR 3600
 #define SECONDS_PER_DAY (3600 * 24)
 #define MAX_POWER_LOG_SIZE 250
+#define POWER_LOG_INTERVAL 60
 
 #define LED_ON 0
 #define LED_OFF 1
@@ -75,6 +76,7 @@ EnergyLogEntry* energyPerMonthLogEntryPtr = nullptr;
 uint32_t lastTelegramReceivedMillis = 0;
 time_t lastTelegramReceivedTime = 0;
 time_t currentTime = 0;
+time_t updatePowerLogTime = 0;
 time_t syncFTPTime = 0;
 time_t lastFTPSyncTime = 0;
 
@@ -230,8 +232,6 @@ void updateStatistics(P1Telegram& p1Telegram, float hoursSinceLastUpdate)
     if (gasTimestamp != gasData.timestamp)
         gasData.update(gasTimestamp, currentTime, gasEnergy);
 
-    updatePowerLog();
-
     float powerDelivered = phaseData[0].powerDelivered + phaseData[1].powerDelivered + phaseData[2].powerDelivered;
     float powerReturned = phaseData[0].powerReturned + phaseData[1].powerReturned + phaseData[2].powerReturned;    
 
@@ -269,16 +269,21 @@ void updateStatistics(P1Telegram& p1Telegram, float hoursSinceLastUpdate)
 }
 
 
-void updatePowerLog()
+void updatePowerLog(time_t time)
 {
-    if ((powerLogEntryPtr == nullptr) || isPowerDeltaThresholdExceeded())
+    Tracer tracer(F("updatePowerLog"));
+
+    if ((powerLogEntryPtr == nullptr)
+        || (time >= powerLogEntryPtr->time + SECONDS_PER_HOUR)
+        || isPowerDeltaThresholdExceeded())
     {
         PowerLogEntry newPowerLogEntry;
-        newPowerLogEntry.time = currentTime;
+        newPowerLogEntry.time = time;
         for (int phase = 0; phase < 3; phase++)
         {
-            newPowerLogEntry.powerDelivered[phase] = phaseData[phase].powerDelivered;
-            newPowerLogEntry.powerReturned[phase] = phaseData[phase].powerReturned;
+            newPowerLogEntry.powerDelivered[phase] = phaseData[phase].getAvgPowerDelivered();
+            newPowerLogEntry.powerReturned[phase] = phaseData[phase].getAvgPowerReturned();
+            phaseData[phase].reset();
         }
         newPowerLogEntry.powerGas = gasData.power;
 
@@ -288,6 +293,15 @@ void updatePowerLog()
         if (PersistentData.isFTPEnabled() && (logEntriesToSync == PersistentData.ftpSyncEntries))
             syncFTPTime = currentTime;
     }
+    else
+    {
+        // Reset averages so it's a moving average over the last minute (POWER_LOG_INTERVAL)
+        // Otherwise sudden changes get averaged out too much.
+        for (int phase = 0; phase < 3; phase++)
+        {
+            phaseData[phase].reset();
+        }
+    }
 }
 
 
@@ -295,9 +309,9 @@ bool isPowerDeltaThresholdExceeded()
 {
     for (int phase = 0; phase < 3; phase++)
     {
-        if (std::abs(phaseData[phase].powerDelivered - powerLogEntryPtr->powerDelivered[phase]) >= PersistentData.powerLogDelta)
+        if (std::abs(phaseData[phase].getAvgPowerDelivered() - powerLogEntryPtr->powerDelivered[phase]) >= PersistentData.powerLogDelta)
             return true;
-        if (std::abs(phaseData[phase].powerReturned - powerLogEntryPtr->powerReturned[phase]) >= PersistentData.powerLogDelta)
+        if (std::abs(phaseData[phase].getAvgPowerReturned() - powerLogEntryPtr->powerReturned[phase]) >= PersistentData.powerLogDelta)
             return true;
     }
 
@@ -330,16 +344,16 @@ void testFillLogs()
         energyPerDayLogEntryPtr->energyGas = day;
     }
 
+    time_t time = currentTime;
     for (int i = 0; i < MAX_POWER_LOG_SIZE; i++)
     {
-        phaseData[0].powerDelivered = i * 10;
-        phaseData[1].powerDelivered = i * 5;
-        phaseData[2].powerDelivered = i;
-        phaseData[0].powerReturned = i * 10 + 1;
-        phaseData[1].powerReturned = i * 5 + 1;
-        phaseData[2].powerReturned = i + 1;
+        float f = float(i) / 1000;
+        phaseData[0].update(230, 10, f * 10, f * 10 + 1);
+        phaseData[1].update(231, 5, f * 5, f * 5 + 1);
+        phaseData[2].update(232, 1, f, f + 1);
         gasData.power = i * 2;
-        updatePowerLog();
+        updatePowerLog(time);
+        time += POWER_LOG_INTERVAL;
     }
 }
 
@@ -348,8 +362,10 @@ void onTimeServerSynced()
 {
     currentTime = WiFiSM.getCurrentTime();
 
-    newEnergyPerDayLogEntry();
+    updatePowerLogTime = currentTime + POWER_LOG_INTERVAL;
+
     newEnergyPerHourLogEntry();
+    newEnergyPerDayLogEntry();
     newEnergyPerWeekLogEntry();
     newEnergyPerMonthLogEntry();
 
@@ -367,18 +383,22 @@ void onTimeServerSynced()
 void onWiFiInitialized()
 {
     if (currentTime >= energyPerHourLogEntryPtr->time + SECONDS_PER_HOUR)
+    {
         newEnergyPerHourLogEntry();
 
-    if (currentTime >= energyPerDayLogEntryPtr->time + SECONDS_PER_DAY)
-        newEnergyPerDayLogEntry();
+        if (currentTime >= energyPerDayLogEntryPtr->time + SECONDS_PER_DAY)
+        {
+            newEnergyPerDayLogEntry();
 
-    if (currentTime >= energyPerWeekLogEntryPtr->time + (SECONDS_PER_DAY * 7))
-        newEnergyPerWeekLogEntry();
+            if (currentTime >= energyPerWeekLogEntryPtr->time + (SECONDS_PER_DAY * 7))
+                newEnergyPerWeekLogEntry();
 
-    int currentMonth = gmtime(&currentTime)->tm_mon;
-    int lastLogMonth = gmtime(&energyPerMonthLogEntryPtr->time)->tm_mon;
-    if (currentMonth != lastLogMonth)
-        newEnergyPerMonthLogEntry();
+            int currentMonth = gmtime(&currentTime)->tm_mon;
+            int lastLogMonth = gmtime(&energyPerMonthLogEntryPtr->time)->tm_mon;
+            if (currentMonth != lastLogMonth)
+                newEnergyPerMonthLogEntry();
+        }
+    }
 
     if (Serial.available())
     {
@@ -407,6 +427,12 @@ void onWiFiInitialized()
             float hoursSinceLastUpdate = float(millisSinceLastTelegram) / 3600000;
             updateStatistics(LastP1Telegram, hoursSinceLastUpdate);
         }
+    }
+
+    if (currentTime >= updatePowerLogTime)
+    {
+        updatePowerLogTime += POWER_LOG_INTERVAL;
+        updatePowerLog(currentTime);
     }
 
     if ((syncFTPTime != 0) && (currentTime >= syncFTPTime) && WiFiSM.isConnected())
@@ -488,7 +514,7 @@ void writeCsvPowerLogEntries(PowerLogEntry* logEntryPtr, Print& destination)
 {
     while (logEntryPtr != nullptr)
     {
-        destination.print(formatTime("%F %H:%M:%S", logEntryPtr->time));
+        destination.print(formatTime("%F %H:%M", logEntryPtr->time));
         for (int phase = 0; phase < PersistentData.phaseCount; phase++)
             destination.printf(";%d;%d", logEntryPtr->powerDelivered[phase], logEntryPtr->powerReturned[phase]);
         destination.printf(";%d\r\n", logEntryPtr->powerGas);
