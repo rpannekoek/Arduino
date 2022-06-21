@@ -195,7 +195,7 @@ void setup()
 
     const char* cacheControl = "max-age=86400, public";
     WebServer.on("/", handleHttpRootRequest);
-    WebServer.on("/json", handleHttpJsonRequest);
+    WebServer.on("/json", handleHttpHeishamonJsonRequest);
     WebServer.on("/sync", handleHttpFtpSyncRequest);
     WebServer.on("/calibrate", HTTP_GET, handleHttpCalibrateFormRequest);
     WebServer.on("/calibrate", HTTP_POST, handleHttpCalibrateFormPost);
@@ -652,7 +652,7 @@ void writeJsonFloat(String name, float value)
     HttpResponse.printf(F("\"%s\": %0.1f,"), name.c_str(), value);
 }
 
-void handleHttpJsonRequest()
+void handleHttpHeishamonJsonRequest()
 {
     Tracer tracer(F("handleHttpJsonRequest"));
 

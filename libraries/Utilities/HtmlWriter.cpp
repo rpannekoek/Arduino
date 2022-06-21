@@ -131,6 +131,26 @@ void HtmlWriter::writeStackedBar(float value1, float value2, String cssClass1, S
 }
 
 
+void HtmlWriter::writeFormStart(String action)
+{
+    _output.printf(
+        F("<form action=\"%s\" method=\"POST\">\r\n"),
+        action.c_str());
+}
+
+
+void HtmlWriter::writeFormEnd()
+{
+    _output.println(F("</form>"));
+}
+
+
+void HtmlWriter::writeSubmitButton()
+{
+    _output.println(F("<input type=\"submit\">"));
+}
+
+
 void HtmlWriter::writeTextBox(String name, String label, String value,  uint16_t maxLength)
 {
     _output.printf(
@@ -200,11 +220,65 @@ void HtmlWriter::writeSlider(String name, String label, String unitOfMeasure, in
 }
 
 
+void HtmlWriter::writeHeading(String title, int level)
+{
+    _output.printf(
+        F("<h%d>%s</h%d>\r\n"),
+        level,
+        title.c_str(),
+        level);
+}
+
+
+void HtmlWriter::writeTableStart()
+{
+    _output.println(F("<table>"));
+}
+
+
+void HtmlWriter::writeTableEnd()
+{
+    _output.println(F("</table>"));
+}
+
+
+void HtmlWriter::writeRowStart()
+{
+    _output.print(F("<tr>"));
+}
+
+
+void HtmlWriter::writeRowEnd()
+{
+    _output.println(F("</tr>"));
+}
+
+
+void HtmlWriter::writeCellStart(String cssClass)
+{
+    _output.printf(
+        F("<td class=\"%s\">"),
+        cssClass.c_str());
+}
+
+
+void HtmlWriter::writeCellEnd()
+{
+    _output.println(F("</td>"));
+}
+
+
 void HtmlWriter::writeHeaderCell(String value)
 {
     _output.print(F("<th>"));
     _output.print(value);
     _output.print(F("</th>"));
+}
+
+
+void HtmlWriter::writeCell(String value)
+{
+    return writeCell(value.c_str());
 }
 
 
@@ -220,6 +294,13 @@ void HtmlWriter::writeCell(int value)
 {
     _output.print(F("<td>"));
     _output.printf(F("%d"), value);
+    _output.print(F("</td>"));
+}
+
+void HtmlWriter::writeCell(uint32_t value)
+{
+    _output.print(F("<td>"));
+    _output.printf(F("%u"), value);
     _output.print(F("</td>"));
 }
 
