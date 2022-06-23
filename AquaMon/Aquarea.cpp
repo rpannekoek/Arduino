@@ -604,8 +604,8 @@ bool Aquarea::readPacket()
     }
     else
     {
-        // Two typical packet mutilations which can be repaired:
-        if (((header.magic == 0x9C) || (header.magic == 0xCE)) && (header.dataSize == 190) && (bytesRead == 200))
+        // Typical packet mutilations which can be repaired:
+        if ((header.dataSize == 190) && (bytesRead == 200) & (_invalidData[2] == 0x10))
         {
             TRACE(F("Repairing packet.\n"));
             _data[0] = AQUAREA_RESPONSE_MAGIC;
