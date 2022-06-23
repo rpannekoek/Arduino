@@ -1,6 +1,8 @@
 #ifndef AQUAREA_H
 #define AQUAREA_H
 
+#define DATA_BUFFER_SIZE 256
+
 enum struct TopicId
 {
     Heatpump_State = 0,
@@ -115,14 +117,10 @@ enum struct TopicId
 };
 
 
-enum struct PacketState
+struct __attribute__ ((packed)) PacketHeader
 {
-    NotReceived = 0,
-    Valid = 1,
-    Timeout = 2,
-    UnexpectedMagic = 3,
-    UnexpectedSize = 4,
-    ChecksumError = 5
+    uint8_t magic;
+    uint8_t dataSize;
 };
 
 
@@ -165,15 +163,16 @@ class Topic
 class Aquarea
 {
     public:
+        uint32_t repairedPackets = 0;
+
         // Constructor
         Aquarea();
 
-        PacketState inline getPacketState()
+        String inline getLastError()
         {
-            return _packetState;
+            return _lastError;
         }
 
-        static String getText(PacketState packetState);
         static std::vector<TopicId> getAllTopicIds();
 
         Topic getTopic(TopicId id);
@@ -181,22 +180,24 @@ class Aquarea
         bool begin();
         bool sendQuery();
         bool setPump(bool pumpOn);
-        PacketState readPacket();
-        void writeHexDump(Print& printTo);
+        bool readPacket();
+        void writeHexDump(Print& printTo, bool unknownData);
 
     private:
-        uint8_t _data[256];
-        PacketState _packetState = PacketState::NotReceived;
+        uint8_t _data[DATA_BUFFER_SIZE];
+        uint8_t _invalidData[DATA_BUFFER_SIZE];
+        String _lastError;
         uint32_t _commandSentMillis = 0;
+        bool _debugOutputOnSerial = false;
 
         static TopicDesc getTopicDescriptor(TopicId topicId);
         static uint8_t checkSum(uint8_t magic, uint8_t dataSize, uint8_t* dataPtr);
         bool validateCheckSum();
         bool sendCommand(uint8_t magic, uint8_t dataSize, uint8_t* dataPtr);
-        PacketState readTestData(uint8_t testCommand);
-        PacketState setTopicValue();
-        static bool readBytes(uint8_t* bufferPtr, size_t count);
-        static int readHexByte();
+        int readTestData(PacketHeader& header);
+        bool setTopicValue();
+        static size_t readBytes(uint8_t* bufferPtr, size_t count);
+        static size_t readHexBytes(uint8_t* bufferPtr, size_t count);
 };
 
 #endif

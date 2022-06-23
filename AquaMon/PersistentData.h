@@ -11,6 +11,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
     char ftpPassword[32];
     uint16_t ftpSyncEntries;
     uint16_t antiFreezeTemp;
+    bool logPacketErrors;
 
     bool inline ftpIsEnabled()
     {
@@ -26,7 +27,8 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         sizeof(ftpUser) + 
         sizeof(ftpPassword) +
         sizeof(ftpSyncEntries)  +
-        sizeof(antiFreezeTemp)
+        sizeof(antiFreezeTemp) +
+        sizeof(logPacketErrors)
         ) {}
 
     virtual void initialize()
@@ -40,6 +42,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         ftpPassword[0] = 0;
         ftpSyncEntries = 0;
         antiFreezeTemp = 5;
+        logPacketErrors = false;
     }
 
     virtual void validate()

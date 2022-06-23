@@ -21,11 +21,12 @@
 #define SECONDS_PER_DAY (24 * 3600)
 #define HTTP_POLL_INTERVAL 60
 #define EVENT_LOG_LENGTH 50
-#define TOPIC_LOG_SIZE 100
+#define TOPIC_LOG_SIZE 150
+#define TOPIC_LOG_CSV_MAX_SIZE 100
 #define DEFAULT_BAR_LENGTH 60
-#define FTP_RETRY_INTERVAL (60 * 60)
+#define FTP_RETRY_INTERVAL (30 * 60)
 #define QUERY_AQUAREA_INTERVAL 6
-#define AGGREGATIONS (60 / QUERY_AQUAREA_INTERVAL)
+#define AGGREGATION_INTERVAL 60
 #define ANTI_FREEZE_DELTA_T 5
 
 #define LED_ON 0
@@ -40,6 +41,7 @@
 #define CFG_FTP_PASSWORD F("FTPPassword")
 #define CFG_FTP_SYNC_ENTRIES F("FTPSyncEntries")
 #define CFG_ANTI_FREEZE_TEMP F("AntiFreezeTemp")
+#define CFG_LOG_PACKET_ERRORS F("LogPacketErrors")
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeText = "text/plain";
@@ -48,7 +50,7 @@ const char* ContentTypeJson = "application/json";
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
-StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
+StringBuilder HttpResponse(12288); // 12KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, DEFAULT_BAR_LENGTH);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
 StaticLog<TopicLogEntry> TopicLog(TOPIC_LOG_SIZE);
@@ -63,6 +65,7 @@ TopicLogEntry* lastTopicLogEntryPtr = nullptr;
 DayStatsEntry* lastDayStatsEntryPtr = nullptr;
 
 uint16_t ftpSyncEntries = 0;
+uint32_t validPackets = 0;
 uint32_t packetErrors = 0;
 bool heatPumpIsOn = false;
 bool antiFreezeActivated = false;
@@ -70,6 +73,8 @@ bool antiFreezeActivated = false;
 time_t currentTime = 0;
 time_t queryAquareaTime = 0;
 time_t lastPacketReceivedTime = 0;
+time_t lastPacketErrorTime = 0;
+time_t topicLogAggregationTime = 0;
 time_t syncFTPTime = 0;
 time_t lastFTPSyncTime = 0;
 
@@ -152,8 +157,11 @@ void newDayStatsEntry()
 void onTimeServerSynced()
 {
     queryAquareaTime = currentTime;
+    topicLogAggregationTime = currentTime + AGGREGATION_INTERVAL;
+
     newTopicLogEntry.time = currentTime;
     newTopicLogEntry.reset();
+
     newDayStatsEntry();
 }
 
@@ -163,15 +171,17 @@ void onWiFiInitialized()
     if (Serial.available())
     {
         digitalWrite(LED_BUILTIN, LED_ON);
-        PacketState packetState = HeatPump.readPacket();
-        if (packetState == PacketState::Valid)
+        if (HeatPump.readPacket())
+        {
+            validPackets++;
             handleNewAquareaData();
+        }
         else
         {
+            lastPacketErrorTime = currentTime;
             packetErrors++;
-            String event = F("Aquarea error: ");
-            event += Aquarea::getText(packetState);
-            logEvent(event);
+            if (PersistentData.logPacketErrors)
+                logEvent(HeatPump.getLastError());
         }
         digitalWrite(LED_BUILTIN, LED_OFF);
     }
@@ -261,7 +271,12 @@ void updateDayStats(uint32_t secondsSinceLastUpdate, float powerInKW, float powe
     TRACE(F("Pin: %0.2f kW, Pout: %0.2f kW, dt: %u s\n"), powerInKW, powerOutKW, secondsSinceLastUpdate);
 
     if ((currentTime / SECONDS_PER_DAY) > (lastDayStatsEntryPtr->startTime / SECONDS_PER_DAY))
+    {
         newDayStatsEntry();
+        validPackets = 0;
+        packetErrors = 0;
+        HeatPump.repairedPackets = 0;
+    }
 
     lastDayStatsEntryPtr->update(currentTime, secondsSinceLastUpdate, powerInKW, powerOutKW, antiFreezeActivated);
 
@@ -279,28 +294,28 @@ void updateTopicLog()
         newTopicLogEntry.topicValues[i] += HeatPump.getTopic(topicId).getValue().toFloat();
     }
 
-    if (++topicLogAggregations == AGGREGATIONS)
+    topicLogAggregations++;
+    if (currentTime < topicLogAggregationTime) return; 
+
+    // Calculate averages
+    for (int i = 0; i < NUMBER_OF_MONITORED_TOPICS; i++)
+        newTopicLogEntry.topicValues[i] /= topicLogAggregations;
+
+    if ((lastTopicLogEntryPtr == nullptr) || !newTopicLogEntry.equals(lastTopicLogEntryPtr))
     {
-        // Calculate averages
-        for (int i = 0; i < NUMBER_OF_MONITORED_TOPICS; i++)
-            newTopicLogEntry.topicValues[i] /= AGGREGATIONS;
+        lastTopicLogEntryPtr = TopicLog.add(&newTopicLogEntry);
 
-        if ((lastTopicLogEntryPtr == nullptr) || !newTopicLogEntry.equals(lastTopicLogEntryPtr))
-        {
-            lastTopicLogEntryPtr = TopicLog.add(&newTopicLogEntry);
+        newTopicLogEntry.time = currentTime;
 
-            newTopicLogEntry.time = currentTime;
-
-            ftpSyncEntries = std::min(ftpSyncEntries + 1, TOPIC_LOG_SIZE);
-            if (ftpSyncEntries == PersistentData.ftpSyncEntries)
-                syncFTPTime = currentTime;
-        }
-
-        newTopicLogEntry.reset(); // Keep moving average of last minute only
-        topicLogAggregations = 0;
+        ftpSyncEntries = std::min(ftpSyncEntries + 1, TOPIC_LOG_SIZE);
+        if (ftpSyncEntries == PersistentData.ftpSyncEntries)
+            syncFTPTime = currentTime;
     }
-}
 
+    newTopicLogEntry.reset(); // Keep moving average of last minute only
+    topicLogAggregations = 0;
+    topicLogAggregationTime += AGGREGATION_INTERVAL;
+}
 
 
 bool trySyncFTP(Print* printTo)
@@ -401,10 +416,11 @@ void handleHttpRootRequest()
     else
         ftpSync = formatTime("%H:%M", lastFTPSyncTime);
 
-    PacketState packetState = HeatPump.getPacketState();
-    String lastPacket = (packetState == PacketState::Valid)
-        ? String(formatTime("%H:%M:%S", lastPacketReceivedTime))
-        : Aquarea::getText(packetState);
+    const char* lastPacket = (lastPacketReceivedTime == 0)
+        ? "Not received"
+        : formatTime("%H:%M:%S", lastPacketReceivedTime);
+
+    float packetErrorRatio = (packetErrors == 0) ? 0.0 : float(packetErrors) / (validPackets + packetErrors);
 
     Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
 
@@ -415,13 +431,13 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
     HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync.c_str());
     HttpResponse.printf(F("<tr><th>FTP Sync entries</th><td>%d</td></tr>\r\n"), ftpSyncEntries);
-    HttpResponse.printf(F("<tr><th><a href=\"/topics\">Last packet</a></th><td>%s</td></tr>\r\n"), lastPacket.c_str());
-    HttpResponse.printf(F("<tr><th>Packet errors</th><td>%u</td></tr>\r\n"), packetErrors);
+    HttpResponse.printf(F("<tr><th><a href=\"/topics\">Last packet</a></th><td>%s</td></tr>\r\n"), lastPacket);
+    HttpResponse.printf(F("<tr><th>Packet errors</th><td>%0.0f %%</td></tr>\r\n"), packetErrorRatio * 100);
     HttpResponse.printf(F("<tr><th><a href=\"/topiclog\">Topic log</a></th><td>%d</td></p>\r\n"), TopicLog.count());
     HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
     Html.writeTableEnd();
 
-    if (packetState == PacketState::Valid)
+    if (lastPacketReceivedTime != 0)
         writeCurrentValues();
     
     writeStatisticsPerDay();
@@ -525,15 +541,12 @@ void handleHttpTopicsRequest()
 
     Html.writeHeader(F("Topics"), true, true, HTTP_POLL_INTERVAL);
 
-    PacketState packetState = HeatPump.getPacketState();
-    HttpResponse.printf(
-        F("<p>Packet state: %s @ %s. <a href=\"/hexdump\">Show hex dump</a></p>\r\n"),
-        Aquarea::getText(packetState).c_str(),
-        formatTime("%H:%M:%S", lastPacketReceivedTime)
-        );
-
-    if (packetState == PacketState::Valid)
+    if (lastPacketReceivedTime != 0)
     {
+        HttpResponse.printf(
+            F("<p>Packet received @ %s. <a href=\"/hexdump\">Show hex dump</a></p>\r\n"),
+            formatTime("%H:%M:%S", lastPacketReceivedTime));
+
         Html.writeTableStart();
 
         for (TopicId topicId : HeatPump.getAllTopicIds())
@@ -572,6 +585,9 @@ void handleHttpTopicLogRequest()
     HttpResponse.println();
 
     // Write CSV data lines
+    TopicLogEntry* firstEntryPtr = (TopicLog.count() <= TOPIC_LOG_CSV_MAX_SIZE)
+        ? TopicLog.getFirstEntry()
+        : TopicLog.getEntryFromEnd(TOPIC_LOG_CSV_MAX_SIZE);
     writeTopicLogCsv(TopicLog.getFirstEntry(), HttpResponse);
 
     WebServer.send(200, ContentTypeText, HttpResponse);
@@ -584,19 +600,33 @@ void handleHttpHexDumpRequest()
 
     Html.writeHeader(F("Hex dump"), true, true);
 
-    PacketState packetState = HeatPump.getPacketState();
     HttpResponse.printf(
-        F("<p>Packet state: %s @ %s.</p>\r\n"),
-        Aquarea::getText(packetState).c_str(),
-        formatTime("%H:%M:%S", lastPacketReceivedTime)
-        );
+        F("<p>Received %u valid packets, %u repaired packets, %u invalid packets.</p>\r\n"),
+        validPackets,
+        HeatPump.repairedPackets,
+        packetErrors);
 
-    if (packetState != PacketState::NotReceived)
+    if (lastPacketReceivedTime != 0)
     {
+        Html.writeHeading(F("Last valid packet"), 2);
+        HttpResponse.printf(
+            F("<p>Packet received @ %s</p>\r\n"),
+            formatTime("%H:%M:%S", lastPacketReceivedTime));
+
         HttpResponse.println(F("<div class=\"hexdump\"><pre>"));
-        HeatPump.writeHexDump(HttpResponse);
+        HeatPump.writeHexDump(HttpResponse, false);
         HttpResponse.println(F("</pre></div>"));
     }
+
+    Html.writeHeading(F("Last invalid packet"), 2);
+    HttpResponse.printf(
+        F("<p>Last error @ %s : %s</p>\r\n"),
+        formatTime("%H:%M:%S", lastPacketErrorTime),
+        HeatPump.getLastError().c_str());
+
+    HttpResponse.println(F("<div class=\"hexdump\"><pre>"));
+    HeatPump.writeHexDump(HttpResponse, true);
+    HttpResponse.println(F("</pre></div>"));
 
     Html.writeFooter();
 
@@ -725,6 +755,7 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
     Html.writeTextBox(CFG_FTP_SYNC_ENTRIES, F("FTP sync entries"), String(PersistentData.ftpSyncEntries), 3);
     Html.writeTextBox(CFG_ANTI_FREEZE_TEMP, F("Anti-freeze temperature"), String(PersistentData.antiFreezeTemp), 2);
+    Html.writeCheckbox(CFG_LOG_PACKET_ERRORS, F("Log packet errors"), PersistentData.logPacketErrors);
     Html.writeTableEnd();
     Html.writeSubmitButton();
     Html.writeFormEnd();
@@ -761,6 +792,7 @@ void handleHttpConfigFormPost()
 
     PersistentData.ftpSyncEntries = WebServer.arg(CFG_FTP_SYNC_ENTRIES).toInt();
     PersistentData.antiFreezeTemp = WebServer.arg(CFG_ANTI_FREEZE_TEMP).toInt();
+    PersistentData.logPacketErrors = WebServer.arg(CFG_LOG_PACKET_ERRORS) == "true";
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();

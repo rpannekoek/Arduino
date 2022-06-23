@@ -9,24 +9,8 @@
 #define AQUAREA_QUERY_MAGIC 0x71
 #define AQUAREA_RESPONSE_MAGIC 0x71
 
-struct __attribute__ ((packed)) PacketHeader
-{
-    uint8_t magic;
-    uint8_t dataSize;
-};
-
 static uint8_t _queryData[AQUAREA_COMMAND_DATA_SIZE];
 static uint8_t _commandData[AQUAREA_COMMAND_DATA_SIZE];
-
-static const char* _packetStateText[] PROGMEM =
-{
-    "Not received",
-    "Valid",
-    "Timeout",
-    "Unexpected Magic",
-    "Unexpected Size",
-    "Checksum error"
-};
 
 static const char* DisabledEnabled[] PROGMEM = {"2", "Disabled", "Enabled"};
 static const char* BlockedFree[] PROGMEM = {"2", "Blocked", "Free"};
@@ -428,11 +412,13 @@ String Topic::getDescription()
 // Constructor
 Aquarea::Aquarea()
 {
+#ifdef DEBUG_ESP_PORT
+    _debugOutputOnSerial = (&DEBUG_ESP_PORT == &Serial);
+#endif
+
     memset(_queryData, 0, AQUAREA_COMMAND_DATA_SIZE);
     _queryData[0] = 0x01;
     _queryData[1] = 0x10;
-
-    memset(_data, 0, 256);
 }
 
 
@@ -440,12 +426,7 @@ bool Aquarea::begin()
 {
     Tracer tracer(F("Aquarea::begin"));
 
-    bool debugOutputOnSerial = false;
-#ifdef DEBUG_ESP_PORT
-    debugOutputOnSerial = (&DEBUG_ESP_PORT == &Serial);
-#endif
-
-    if (debugOutputOnSerial) 
+    if (_debugOutputOnSerial) 
         Serial.println(F("WARNING: DEBUG_ESP_PORT is set to Serial. Not switching Serial; heatpump communication won't work."));
     else
     {
@@ -466,15 +447,8 @@ bool Aquarea::begin()
     }
 
     Serial.setRxBufferSize(512);
-    Serial.setTimeout(1000);
+    Serial.setTimeout(500);
     return true;
-}
-
-
-String Aquarea::getText(PacketState packetState)
-{
-    PGM_P packetStateText = _packetStateText[static_cast<int>(packetState)];
-    return String(FPSTR(packetStateText));
 }
 
 
@@ -494,10 +468,14 @@ bool Aquarea::validateCheckSum()
     for (int i = 0; i < packetSize; i++)
         sum += _data[i];
 
-    if (sum == 0) return true;
-
-    TRACE(F("Checksum error: sum = %02X\n"), static_cast<int>(sum));
-    return false;           
+    if (sum == 0)
+        return true;
+    else
+    {
+        _lastError = F("Checksum error: sum = 0x");
+        _lastError += String(sum, 16);
+        return false;           
+    }
 }
 
 
@@ -532,7 +510,7 @@ bool Aquarea::sendCommand(uint8_t magic, uint8_t dataSize, uint8_t* dataPtr)
     bytesSent += Serial.write(checkSum);
 
     TRACE(
-        F("\nSend %d bytes to Aquarea. Magic: 0x%02X. Data size: %d. Checksum: 0x%02X\n"),
+        F("\nSent %d bytes to Aquarea. Magic: 0x%02X. Data size: %d. Checksum: 0x%02X\n"),
         bytesSent,
         static_cast<int>(magic),
         static_cast<int>(dataSize),
@@ -564,151 +542,142 @@ bool Aquarea::setPump(bool pumpOn)
 }
 
 
-PacketState Aquarea::readPacket()
+const char* formatPacketInfo(uint8_t magic, uint8_t dataSize, size_t readBytes)
+{
+    static char result[64];
+    snprintf(
+        result,
+        sizeof(result),
+        "Magic: 0x%02X. Data size: %d. Received: %u.",
+        static_cast<int>(magic),
+        static_cast<int>(dataSize),
+        readBytes);
+    return result;
+}
+
+
+bool Aquarea::readPacket()
 {
     Tracer tracer(F("Aquarea::readPacket"));
 
     PacketHeader header;
-    if (!readBytes((uint8_t*)&header, sizeof(header)))
+    if (readBytes((uint8_t*)&header, sizeof(header)) != sizeof(header))
     {
-        TRACE(F("Timeout reading packet header.\n"));
-        return PacketState::Timeout;
+        _lastError = F("Timeout reading packet header");
+        return false;
     }
 
-    _commandSentMillis = 0; // Allow next command to be sent
+    // Some kind of response is received; allow next command to be sent.
+    _commandSentMillis = 0; 
 
-    if (header.magic == 't')
-        return readTestData(header.dataSize);
-    else if (header.magic != AQUAREA_RESPONSE_MAGIC)
+    size_t bytesRead;
+    if (_debugOutputOnSerial && (header.magic == 't'))
     {
-        TRACE(F("Unexpected magic: 0x%02X\n"), header.magic);
-        return PacketState::UnexpectedMagic;
+        // Test packet for debug purposes
+        bytesRead = readTestData(header);
+        if (bytesRead < 0) return false;
+    }
+    else
+    {
+        uint8_t* dataPtr = (header.magic == AQUAREA_RESPONSE_MAGIC) && (header.dataSize == AQUAREA_RESPONSE_DATA_SIZE)
+            ? _data
+            : _invalidData;
+
+        memset(dataPtr, 0xEE, DATA_BUFFER_SIZE); // Mark "Empty" bytes in hex dump
+        dataPtr[0] = header.magic;
+        dataPtr[1] = header.dataSize;
+
+        // Always try to read more bytes than expected to ensure the RX buffer is flushed
+        // Timeout is set to 500 ms, so this won't block too long.
+        bytesRead = readBytes(dataPtr + 2, DATA_BUFFER_SIZE - 2);
     }
 
-    if (header.dataSize != AQUAREA_RESPONSE_DATA_SIZE)
+    TRACE(F("Received packet. %s\n"), formatPacketInfo(header.magic, header.dataSize, bytesRead));
+
+    if ((header.magic == AQUAREA_RESPONSE_MAGIC) || (header.dataSize == AQUAREA_RESPONSE_DATA_SIZE))
     {
-        TRACE(F("Unexpected data size: %d. Skipping packet.\n"), header.dataSize);
-        // TODO: Store in debugging area?
-        for (int i = 0; i < header.dataSize + 1; i++)
-            if (Serial.read() == -1) return PacketState::Timeout;
-        return PacketState::UnexpectedSize;
+        if (bytesRead != header.dataSize + 1)
+        {
+            _lastError = formatPacketInfo(header.magic, header.dataSize, bytesRead);
+            return false;
+        }
+    }
+    else
+    {
+        // Two typical packet mutilations which can be repaired:
+        if (((header.magic == 0x9C) || (header.magic == 0xCE)) && (header.dataSize == 190) && (bytesRead == 200))
+        {
+            TRACE(F("Repairing packet.\n"));
+            _data[0] = AQUAREA_RESPONSE_MAGIC;
+            _data[1] = AQUAREA_RESPONSE_DATA_SIZE;
+            _data[2] = 1;
+            memcpy(_data + 3, _invalidData + 2, 200);
+            repairedPackets++;
+        }
+        else
+        {
+            _lastError = formatPacketInfo(header.magic, header.dataSize, bytesRead);
+            return false;
+        }
     }
 
-    _data[0] = header.magic;
-    _data[1] = header.dataSize;
-
-    // Read data + checksum
-    if (!readBytes(_data + 2, header.dataSize + 1))
-    {
-        TRACE(F("Timeout reading packet.\n"));
-        _packetState = PacketState::Timeout;
-        return _packetState;
-    }
-
-    if (!validateCheckSum())
-    {
-        _packetState = PacketState::ChecksumError; 
-        return _packetState;
-    }
-
-    _packetState = PacketState::Valid;
-    return _packetState;
+    return validateCheckSum();  
 }
 
 
-PacketState Aquarea::readTestData(uint8_t testCommand)
+int Aquarea::readTestData(PacketHeader& header)
 {
-    TRACE(F("Aquarea::readTestData('%c')\n"), testCommand);
+    char testCommand = header.dataSize;
+    TRACE(F("Aquarea::readTestData(). testCommand: '%c'\n"), testCommand);
 
+    size_t bytesRead = AQUAREA_RESPONSE_DATA_SIZE + 1;
     if (testCommand == 'o')
     {
         TRACE(F("Setting topic value...\n"));
-        PacketState packetState = setTopicValue();
-        if (packetState != PacketState::Valid) return packetState;
+        bool success = setTopicValue();
+        if (!success) return -2;
+        header.magic = _data[0];
+        header.dataSize = _data[1];
     }
     else if (testCommand == ' ')
     {
         TRACE(F("Receiving packet data in hexdump form...\n"));
 
-        int magic = readHexByte();
-        if (magic == -1)
+        if (readHexBytes((uint8_t*)&header, sizeof(header)) != sizeof(header))
         {
-            TRACE(F("Timeout reading magic.\n"));
-            return PacketState::Timeout;
-        }
-        else if (magic != AQUAREA_RESPONSE_MAGIC)
-        {
-            TRACE(F("Unexpected magic: 0x%02X\n"), magic);
-            return PacketState::UnexpectedMagic;
+            _lastError = F("Timeout reading packet header");
+            return -1;
         }
 
-        int dataSize = readHexByte();
-        if (dataSize == -1)
-        {
-            TRACE(F("Timeout reading data size.\n"));
-            return PacketState::Timeout;
-        }
-        else if (dataSize != AQUAREA_RESPONSE_DATA_SIZE)
-        {
-            TRACE(F("Unexpected data size: %d\n"), dataSize);
-            // Skip the packet
-            for (int i = 0; i < dataSize + 1; i++)
-                if (readHexByte() == -1) return PacketState::Timeout;
-            return PacketState::UnexpectedSize;
-        }
+        uint8_t* dataPtr = (header.magic == AQUAREA_RESPONSE_MAGIC) && (header.dataSize == AQUAREA_RESPONSE_DATA_SIZE)
+            ? _data
+            : _invalidData;
 
-        _data[0] = AQUAREA_RESPONSE_MAGIC;
-        _data[1] = dataSize;
+        memset(dataPtr, 0xEE, DATA_BUFFER_SIZE); // Mark "Empty" bytes in hex dump
+        dataPtr[0] = header.magic;
+        dataPtr[1] = header.dataSize;
 
-        for (int i = 0; i < (dataSize + 1); i++)
-        {
-            int byte = readHexByte();
-            if (byte == -1)
-            {
-                Tracer::hexDump(_data, (i + 2));
-                TRACE(F("%d bytes read. %d remaining...\n"), i, (dataSize + 1 - i));
-                int retries = 0;
-                do
-                {
-                    delay(100);
-                    byte = readHexByte();
-                    if (retries++ == 150) return PacketState::Timeout;
-                }
-                while (byte == -1);
-                Tracer::hexDump(_data, (i + 2));
-            }
-            _data[i + 2] = byte;
-        }
+        // Always try to read more bytes than expected to ensure the RX buffer is flushed
+        // Timeout is set to 500 ms, so this won't block too long.
+        bytesRead = readHexBytes(dataPtr + 2, DATA_BUFFER_SIZE - 2);
     }
     else
         TRACE(F("Repeating last packet.\n"));
 
-    // Discard any additional data (e.g. newline)
-    while (Serial.available())
-        Serial.read();
-
-    if (!validateCheckSum())
-    {
-        _packetState = PacketState::ChecksumError;
-        return _packetState;
-    }
-
-    _commandSentMillis = 0; // Allow next command to be sent
-    _packetState = PacketState::Valid;
-    return _packetState;
+    return bytesRead; 
 }
 
 
-PacketState Aquarea::setTopicValue()
+bool Aquarea::setTopicValue()
 {
     String topicName = Serial.readStringUntil('=');
     topicName.trim();
 
-    int byte = readHexByte();
-    if (byte == -1)
+    uint8_t value;
+    if (readHexBytes(&value, 1) != 1)
     {
-        TRACE(F("Timeout reading byte value.\n"));
-        return PacketState::Timeout;
+        _lastError = F("Timeout reading byte value");
+        return false;
     }
 
     bool knownTopic = false;
@@ -724,51 +693,75 @@ PacketState Aquarea::setTopicValue()
     }
     if (!knownTopic)
     {
-        TRACE(F("Unknown Topic: '%s'\n"), topicName.c_str());
-        return PacketState::UnexpectedMagic;
+        _lastError = F("Unknown Topic: ");
+        _lastError += topicName;
+        return false;
     }
 
     _data[0] = AQUAREA_RESPONSE_MAGIC;
     _data[1] = AQUAREA_RESPONSE_DATA_SIZE;
     _data[2] = 0x01;
     _data[3] = 0x10;
-    _data[topicDescriptor.index] = byte;
+    _data[topicDescriptor.index] = value;
 
     uint8_t checkSum = Aquarea::checkSum(_data[0], _data[1], _data + 2);
-    TRACE(F("_data[%d] = %d. Checksum: 0x%02X\n"), topicDescriptor.index, byte, checkSum);
     _data[AQUAREA_RESPONSE_DATA_SIZE + 2] = checkSum;
 
-    return PacketState::Valid;
+    TRACE(
+        F("_data[%d] = %d. Checksum: 0x%02X\n"),
+        topicDescriptor.index,
+        static_cast<int>(value),
+        checkSum);
+        
+    return true;
 }
 
 
-bool Aquarea::readBytes(uint8_t* bufferPtr, size_t count)
+size_t Aquarea::readBytes(uint8_t* bufferPtr, size_t count)
 {
     size_t bytesRead = Serial.readBytes(bufferPtr, count);
     if (bytesRead != count)
         TRACE(F("Timeout reading %d bytes. %d bytes read.\n"), count, bytesRead);
-    return (bytesRead == count);
+    return bytesRead;
 }
 
 
-int Aquarea::readHexByte()
+size_t Aquarea::readHexBytes(uint8_t* bufferPtr, size_t count)
 {
     char hexDigits[3];
     hexDigits[2] = 0;
 
-    if (!readBytes((uint8_t*)hexDigits, 2))
-        return -1;
+    for (int i = 0; i < count; i++)
+    {
+        if (Serial.readBytes((uint8_t*)hexDigits, 2) != 2)
+        {
+            TRACE(F("Timeout reading %d hex bytes. %d hex bytes read.\n"), count, i);
+            return i;
+        }
 
-    uint32_t byte;
-    sscanf(hexDigits, "%X", &byte);
+        uint32_t byte;
+        sscanf(hexDigits, "%X", &byte);
+        bufferPtr[i] = byte; 
+    }
 
-    return byte;
+    return count;
 }
 
 
-void Aquarea::writeHexDump(Print& printTo)
+void Aquarea::writeHexDump(Print& printTo, bool showInvalidData)
 {
-    int length = (_packetState == PacketState::Valid) ? (_data[1] + 3) : 256;
+    uint8_t* dataPtr;
+    int length;
+    if (showInvalidData)
+    {
+        dataPtr = _invalidData;
+        length = DATA_BUFFER_SIZE;
+    }
+    else
+    {
+        dataPtr = _data;
+        length = std::min(dataPtr[1] + 3, DATA_BUFFER_SIZE);
+    }
 
     for (int row = 0; row < length; row += 16)
     {
@@ -776,7 +769,7 @@ void Aquarea::writeHexDump(Print& printTo)
         {
             int index = row + col;
             if (index == length) break; 
-            printTo.printf("%02X ", _data[index]);
+            printTo.printf("%02X ", dataPtr[index]);
             if (col == 7)
                 printTo.print(" ");
         }
