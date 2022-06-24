@@ -69,6 +69,7 @@ uint32_t validPackets = 0;
 uint32_t packetErrors = 0;
 bool heatPumpIsOn = false;
 bool antiFreezeActivated = false;
+bool testAntiFreeze = false;
 
 time_t currentTime = 0;
 time_t queryAquareaTime = 0;
@@ -111,6 +112,7 @@ void setup()
     WebServer.on("/topics", handleHttpTopicsRequest);
     WebServer.on("/topiclog", handleHttpTopicLogRequest);
     WebServer.on("/hexdump", handleHttpHexDumpRequest);
+    WebServer.on("/test", handleHttpTestRequest);
     WebServer.on("/json", handleHttpHeishamonJsonRequest);
     WebServer.on("/json2", handleHttpAquaMonJsonRequest);
     WebServer.on("/sync", handleHttpFtpSyncRequest);
@@ -237,7 +239,7 @@ void antiFreezeControl(int inletTemp, int outletTemp, float compPower)
     if (!antiFreezeActivated)
     {
         // Anti-freeze control is not active (yet)
-        if (std::min(inletTemp, outletTemp) <= antiFreezeOnTemp)
+        if ((std::min(inletTemp, outletTemp) <= antiFreezeOnTemp) || testAntiFreeze)
         {
             antiFreezeActivated = true;
             logEvent(F("Anti-freeze activated."));
@@ -248,7 +250,7 @@ void antiFreezeControl(int inletTemp, int outletTemp, float compPower)
     else
     {
         // Anti-freeze control is active
-        if (std::min(inletTemp, outletTemp) > antiFreezeOffTemp)
+        if ((std::min(inletTemp, outletTemp) > antiFreezeOffTemp) && !testAntiFreeze)
         {
             antiFreezeActivated = false;
             logEvent(F("Anti-freeze deactivated."));
@@ -383,21 +385,6 @@ void writeTopicLogCsv(TopicLogEntry* logEntryPtr, Print& destination)
 }
 
 
-void test(String message)
-{
-    Tracer tracer(F("test"), message.c_str());
-
-    if (message.startsWith("L"))
-    {
-        for (int i = 0; i < EVENT_LOG_LENGTH; i++)
-        {
-            logEvent(F("Test event to fill the event log"));
-            yield();
-        }
-    }
-}
-
-
 void handleHttpRootRequest()
 {
     Tracer tracer(F("handleHttpRootRequest"));
@@ -432,7 +419,7 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync.c_str());
     HttpResponse.printf(F("<tr><th>FTP Sync entries</th><td>%d</td></tr>\r\n"), ftpSyncEntries);
     HttpResponse.printf(F("<tr><th><a href=\"/topics\">Last packet</a></th><td>%s</td></tr>\r\n"), lastPacket);
-    HttpResponse.printf(F("<tr><th>Packet errors</th><td>%0.0f %%</td></tr>\r\n"), packetErrorRatio * 100);
+    HttpResponse.printf(F("<tr><th>Packet errors</th><td>%0.1f %%</td></tr>\r\n"), packetErrorRatio * 100);
     HttpResponse.printf(F("<tr><th><a href=\"/topiclog\">Topic log</a></th><td>%d</td></p>\r\n"), TopicLog.count());
     HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
     Html.writeTableEnd();
@@ -588,7 +575,7 @@ void handleHttpTopicLogRequest()
     TopicLogEntry* firstEntryPtr = (TopicLog.count() <= TOPIC_LOG_CSV_MAX_SIZE)
         ? TopicLog.getFirstEntry()
         : TopicLog.getEntryFromEnd(TOPIC_LOG_CSV_MAX_SIZE);
-    writeTopicLogCsv(TopicLog.getFirstEntry(), HttpResponse);
+    writeTopicLogCsv(firstEntryPtr, HttpResponse);
 
     WebServer.send(200, ContentTypeText, HttpResponse);
 }
@@ -627,6 +614,47 @@ void handleHttpHexDumpRequest()
     HttpResponse.println(F("<div class=\"hexdump\"><pre>"));
     HeatPump.writeHexDump(HttpResponse, true);
     HttpResponse.println(F("</pre></div>"));
+
+    Html.writeFooter();
+
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
+}
+
+
+void handleHttpTestRequest()
+{
+    Tracer tracer(F("handleHttpTestRequest"));
+
+    Html.writeHeader(F("Test"), true, true);
+
+    if (WiFiSM.shouldPerformAction(F("antiFreeze")))
+    {
+        testAntiFreeze = !testAntiFreeze;
+        const char* switchState = testAntiFreeze ? "on" : "off"; 
+        HttpResponse.printf(
+            F("<p>Anti-freeze test: %s</p>\r\n"),
+            switchState);
+    }
+
+    HttpResponse.printf(
+        F("<p><a href=\"?antiFreeze=%u\">Test anti-freeze (switch)</a></p>\r\n"),
+        currentTime);
+
+    if (WiFiSM.shouldPerformAction(F("fillDayStats")))
+    {
+        for (int i = 0; i < 6; i++)
+        {
+            float powerOutKW = float(i); 
+            float powerInKW = powerOutKW / 4;
+            lastDayStatsEntryPtr->update(currentTime + i * SECONDS_PER_DAY, 3600, powerInKW, powerOutKW, i % 2 == 0);
+            newDayStatsEntry();
+        }
+        HttpResponse.println(F("Day Stats filled."));
+    }
+    else
+        HttpResponse.printf(
+            F("<p><a href=\"?fillDayStats=%u\">Fill Day Stats</a></p>\r\n"),
+            currentTime);
 
     Html.writeFooter();
 
