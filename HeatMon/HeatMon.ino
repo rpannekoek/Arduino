@@ -15,8 +15,8 @@
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include "PersistentData.h"
-#include "HeatLogEntry.h"
-#include "EnergyLogEntry.h"
+#include "MonitoredTopics.h"
+#include "DayStatsEntry.h"
 
 #define ICON "/apple-touch-icon.png"
 #define CSS "/styles.css"
@@ -26,9 +26,10 @@
 #define MAX_FLOW 30
 #define MAX_POWER 10
 #define MAX_INPUT_POWER 4
-#define MAX_COP 5
 #define HTTP_POLL_INTERVAL 60
 #define EVENT_LOG_LENGTH 50
+#define BAR_LENGTH 40
+#define WIFI_TIMEOUT_MS 2000
 #define FTP_RETRY_INTERVAL (60 * 60)
 #define HEAT_LOG_INTERVAL (30 * 60)
 
@@ -52,12 +53,12 @@ const char* ContentTypeJson = "application/json";
 
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
-WiFiFTPClient FTPClient(2000); // 2 sec timeout
+WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
-HtmlWriter Html(HttpResponse, ICON, CSS, 40);
+HtmlWriter Html(HttpResponse, ICON, CSS, BAR_LENGTH);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
 StaticLog<HeatLogEntry> HeatLog(24 * 2); // 24 hrs
-StaticLog<EnergyLogEntry> EnergyLog(31); // 31 days
+StaticLog<DayStatsEntry> DayStats(31); // 31 days
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
 OneWire OneWireBus(D7);
@@ -71,17 +72,14 @@ time_t syncFTPTime = 0;
 time_t lastFTPSyncTime = 0;
 
 HeatLogEntry* lastHeatLogEntryPtr = nullptr;
-EnergyLogEntry* lastEnergyLogEntryPtr = nullptr;
+DayStatsEntry* lastDayStatsEntryPtr = nullptr;
 
 bool newSensorFound = false;
 bool maxTempValveActivated = false;
 bool maxTempValveOverride = false;
 
-float tInput = 0;
-float tOutput = 0;
-float tBuffer = 0;
-float pOutKW = 0;
-float pInKW = 0;
+float currentValues[NUMBER_OF_TOPICS];
+bool testOverrides[NUMBER_OF_TOPICS];
 
 
 void logEvent(String msg)
@@ -90,8 +88,11 @@ void logEvent(String msg)
 }
 
 
-void logSensorInfo(const char* name, DeviceAddress addr, float offset)
+void logSensorInfo(TopicId sensorId)
 {
+    MonitoredTopic topic = MonitoredTopics[sensorId];
+    DeviceAddress& addr = PersistentData.tempSensorAddress[sensorId];
+
     char message[64];
     if (TempSensors.isConnected(addr))
     {
@@ -99,9 +100,9 @@ void logSensorInfo(const char* name, DeviceAddress addr, float offset)
             message,
             sizeof(message),
             "%s sensor address: %02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X. Offset: %0.2f",
-            name,
+            topic.label,
             addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7],
-            offset
+            PersistentData.tempSensorOffset[sensorId]
             );
     }
     else
@@ -110,7 +111,7 @@ void logSensorInfo(const char* name, DeviceAddress addr, float offset)
             message,
             sizeof(message),
             "ERROR: %s sensor is not connected.",
-            name
+            topic.label
             );
     }
 
@@ -138,36 +139,25 @@ void initTempSensors()
     TRACE(F("Found %d OneWire devices.\n"), TempSensors.getDeviceCount());
     TRACE(F("Found %d temperature sensors.\n"), TempSensors.getDS18Count());
 
-    if (TempSensors.getDS18Count() > 0 && !TempSensors.validFamily(PersistentData.tInputSensorAddress))
+    for (int i = 0; i < 3; i++)
     {
-        newSensorFound = TempSensors.getAddress(PersistentData.tInputSensorAddress, 0);
-        if (!newSensorFound)
+        MonitoredTopic topic = MonitoredTopics[i];
+
+        if ((TempSensors.getDS18Count() > i) && !TempSensors.validFamily(PersistentData.tempSensorAddress[i]))
         {
-            logEvent(F("ERROR: Unable to obtain input sensor address."));
+            newSensorFound = TempSensors.getAddress(PersistentData.tempSensorAddress[i], i);
+            if (!newSensorFound)
+            {
+                String event = F("ERROR: Unable to obtain sensor address for ");
+                event += topic.label;
+                logEvent(event);
+            }
         }
-    }
-    if (TempSensors.getDS18Count() > 1 && !TempSensors.validFamily(PersistentData.tOutputSensorAddress))
-    {
-        newSensorFound = TempSensors.getAddress(PersistentData.tOutputSensorAddress, 1);
-        if (!newSensorFound)
-        {
-            logEvent(F("ERROR: Unable to obtain output sensor address."));
-        }
-    }
-    if (TempSensors.getDS18Count() > 2 && !TempSensors.validFamily(PersistentData.tBufferSensorAddress))
-    {
-        if (!TempSensors.getAddress(PersistentData.tBufferSensorAddress, 2))
-        {
-            logEvent(F("Unable to obtain buffer sensor address."));
-        }
-        else
-            newSensorFound = true;
+
     }
 
     if (newSensorFound)
-    {
         PersistentData.writeToEEPROM();
-    }
 }
 
 
@@ -195,12 +185,13 @@ void setup()
 
     const char* cacheControl = "max-age=86400, public";
     WebServer.on("/", handleHttpRootRequest);
-    WebServer.on("/json", handleHttpHeishamonJsonRequest);
+    WebServer.on("/json", handleHttpJsonRequest);
     WebServer.on("/sync", handleHttpFtpSyncRequest);
     WebServer.on("/calibrate", HTTP_GET, handleHttpCalibrateFormRequest);
     WebServer.on("/calibrate", HTTP_POST, handleHttpCalibrateFormPost);
     WebServer.on("/heatlog", handleHttpHeatLogRequest);
     WebServer.on("/templog", handleHttpTempLogRequest);
+    WebServer.on("/bufferlog", handleHttpBufferLogRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
     WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
@@ -214,22 +205,24 @@ void setup()
     WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
 
     Flow_Sensor.begin(5.0, 6.6); // 5 sec measure interval, 6.6 Hz @ 1 l/min
-    Energy_Meter.begin(100, 1000); // 100 W resolution, 1000 pulses per kWh
+    Energy_Meter.begin(100, 1000, 10); // 100 W resolution, 1000 pulses per kWh, max 10 aggregations (=> 6 minutes max)
     TempSensors.begin();
     TempSensors.setWaitForConversion(false);
 
     initTempSensors();
 
-    logSensorInfo("Input", PersistentData.tInputSensorAddress, PersistentData.tInputOffset);    
-    logSensorInfo("Output", PersistentData.tOutputSensorAddress, PersistentData.tOutputOffset);
-    if (PersistentData.tBufferMax != 0)
+    logSensorInfo(TopicId::TInput);
+    logSensorInfo(TopicId::TOutput);
+    if (PersistentData.isBufferEnabled())
     {
-        logSensorInfo("Buffer", PersistentData.tBufferSensorAddress, PersistentData.tBufferOffset);
+        logSensorInfo(TopicId::TBuffer);
         pinMode(MAX_TEMP_VALVE_PIN, OUTPUT);
         setMaxTempValve(false);
     }
 
     TempSensors.requestTemperatures();
+
+    memset(testOverrides, 0, sizeof(testOverrides));
 
     Tracer::traceFreeHeap();
 
@@ -255,29 +248,22 @@ void loop()
     if (TempSensors.getDS18Count() > 0 && TempSensors.isConversionComplete())
     {
         digitalWrite(LED_BUILTIN, LED_ON);
-
-        float tInputMeasured = TempSensors.getTempC(PersistentData.tInputSensorAddress);
-        if (tInputMeasured != DEVICE_DISCONNECTED_C)
-            tInput = tInputMeasured + PersistentData.tInputOffset;
-
-        float tOutputMeasured = TempSensors.getTempC(PersistentData.tOutputSensorAddress);
-        if (tOutputMeasured != DEVICE_DISCONNECTED_C)
-            tOutput = tOutputMeasured + PersistentData.tOutputOffset;        
-
-        float tBufferMeasured = TempSensors.getTempC(PersistentData.tBufferSensorAddress);
-        if (tBufferMeasured != DEVICE_DISCONNECTED_C)
-            tBuffer = tBufferMeasured + PersistentData.tBufferOffset;        
-
+        for (int i = 0; i < 3; i++)
+        {
+            float tMeasured = TempSensors.getTempC(PersistentData.tempSensorAddress[i]);
+            if (tMeasured != DEVICE_DISCONNECTED_C)
+                currentValues[i] = tMeasured + PersistentData.tempSensorOffset[i];
+        }
         TempSensors.requestTemperatures();
         digitalWrite(LED_BUILTIN, LED_OFF);
     }
 
     if (!maxTempValveOverride && (PersistentData.tBufferMax != 0))
     {
-        if ((tBuffer > PersistentData.tBufferMax) && !maxTempValveActivated)
+        if ((currentValues[TopicId::TBuffer] > PersistentData.tBufferMax) && !maxTempValveActivated)
             setMaxTempValve(true);
 
-        if ((tBuffer < (PersistentData.tBufferMax - MAX_TEMP_DELTA_T)) && maxTempValveActivated)
+        if ((currentValues[TopicId::TBuffer] < (PersistentData.tBufferMax - MAX_TEMP_DELTA_T)) && maxTempValveActivated)
             setMaxTempValve(false);
     }
 }
@@ -292,21 +278,19 @@ void newHeatLogEntry()
 
 
 // Create new energy log entry (starting 00:00 current day)
-void newEnergyLogEntry()
+void newDayStatsEntry()
 {
-    EnergyLogEntry newEnergyLogEntry;
-    newEnergyLogEntry.time = currentTime - (currentTime % SECONDS_PER_DAY);
-    lastEnergyLogEntryPtr = EnergyLog.add(&newEnergyLogEntry);
+    DayStatsEntry newEntry;
+    newEntry.time = currentTime - (currentTime % SECONDS_PER_DAY);
+    lastDayStatsEntryPtr = DayStats.add(&newEntry);
 }
 
 
 void onTimeServerSynced()
 {
     heatLogTime = currentTime;
-
-    // Create first heat log and energy log entries
     newHeatLogEntry();
-    newEnergyLogEntry();
+    newDayStatsEntry();
 }
 
 
@@ -315,8 +299,9 @@ void onWiFiInitialized()
     if (currentTime >= heatLogTime)
     {
         heatLogTime++;
+        calculateValues();
         updateHeatLog();
-        updateEnergyLog();
+        updateDayStats();
     }
 
     if ((syncFTPTime != 0) && (currentTime >= syncFTPTime) && WiFiSM.isConnected())
@@ -360,13 +345,13 @@ bool trySyncFTP(Print* printTo)
     WiFiClient& dataClient = FTPClient.append(filename);
     if (dataClient.connected())
     {
-        if (EnergyLog.count() > 1)
+        if (DayStats.count() > 1)
         {
-            EnergyLogEntry* energyLogEntryPtr = EnergyLog.getEntryFromEnd(2);
+            DayStatsEntry* energyLogEntryPtr = DayStats.getEntryFromEnd(2);
             if (energyLogEntryPtr != nullptr)
             {
                 dataClient.printf(
-                    "\"%s\";%0.1f;%0.1f\r\n",
+                    "%s;%0.1f;%0.1f\r\n",
                     formatTime("%F", energyLogEntryPtr->time),
                     energyLogEntryPtr->energyIn,
                     energyLogEntryPtr->energyOut
@@ -398,32 +383,49 @@ float calcPower(float flowRate, float deltaT)
 }
 
 
+void calculateValues()
+{
+    if (!testOverrides[TopicId::DeltaT])
+        currentValues[TopicId::DeltaT] = currentValues[TopicId::TInput] - currentValues[TopicId::TOutput];
+
+    if (!testOverrides[TopicId::FlowRate])
+        currentValues[TopicId::FlowRate] = Flow_Sensor.getFlowRate();
+
+    if (!testOverrides[TopicId::POut])
+        currentValues[TopicId::POut] = calcPower(
+            currentValues[TopicId::FlowRate],
+            currentValues[TopicId::TInput] - currentValues[TopicId::TOutput]);
+
+    if (!testOverrides[TopicId::PIn])
+        currentValues[TopicId::PIn] = Energy_Meter.getPower() / 1000;
+}
+
+
 void updateHeatLog()
 {
-    float flowRate = Flow_Sensor.getFlowRate();
-    pOutKW = calcPower(flowRate, tInput - tOutput);
-    pInKW = Energy_Meter.getPower() / 1000;
-
     if (currentTime >= lastHeatLogEntryPtr->time + HEAT_LOG_INTERVAL)
     {
         newHeatLogEntry();
     }
-    lastHeatLogEntryPtr->update(tInput, tOutput, tBuffer, flowRate, pOutKW, pInKW, maxTempValveActivated);
+
+    uint32_t valveSeconds = maxTempValveActivated ? 1 : 0;
+    lastHeatLogEntryPtr->update(currentValues, valveSeconds);
 }
 
 
-void updateEnergyLog()
+void updateDayStats()
 {
-    if (currentTime >= lastEnergyLogEntryPtr->time + SECONDS_PER_DAY)
+    if (currentTime >= lastDayStatsEntryPtr->time + SECONDS_PER_DAY)
     {
         Energy_Meter.resetEnergy();
-        newEnergyLogEntry();
-        if (PersistentData.ftpServer[0] != 0)
+        newDayStatsEntry();
+        if (PersistentData.isFTPEnabled())
             syncFTPTime = currentTime;
     }
 
-    lastEnergyLogEntryPtr->energyOut += pOutKW / 3600;
-    lastEnergyLogEntryPtr->energyIn = Energy_Meter.getEnergy();
+    if (maxTempValveActivated) lastDayStatsEntryPtr->valveActivatedSeconds++;
+    lastDayStatsEntryPtr->energyOut += currentValues[TopicId::POut] / 3600;
+    lastDayStatsEntryPtr->energyIn = Energy_Meter.getEnergy();
 }
 
 
@@ -441,29 +443,70 @@ void test(String message)
     }
     else if (message.startsWith("H"))
     {
-        float tInput = 40;
-        for (int i = 0; i < HEAT_LOG_INTERVAL; i++)
+        float testValues[NUMBER_OF_TOPICS];
+        for (int i = 0; i < 48; i++)
         {
-            float tOutput = tInput - 10;
-            float tBuffer = tInput - 5;
-            float flowRate = tInput / 2;
-            float pOutKW = calcPower(flowRate, tInput - tOutput);
-            float pInKw = pOutKW / 4;
-            bool valveActivated = (i % 10) == 0; 
-            lastHeatLogEntryPtr->update(tInput, tOutput, tBuffer, flowRate, pOutKW, pInKW, valveActivated);
-            if (tInput++ == 60) tInput = 40;
+            float tInput = (i % 40) + 25;
+            testValues[TopicId::TInput] = tInput;
+            testValues[TopicId::TOutput] = tInput - 10;
+            testValues[TopicId::TBuffer] = tInput - 5;
+            testValues[TopicId::DeltaT] = 10;
+            testValues[TopicId::FlowRate] = tInput / 2;
+            testValues[TopicId::POut] = calcPower(testValues[TopicId::FlowRate], testValues[TopicId::DeltaT]);
+            testValues[TopicId::PIn] = testValues[TopicId::POut] / 4;
+            uint32_t valveSeconds = i * 30;
+            lastHeatLogEntryPtr->time = currentTime + i * HEAT_LOG_INTERVAL; 
+            lastHeatLogEntryPtr->update(testValues, valveSeconds);
+            newHeatLogEntry();
+        }
+    }
+    else if (message.startsWith("D"))
+    {
+        for (int i = 0; i < 31; i++)
+        {
+            lastDayStatsEntryPtr->energyIn = float(i) / 10;
+            lastDayStatsEntryPtr->energyOut = float(i) / 2.5;
+            lastDayStatsEntryPtr->valveActivatedSeconds = i * 30;
+            lastDayStatsEntryPtr->time = currentTime + i * SECONDS_PER_DAY;
+            newDayStatsEntry();
         }
     }
     else if (message.startsWith("T"))
     {
-        tBuffer = message.substring(1).toFloat();
+        int eqaulSignIndex = message.indexOf('=');
+        if (eqaulSignIndex > 1)
+        {
+            String topicName = message.substring(1, eqaulSignIndex);
+            topicName.trim();
+
+            int topicId = -1;
+            for (int i = 0; i < NUMBER_OF_TOPICS; i++)
+            {
+                if (topicName == MonitoredTopics[i].label)
+                {
+                    topicId = i;
+                    break;
+                }
+            }
+            if (topicId == -1)
+                TRACE(F("Unknown topic: '%s'\n"), topicName.c_str());                
+            else
+            {
+                float topicValue = message.substring(eqaulSignIndex + 1).toFloat();
+                TRACE(F("Settings topic '%s' (#%d) to %0.1f\n"), topicName.c_str(), topicId, topicValue);
+                currentValues[topicId] = topicValue;
+                testOverrides[topicId] = true;
+            }
+        }
+        else
+            TRACE(F("Unexpected test command:'%s'\n"), message.c_str());
     }
 }
 
 
 float getBarValue(float t, float tMin = 20, float tMax = 60)
 {
-    return (t - tMin) / (tMax - tMin);
+    return std::max(t - tMin, 0.0F) / (tMax - tMin);
 }
 
 
@@ -473,9 +516,8 @@ float getMaxPower()
     HeatLogEntry* logEntryPtr = HeatLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
-        time_t seconds = std::min(currentTime + 1 - logEntryPtr->time, (time_t)HEAT_LOG_INTERVAL);
-        result = std::max(result, logEntryPtr->sumPIn / seconds);
-        result = std::max(result, logEntryPtr->sumPOut / seconds);
+        result = std::max(result, logEntryPtr->getAverage(TopicId::PIn));
+        result = std::max(result, logEntryPtr->getAverage(TopicId::POut));
         logEntryPtr = HeatLog.getNextEntry();
     }
     return result;
@@ -485,12 +527,12 @@ float getMaxPower()
 float getMaxEnergy()
 {
     float result = 0;
-    EnergyLogEntry* logEntryPtr = EnergyLog.getFirstEntry();
+    DayStatsEntry* logEntryPtr = DayStats.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
         result = std::max(result, logEntryPtr->energyIn);
         result = std::max(result, logEntryPtr->energyOut);
-        logEntryPtr = EnergyLog.getNextEntry();
+        logEntryPtr = DayStats.getNextEntry();
     }
     return result;
 }
@@ -519,131 +561,122 @@ void handleHttpRootRequest()
         maxTempValveOverride = maxTempValveActivated;
     }
 
-    float flowRate = Flow_Sensor.getFlowRate();
-    float cop = (pInKW == 0) ? 0 : pOutKW / pInKW;
-
-    const char* ftpSync;
+    String ftpSync;
     if (PersistentData.ftpServer[0] == 0)
-        ftpSync = "Disabled";
+        ftpSync = F("Disabled");
     else if (lastFTPSyncTime == 0)
-        ftpSync = "Not yet";
+        ftpSync = F("Not yet");
     else
         ftpSync = formatTime("%H:%M", lastFTPSyncTime);
 
     Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
 
-    HttpResponse.println(F("<h1>Heat Monitor status</h1>"));
-
-    HttpResponse.println(F("<table>"));
-    HttpResponse.printf(F("<tr><th>ESP Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><th>ESP Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
-    HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync);
+    Html.writeHeading(F("Heat Monitor status"));
+    Html.writeTableStart();
+    HttpResponse.printf(F("<tr><th>RSSI</th><td>%d dBm</td></tr>\r\n"), static_cast<int>(WiFi.RSSI()));
+    HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
+    HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
+    HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync.c_str());
     HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
     HttpResponse.printf(F("<tr><th><a href=\"/heatlog\">Heat log</a></th><td>%d</td></p>\r\n"), HeatLog.count());
     HttpResponse.printf(F("<tr><th><a href=\"/templog\">Temperature log</a></th><td>%d</td></p>\r\n"), HeatLog.count());
-    if (PersistentData.tBufferMax != 0)
+    if (PersistentData.isBufferEnabled())
     {
-        HttpResponse.printf(F("<tr><th>T<sub>buffer,max</sub></th><td>%0.1f °C</td></tr>\r\n"), PersistentData.tBufferMax);
+        HttpResponse.printf(F("<tr><th><a href=\"/bufferlog\">Buffer log</a></th><td>%d</td></p>\r\n"), HeatLog.count());
+        HttpResponse.printf(
+            F("<tr><th>T<sub>buffer,max</sub></th><td>%0.1f °C</td></tr>\r\n"),
+            PersistentData.tBufferMax);
         HttpResponse.printf(
             F("<tr><th>T<sub>max</sub> valve</th><td><a href=\"?valve=%u\">%s</a></td></tr>\r\n"),
-            currentTime,
+            (uint32_t)currentTime,
             maxTempValveActivated ? "On" : "Off"
             );
     }
-    HttpResponse.println(F("</table>"));
+    Html.writeTableEnd();
 
-    HttpResponse.println(F("<h1>Current values</h1>"));
-
-    HttpResponse.println(F("<table>"));
-    if (PersistentData.tBufferMax != 0)
-    {
-        HttpResponse.printf(
-            F("<tr><th>T<sub>buffer</sub></th><td>%0.1f °C</td><td class=\"graph\">"),
-            tBuffer
-            );
-        size_t maxBarLength = round(PersistentData.tBufferMax - 20); // Ensure 1 °C resolution 
-        Html.writeBar(getBarValue(tBuffer, 20, PersistentData.tBufferMax), F("waterBar"), true, false, maxBarLength);
-        HttpResponse.println(F("</td></tr>"));
-    }
-    HttpResponse.printf(
-        F("<tr><th>T<sub>in</sub></th><td>%0.1f °C</td><td class=\"graph\">"),
-        tInput
-        );
-    Html.writeBar(getBarValue(tInput), F("waterBar"), true, false);
-    HttpResponse.println(F("</td></tr>"));
-    HttpResponse.printf(
-        F("<tr><th>T<sub>out</sub></th><td>%0.1f °C</td><td class=\"graph\">"),
-        tOutput
-        );
-    Html.writeBar(getBarValue(tOutput), F("waterBar"), true, false);
-    HttpResponse.println(F("</td></tr>"));
-    HttpResponse.printf(
-        F("<tr><th>Delta T</th><td>%0.1f °C</td><td class=\"graph\">"),
-        tInput - tOutput
-        );
-    Html.writeBar(getBarValue(tInput - tOutput, 0, 20), F("waterBar"), true, false);
-    HttpResponse.println(F("</td></tr>"));
-    HttpResponse.printf(
-        F("<tr><th>Flow rate</th><td>%0.1f l/min</td><td class=\"graph\">"),
-        flowRate
-        );
-    Html.writeBar(flowRate / MAX_FLOW, F("flowBar"), true, false);
-    HttpResponse.println(F("</td></tr>"));
-    HttpResponse.printf(
-        F("<tr><th>P<sub>out</sub></th><td>%0.1f kW</td><td class=\"graph\">"),
-        pOutKW
-        );
-    Html.writeBar(pOutKW / MAX_POWER, F("powerBar"), true, false);
-    HttpResponse.println(F("</td></tr>"));
-    HttpResponse.printf(
-        F("<tr><th>P<sub>in</sub></th><td>%0.1f kW</td><td class=\"graph\">"),
-        pInKW
-        );
-    Html.writeBar(pInKW / MAX_INPUT_POWER, F("pInBar"), true, false);
-    HttpResponse.println(F("</td></tr>"));
-    HttpResponse.printf(
-        F("<tr><th>COP</th><td>%0.1f</td><td class=\"graph\">"),
-        cop
-        );
-    Html.writeBar(cop / MAX_COP, F("copBar"), true, false);
-    HttpResponse.println(F("</td></tr>"));
-    HttpResponse.println(F("</table>"));
-
-    HttpResponse.println(F("<h1>Energy per day</h1>"));
-
-    HttpResponse.println(F("<table>"));
-    HttpResponse.println(F("<tr><th>Day</th><th>E<sub>out</sub> (kWh)</sub></th><th>E<sub>in</sub> (kWh)</th></tr>"));
-
-    float maxEnergy = std::max(getMaxEnergy(), 1.0f); // Prevent division by zero
-    EnergyLogEntry* logEntryPtr = EnergyLog.getFirstEntry();
-    while (logEntryPtr != nullptr)
-    {
-        HttpResponse.printf(
-            F("<tr><td>%s</td><td>%0.2f</td><td>%0.2f</td><td class=\"graph\">"),
-            formatTime("%d %b", logEntryPtr->time),
-            logEntryPtr->energyOut,
-            logEntryPtr->energyIn
-            );
-
-        Html.writeStackedBar(
-            logEntryPtr->energyIn / maxEnergy,
-            (logEntryPtr->energyOut - logEntryPtr->energyIn) / maxEnergy,
-            F("eInBar"),
-            F("energyBar"),
-            false,
-            false
-            );
-
-        HttpResponse.println(F("</td></tr>"));
-
-        logEntryPtr = EnergyLog.getNextEntry();
-    }
-
-    HttpResponse.println(F("</table>"));
+    writeCurrentValues();
+    writeDayStats();
 
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
+}
+
+
+void writeCurrentValues()
+{
+    float flowRate = Flow_Sensor.getFlowRate();
+
+    Html.writeHeading(F("Current values"));
+    Html.writeTableStart();
+
+    for (int i = 0; i < NUMBER_OF_TOPICS; i++)
+    {
+        MonitoredTopic topic = MonitoredTopics[i];
+
+        size_t maxBarLength = 0; // Use default bar length
+        if (topic.id == TopicId::TBuffer)
+        {
+            if (!PersistentData.isBufferEnabled()) continue;
+
+            topic.maxValue = PersistentData.tBufferMax;
+            maxBarLength = round(PersistentData.tBufferMax - 20); // Ensure 1 °C resolution 
+        }
+
+        float topicValue = currentValues[topic.id];
+        float barValue = getBarValue(topicValue, topic.minValue, topic.maxValue);
+        String barCssClass = topic.style;
+        barCssClass += "Bar";
+
+        Html.writeRowStart();
+        Html.writeHeaderCell(topic.htmlLabel);
+        Html.writeCell(topic.formatValue(topicValue, true));
+        Html.writeGraphCell(barValue, barCssClass, true, maxBarLength);
+        Html.writeRowEnd();
+    }
+
+    Html.writeTableEnd();
+}
+
+
+void writeDayStats()
+{
+    Html.writeHeading(F("Statistics per day"));
+
+    Html.writeTableStart();
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("Day"));
+    if (PersistentData.isBufferEnabled())
+        Html.writeHeaderCell(F("Valve on"));
+    Html.writeHeaderCell(F("E<sub>out</sub> (kWh)"));
+    Html.writeHeaderCell(F("E<sub>in</sub> (kWh)"));
+    Html.writeHeaderCell(F("COP"));
+    Html.writeRowEnd();
+
+    float maxEnergy = std::max(getMaxEnergy(), 0.1F); // Prevent division by zero
+    DayStatsEntry* logEntryPtr = DayStats.getFirstEntry();
+    while (logEntryPtr != nullptr)
+    {
+        Html.writeRowStart();
+        Html.writeCell(formatTime("%d %b", logEntryPtr->time));
+        if (PersistentData.isBufferEnabled())
+            Html.writeCell(formatTimeSpan(logEntryPtr->valveActivatedSeconds));
+        Html.writeCell(logEntryPtr->energyOut, F("%0.2f"));
+        Html.writeCell(logEntryPtr->energyIn, F("%0.2f"));
+        Html.writeCell(logEntryPtr->getCOP());
+        Html.writeGraphCell(
+            logEntryPtr->energyIn / maxEnergy,
+            (logEntryPtr->energyOut - logEntryPtr->energyIn) / maxEnergy,
+            F("eInBar"),
+            F("energyBar"),
+            false
+            );
+        Html.writeRowEnd();
+
+        logEntryPtr = DayStats.getNextEntry();
+    }
+
+    Html.writeTableEnd();
 }
 
 
@@ -652,17 +685,20 @@ void writeJsonFloat(String name, float value)
     HttpResponse.printf(F("\"%s\": %0.1f,"), name.c_str(), value);
 }
 
-void handleHttpHeishamonJsonRequest()
+void handleHttpJsonRequest()
 {
     Tracer tracer(F("handleHttpJsonRequest"));
 
     HttpResponse.clear();
     HttpResponse.print(F("{ "));
-    writeJsonFloat(F("Tin"), tInput);
-    writeJsonFloat(F("Tout"), tOutput);
-    writeJsonFloat(F("Tbuffer"), tBuffer);
-    writeJsonFloat(F("Flow"), Flow_Sensor.getFlowRate());
-    writeJsonFloat(F("Pin"), pInKW);
+
+    for (int i = 0; i < NUMBER_OF_TOPICS; i++)
+    {
+        MonitoredTopic topic = MonitoredTopics[i];
+        float topicValue = currentValues[topic.id];
+        HttpResponse.printf(F("\"%s\": %s, "), topic.label, topic.formatValue(topicValue, false));
+    }
+
     HttpResponse.printf(F(" \"Valve\": %s }"), maxTempValveActivated ? "true" : "false");
 
     WebServer.send(200, ContentTypeJson, HttpResponse);
@@ -693,56 +729,71 @@ void handleHttpFtpSyncRequest()
 
 }
 
+
+void writeMinMaxAvgHeader(int repeat)
+{
+    Html.writeRowStart();
+    for (int i = 0; i < repeat; i++)
+    {
+        Html.writeHeaderCell(F("Min"));
+        Html.writeHeaderCell(F("Max"));
+        Html.writeHeaderCell(F("Avg"));
+    }
+    Html.writeRowEnd();
+}
+
+
 void handleHttpHeatLogRequest()
 {
     Tracer tracer(F("handleHttpHeatLogRequest"));
 
+    TopicId showTopicsIds[] = { TopicId::DeltaT, TopicId::FlowRate, TopicId::POut, TopicId::PIn };
+    float maxPower = std::max(getMaxPower(), 0.01F); // Prevent division by zero
+
     Html.writeHeader(F("Heat log"), true, true);
 
-    HttpResponse.println(F("<table>"));
-    HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th colspan='3'>Delta T (°C)</th><th colspan='3'>Flow rate (l/min)</th><th colspan='3'>P<sub>out</sub> (kW)</th><th colspan='3'>P<sub>in</sub> (kW)</th></tr>"));
-    HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
+    HttpResponse.printf(
+        F("<p>Max: %0.2f kW</p>\r\n"),
+        maxPower);
 
-    float maxPower = std::max(getMaxPower(), 1.0f); // Prevent division by zero
+    Html.writeTableStart();
+
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("Time"), 0, 2);
+    Html.writeHeaderCell(F("ΔT (°C)"), 3);
+    Html.writeHeaderCell(F("Flow (l/min)"), 3);
+    Html.writeHeaderCell(F("P<sub>out</sub> (kW)"), 3);
+    Html.writeHeaderCell(F("P<sub>in</sub> (kW)"), 3);
+    Html.writeRowEnd();
+
+    writeMinMaxAvgHeader(4);
+
     HeatLogEntry* logEntryPtr = HeatLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
-        time_t seconds = std::min(currentTime + 1 - logEntryPtr->time, (time_t)HEAT_LOG_INTERVAL);
-        float avgDeltaT = logEntryPtr->sumDeltaT / seconds;
-        float avgFlowRate = logEntryPtr->sumFlowRate / seconds;
-        float avgPOut = logEntryPtr->sumPOut / seconds;
-        float avgPIn = logEntryPtr->sumPIn / seconds;
+        float avgPIn = logEntryPtr->getAverage(TopicId::PIn);
+        float avgPOut = logEntryPtr->getAverage(TopicId::POut); 
 
-        HttpResponse.printf(
-            F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.2f</td><td>%0.1f</td><td>%0.1f</td><td>%0.2f</td><td class=\"graph\">"),
-            formatTime("%H:%M", logEntryPtr->time),
-            logEntryPtr->minDeltaT,
-            logEntryPtr->maxDeltaT,
-            avgDeltaT,
-            logEntryPtr->minFlowRate,
-            logEntryPtr->maxFlowRate,
-            avgFlowRate,
-            logEntryPtr->minPOut,
-            logEntryPtr->maxPOut,
-            avgPOut,
-            logEntryPtr->minPIn,
-            logEntryPtr->maxPIn,
-            avgPIn
-            );
-
-        Html.writeStackedBar(
+        Html.writeCell(formatTime("%H:%M", logEntryPtr->time));
+        for (TopicId topicId : showTopicsIds)
+        {
+            TopicStats topicStats = logEntryPtr->topicStats[topicId];
+            Html.writeCell(topicStats.min);
+            Html.writeCell(topicStats.max);
+            Html.writeCell(logEntryPtr->getAverage(topicId), F("%0.2f"));
+        }
+        Html.writeGraphCell(
             avgPIn / maxPower,
             (avgPOut - avgPIn) / maxPower,
             F("pInBar"),
             F("powerBar"),
-            false,
             false
             );
+        Html.writeRowEnd();
 
-        HttpResponse.println(F("</td></tr>"));
         logEntryPtr = HeatLog.getNextEntry();
     }
-    HttpResponse.println(F("</table>"));
+    Html.writeTableEnd();
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
@@ -753,73 +804,114 @@ void handleHttpTempLogRequest()
 {
     Tracer tracer(F("handleHttpTempLogRequest"));
 
+    TopicId showTopicsIds[] = { TopicId::TInput, TopicId::TOutput };
+
     Html.writeHeader(F("Temperature log"), true, true);
 
-    HttpResponse.println(F("<table>"));
-    bool includeBufferTemp = (PersistentData.tBufferMax != 0); 
-    if (includeBufferTemp)
-    {
-        HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th rowspan='2'>Valve (s)</th><th colspan='3'>T<sub>buffer</sub> (°C)</th><th colspan='3'>T<sub>in</sub> (°C)</th><th colspan='3'>T<sub>out</sub> (°C)</th></tr>"));
-        HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
-    }
-    else
-    {
-        HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th colspan='3'>T<sub>in</sub> (°C)</th><th colspan='3'>T<sub>out</sub> (°C)</th></tr>"));
-        HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
-    }
+    HttpResponse.printf(
+        F("<p>Min: %0.1f °C. Max: %0.1f °C.</p>\r\n"),
+        20.0F,
+        60.0F);
+
+    Html.writeTableStart();
+
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("Time"), 0, 2);
+    Html.writeHeaderCell(F("T<sub>in</sub> (°C)"), 3);
+    Html.writeHeaderCell(F("T<sub>out</sub> (°C)"), 3);
+    Html.writeRowEnd();
+
+    writeMinMaxAvgHeader(2);
 
     HeatLogEntry* logEntryPtr = HeatLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
-        time_t seconds = std::min(currentTime + 1 - logEntryPtr->time, (time_t)HEAT_LOG_INTERVAL);
-        float avgTInput = logEntryPtr->sumTInput / seconds;
-        float avgTOutput = logEntryPtr->sumTOutput / seconds;
+        float avgTInput = logEntryPtr->getAverage(TopicId::TInput);
+        float avgTOutput = logEntryPtr->getAverage(TopicId::TOutput);
 
-        if (includeBufferTemp)
+        Html.writeRowStart();
+        Html.writeCell(formatTime("%H:%M", logEntryPtr->time));
+        for (TopicId topicId : showTopicsIds)
         {
-            float avgTBuffer = logEntryPtr->sumTBuffer / seconds;
-            HttpResponse.printf(
-                F("<tr><td>%s</td><td>%d</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td class=\"graph\">"),
-                formatTime("%H:%M", logEntryPtr->time),
-                logEntryPtr->valveActivatedSeconds,
-                logEntryPtr->minTBuffer,
-                logEntryPtr->maxTBuffer,
-                avgTBuffer,
-                logEntryPtr->minTInput,
-                logEntryPtr->maxTInput,
-                avgTInput,
-                logEntryPtr->minTOutput,
-                logEntryPtr->maxTOutput,
-                avgTOutput
-                );
+            TopicStats topicStats = logEntryPtr->topicStats[topicId];
+            Html.writeCell(topicStats.min);
+            Html.writeCell(topicStats.max);
+            Html.writeCell(logEntryPtr->getAverage(topicId));
         }
-        else
-        {
-            HttpResponse.printf(
-                F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td class=\"graph\">"),
-                formatTime("%H:%M", logEntryPtr->time),
-                logEntryPtr->minTInput,
-                logEntryPtr->maxTInput,
-                avgTInput,
-                logEntryPtr->minTOutput,
-                logEntryPtr->maxTOutput,
-                avgTOutput
-                );
-        }
-
-        Html.writeStackedBar(
+        Html.writeGraphCell(
             getBarValue(avgTOutput),
-            (avgTInput - avgTOutput) / 40,
+            getBarValue(avgTInput) - getBarValue(avgTOutput),
             F("tOutBar"),
             F("waterBar"),
-            false,
             false
             );
+        Html.writeRowEnd();
 
-        HttpResponse.println(F("</td></tr>"));
         logEntryPtr = HeatLog.getNextEntry();
     }
-    HttpResponse.println(F("</table>"));
+    Html.writeTableEnd();
+
+    Html.writeFooter();
+
+    WebServer.send(200, ContentTypeHtml, HttpResponse);
+}
+
+
+void handleHttpBufferLogRequest()
+{
+    Tracer tracer(F("handleHttpBufferLogRequest"));
+
+    // Auto-ranging: determine min & max buffer temp
+    float tMin = 666;
+    float tMax = 0;
+    HeatLogEntry* logEntryPtr = HeatLog.getFirstEntry();
+    while (logEntryPtr != nullptr)
+    {
+        float avg = logEntryPtr->getAverage(TopicId::TBuffer);
+        tMin = std::min(tMin, avg);
+        tMax = std::max(tMax, avg);    
+        logEntryPtr = HeatLog.getNextEntry();
+    }
+    tMax = std::max(tMax, tMin + 1); // Prevent division by zero
+
+    Html.writeHeader(F("Buffer log"), true, true);
+    
+    HttpResponse.printf(
+        F("<p>Min: %0.1f °C. Max: %0.1f °C.</p>\r\n"),
+        tMin,
+        tMax);
+
+    Html.writeTableStart();
+
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("Time"), 0, 2);
+    Html.writeHeaderCell(F("Valve on"), 0, 2);
+    Html.writeHeaderCell(F("T<sub>buffer</sub> (°C)"), 3);
+    Html.writeRowEnd();
+
+    writeMinMaxAvgHeader(1);
+
+    logEntryPtr = HeatLog.getFirstEntry();
+    while (logEntryPtr != nullptr)
+    {
+        TopicStats topicStats = logEntryPtr->topicStats[TopicId::TBuffer];
+        float avgTBuffer = logEntryPtr->getAverage(TopicId::TBuffer);
+        float barValue = getBarValue(avgTBuffer, tMin, tMax);
+
+        Html.writeRowStart();
+        Html.writeCell(formatTime("%H:%M", logEntryPtr->time));
+        Html.writeCell(formatTimeSpan(logEntryPtr->valveActivatedSeconds));
+        Html.writeCell(topicStats.min);
+        Html.writeCell(topicStats.max);
+        Html.writeCell(avgTBuffer);
+        Html.writeGraphCell(barValue, F("waterBar"), false);
+        Html.writeRowEnd();
+
+        logEntryPtr = HeatLog.getNextEntry();
+    }
+
+    Html.writeTableEnd();
+
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
@@ -834,57 +926,50 @@ void handleHttpCalibrateFormRequest()
 
     if (TempSensors.getDS18Count() < 2)
     {
-        HttpResponse.println(F("<h2>Missing temperature sensors</h2>"));
+        Html.writeHeading(F("Missing temperature sensors"), 2);
         HttpResponse.printf(F("<p>Number of temperature sensors detected: %d</p>\r\n"), TempSensors.getDS18Count());
     }
     else
     {
         HttpResponse.println(F("<p>Ensure that all temperature sensors are measuring the same temperature.</p>"));
     
-        float tInputMeasured = TempSensors.getTempC(PersistentData.tInputSensorAddress);
-        float tOutputMeasured = TempSensors.getTempC(PersistentData.tOutputSensorAddress);
-    
-        HttpResponse.println(F("<form action=\"/calibrate\" method=\"POST\">"));
-        HttpResponse.println(F("<table>"));
-        HttpResponse.println(F("<tr><th>Sensor</th><th>Measured</th><th>Offset</th><th>Effective</th></tr>"));
-    
-        HttpResponse.printf(
-            F("<tr><td>T<sub>in</sub></td><td>%0.2f °C<td><input type=\"text\" name=\"tInputOffset\" value=\"%0.2f\" maxlength=\"5\"></td><td>%0.2f °C</td></tr>\r\n"),
-            tInputMeasured,
-            PersistentData.tInputOffset,
-            tInputMeasured + PersistentData.tInputOffset
-            );
-    
-        HttpResponse.printf(
-            F("<tr><td>T<sub>out</sub></td><td>%0.2f °C<td><input type=\"text\" name=\"tOutputOffset\" value=\"%0.2f\" maxlength=\"5\"></td><td>%0.2f °C</td></tr>\r\n"),
-            tOutputMeasured,
-            PersistentData.tOutputOffset,
-            tOutputMeasured + PersistentData.tOutputOffset        
-            );
-    
-        if (TempSensors.isConnected(PersistentData.tBufferSensorAddress))
+        Html.writeFormStart(F("/calibrate"));
+
+        Html.writeTableStart();
+        Html.writeRowStart();
+        Html.writeHeaderCell(F("Sensor"));
+        Html.writeHeaderCell(F("Measured"));
+        Html.writeHeaderCell(F("Offset"));
+        Html.writeHeaderCell(F("Effective"));
+        Html.writeRowEnd();
+
+        for (int i = 0; i < 3; i++)
         {
-            float tBufferMeasured = TempSensors.getTempC(PersistentData.tBufferSensorAddress);
+            MonitoredTopic topic = MonitoredTopics[i];
+            float tMeasured = TempSensors.getTempC(PersistentData.tempSensorAddress[i]);
+            if (tMeasured == DEVICE_DISCONNECTED_C) continue;
+
+            Html.writeRowStart();
+            Html.writeCell(topic.htmlLabel);
+            Html.writeCell(tMeasured, F("%0.2f °C"));
             HttpResponse.printf(
-                F("<tr><td>T<sub>buffer</sub></td><td>%0.2f °C<td><input type=\"text\" name=\"tBufferOffset\" value=\"%0.2f\" maxlength=\"5\"></td><td>%0.2f °C</td></tr>\r\n"),
-                tBufferMeasured,
-                PersistentData.tBufferOffset,
-                tBufferMeasured + PersistentData.tBufferOffset        
-                );
+                F("<td><input type=\"text\" name=\"%s\" value=\"%0.2f\" maxlength=\"5\"></td>"),
+                topic.label,
+                PersistentData.tempSensorOffset[i]);
+            Html.writeCell(tMeasured + PersistentData.tempSensorOffset[i], F("%0.2f °C"));
+            Html.writeRowEnd();
         }
-    
-        HttpResponse.println(F("</table>"));
 
+        Html.writeTableEnd();    
+
+        Html.writeTableStart();
         Html.writeCheckbox(F("swapInOut"), F("Swap input and output sensors"), false);
-        HttpResponse.println(F("<br/>"));
-        if (TempSensors.isConnected(PersistentData.tBufferSensorAddress))
-        {
+        if (PersistentData.isBufferEnabled())
             Html.writeCheckbox(F("swapInBuf"), F("Swap input and buffer sensors"), false);
-            HttpResponse.println(F("<br/>"));
-        }
+        Html.writeTableEnd();
 
-        HttpResponse.println(F("<input type=\"submit\">"));
-        HttpResponse.println(F("</form>"));
+        Html.writeSubmitButton();
+        Html.writeFormEnd();
     }
 
     Html.writeFooter();
@@ -897,26 +982,28 @@ void handleHttpCalibrateFormPost()
 {
     Tracer tracer(F("handleHttpCalibrateFormPost"));
 
-    PersistentData.tInputOffset = WebServer.arg("tInputOffset").toFloat();
-    PersistentData.tOutputOffset = WebServer.arg("tOutputOffset").toFloat();
-    if (WebServer.hasArg("tBufferOffset"))
+    for (int i = 0; i < 3; i++)
     {
-        PersistentData.tBufferOffset = WebServer.arg("tBufferOffset").toFloat();
+        String argName = MonitoredTopics[i].label;
+        if (WebServer.hasArg(argName))
+        {
+            PersistentData.tempSensorOffset[i] = WebServer.arg(argName).toFloat();
+        }
     }
 
     if (WebServer.hasArg("swapInOut"))
     {
         DeviceAddress tInputSensorAddress;
-        memcpy(tInputSensorAddress, PersistentData.tInputSensorAddress, sizeof(DeviceAddress));
-        memcpy(PersistentData.tInputSensorAddress, PersistentData.tOutputSensorAddress, sizeof(DeviceAddress));
-        memcpy(PersistentData.tOutputSensorAddress, tInputSensorAddress, sizeof(DeviceAddress));
+        memcpy(tInputSensorAddress, PersistentData.tempSensorAddress[TopicId::TInput], sizeof(DeviceAddress));
+        memcpy(PersistentData.tempSensorAddress[TopicId::TInput], PersistentData.tempSensorAddress[TopicId::TOutput], sizeof(DeviceAddress));
+        memcpy(PersistentData.tempSensorAddress[TopicId::TOutput], tInputSensorAddress, sizeof(DeviceAddress));
     }
     if (WebServer.hasArg("swapInBuf"))
     {
         DeviceAddress tInputSensorAddress;
-        memcpy(tInputSensorAddress, PersistentData.tInputSensorAddress, sizeof(DeviceAddress));
-        memcpy(PersistentData.tInputSensorAddress, PersistentData.tBufferSensorAddress, sizeof(DeviceAddress));
-        memcpy(PersistentData.tBufferSensorAddress, tInputSensorAddress, sizeof(DeviceAddress));
+        memcpy(tInputSensorAddress, PersistentData.tempSensorAddress[TopicId::TInput], sizeof(DeviceAddress));
+        memcpy(PersistentData.tempSensorAddress[TopicId::TInput], PersistentData.tempSensorAddress[TopicId::TBuffer], sizeof(DeviceAddress));
+        memcpy(PersistentData.tempSensorAddress[TopicId::TBuffer], tInputSensorAddress, sizeof(DeviceAddress));
     }
 
     PersistentData.validate();
@@ -961,8 +1048,8 @@ void handleHttpConfigFormRequest()
 
     Html.writeHeader(F("Configuration"), true, true);
 
-    HttpResponse.println(F("<form action=\"/config\" method=\"POST\">"));
-    HttpResponse.println(F("<table>"));
+    Html.writeFormStart(F("/config"));
+    Html.writeTableStart();
     Html.writeTextBox(CFG_WIFI_SSID, F("WiFi SSID"), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID) - 1);
     Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1);
     Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
@@ -971,11 +1058,11 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
     Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
     Html.writeTextBox(CFG_MAX_TEMP, F("Buffer max"), String(PersistentData.tBufferMax), 3);
-    HttpResponse.println(F("</table>"));
-    HttpResponse.println(F("<input type=\"submit\">"));
-    HttpResponse.println(F("</form>"));
+    Html.writeTableEnd();
+    Html.writeSubmitButton();
+    Html.writeFormEnd();
 
-    if (!TempSensors.isConnected(PersistentData.tBufferSensorAddress))
+    if (!TempSensors.isConnected(PersistentData.tempSensorAddress[TopicId::TBuffer]))
     {
         HttpResponse.println("<p>NOTE: No buffer sensor is connected. Leave 'Buffer max' zero to suppress buffer temperature in UI.</p>");
     }

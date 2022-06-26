@@ -16,8 +16,11 @@ class HtmlWriter
 
         void writeHeader(String title, bool includeHomePageLink, bool includeHeading, uint16_t refreshInterval = 0);
         void writeFooter();
+
         void writeBar(float value, String cssClass, bool fill, bool useDiv = true, size_t maxBarLength = 0);
         void writeStackedBar(float value1, float value2, String cssClass1, String cssClass2, bool fill, bool useDiv = true);
+        void writeGraphCell(float value, String barCssClass, bool fill, size_t maxBarLength = 0);
+        void writeGraphCell(float value1, float value2, String barCssClass1, String barCssClass2, bool fill);
 
         void writeFormStart(String action);
         void writeFormEnd();
@@ -35,7 +38,7 @@ class HtmlWriter
         void writeCellStart(String cssClass);
         void writeCellEnd();
 
-        void writeHeaderCell(String value);
+        void writeHeaderCell(String value, int colspan = 0, int rowspan = 0);
         void writeCell(String value);
         void writeCell(const char* value);
         void writeCell(int value);

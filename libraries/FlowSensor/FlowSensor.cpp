@@ -30,6 +30,8 @@ bool FlowSensor::begin(float measureInterval, float pulseFreq)
 
     attachInterrupt(_pinInterrupt, pulseISR, FALLING);
     _ticker.attach(measureInterval, measure);
+
+    return true;
 }
 
 

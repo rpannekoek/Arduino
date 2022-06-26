@@ -11,13 +11,19 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
     char ftpUser[32];
     char ftpPassword[32];
     int16_t timeZoneOffset; // Not used
-    DeviceAddress tInputSensorAddress;
-    DeviceAddress tOutputSensorAddress;
-    DeviceAddress tBufferSensorAddress;
-    float tInputOffset;
-    float tOutputOffset;
-    float tBufferOffset;
+    DeviceAddress tempSensorAddress[3];
+    float tempSensorOffset[3];
     float tBufferMax;
+
+    bool inline isFTPEnabled()
+    {
+        return ftpServer[0] != 0;
+    }
+
+    bool inline isBufferEnabled()
+    {
+        return tBufferMax != 0;
+    }
 
     PersistentDataStruct() : PersistentDataBase(
         sizeof(wifiSSID) +
@@ -28,12 +34,8 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         sizeof(ftpUser) + 
         sizeof(ftpPassword) + 
         sizeof(timeZoneOffset) +
-        sizeof(tInputSensorAddress) +
-        sizeof(tOutputSensorAddress) +
-        sizeof(tBufferSensorAddress) +
-        sizeof(tInputOffset) +
-        sizeof(tOutputOffset) +
-        sizeof(tBufferOffset) +
+        sizeof(tempSensorAddress) +
+        sizeof(tempSensorOffset) +
         sizeof(tBufferMax)
         ) {}
 
@@ -47,12 +49,8 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         ftpUser[0] = 0;
         ftpPassword[0] = 0;
         timeZoneOffset = 1;
-        memset(tInputSensorAddress, 0, sizeof(tInputSensorAddress));
-        memset(tOutputSensorAddress, 0, sizeof(tOutputSensorAddress));
-        memset(tBufferSensorAddress, 0, sizeof(tOutputSensorAddress));
-        tInputOffset = 0;
-        tOutputOffset = 0;
-        tBufferOffset = 0;
+        memset(tempSensorAddress, 0, sizeof(tempSensorAddress));
+        memset(tempSensorOffset, 0, sizeof(tempSensorOffset));
         tBufferMax = 0;
     }
 
@@ -67,12 +65,10 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         ftpUser[sizeof(ftpUser) - 1] = 0;
         ftpPassword[sizeof(ftpPassword) - 1] = 0;
 
-        if (timeZoneOffset < -12) timeZoneOffset = -12;
-        if (timeZoneOffset > 14) timeZoneOffset = 14;
-
-        tInputOffset = std::max(std::min(tInputOffset, 2.0F), -2.0F);
-        tOutputOffset = std::max(std::min(tOutputOffset, 2.0F), -2.0F);
-        tBufferOffset = std::max(std::min(tBufferOffset, 2.0F), -2.0F);
+        for (int i = 0; i < 3; i++)
+        {
+            tempSensorOffset[i] = std::max(std::min(tempSensorOffset[i], 2.0F), -2.0F);
+        }
 
         if (tBufferMax != 0)
             tBufferMax = std::max(std::min(tBufferMax, 100.0F), 80.0F);

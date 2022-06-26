@@ -27,16 +27,21 @@ td,th
     border: thin solid gray;
 }
 
+td
+{
+    text-align: right;
+}
+
 td.graph
 {
     border: none;
+    text-align: left;
 }
 
-
-.copBar
+.deltatBar
 {
-	background-color: green;
-    color: green;
+	background-color: lightblue;
+    color: lightblue;
 }
 
 .powerBar

@@ -9,15 +9,15 @@ class EnergyMeter
     public:
         EnergyMeter(uint8_t pin);
 
-        bool begin(uint16_t resolutionWatt, uint16_t pulsesPerKWh);
+        bool begin(uint16_t resolutionWatt, uint16_t pulsesPerKWh, uint16_t maxAggregations);
         void end();
 
-        float getPower() const // Watts
+        float inline getPower() const // Watts
         {
             return _power;
         }
 
-        float getEnergy() const // kWh
+        float inline getEnergy() const // kWh
         {
             return float(_energyPulseCount) / _pulsesPerKWh;
         }
@@ -29,11 +29,14 @@ class EnergyMeter
 
     private:
         static uint8_t _pinInterrupt;
+        static uint16_t _resolutionWatt;
         static uint16_t _pulsesPerKWh;
         static float _measureInterval;
         static uint32_t _lastPulseMillis;
         static uint32_t _pulseCount;
         static uint32_t _energyPulseCount;
+        static uint16_t _aggregations;
+        static uint16_t _maxAggregations;
         static float _power;
         Ticker _ticker;
 

@@ -131,6 +131,22 @@ void HtmlWriter::writeStackedBar(float value1, float value2, String cssClass1, S
 }
 
 
+void HtmlWriter::writeGraphCell(float value, String barCssClass, bool fill, size_t maxBarLength)
+{
+    writeCellStart(F("graph"));
+    writeBar(value, barCssClass, fill, false, maxBarLength);
+    writeCellEnd();
+}
+
+
+void HtmlWriter::writeGraphCell(float value1, float value2, String barCssClass1, String barCssClass2, bool fill)
+{
+    writeCellStart(F("graph"));
+    writeStackedBar(value1, value2, barCssClass1, barCssClass2, fill, false);
+    writeCellEnd();
+}
+
+
 void HtmlWriter::writeFormStart(String action)
 {
     _output.printf(
@@ -268,9 +284,12 @@ void HtmlWriter::writeCellEnd()
 }
 
 
-void HtmlWriter::writeHeaderCell(String value)
+void HtmlWriter::writeHeaderCell(String value, int colspan, int rowspan)
 {
-    _output.print(F("<th>"));
+    _output.print(F("<th"));
+    if (colspan > 0) _output.printf(F(" colspan=\"%d\""), colspan);
+    if (rowspan > 0) _output.printf(F(" rowspan=\"%d\""), rowspan);
+    _output.print(F(">"));
     _output.print(value);
     _output.print(F("</th>"));
 }
