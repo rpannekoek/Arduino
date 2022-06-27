@@ -75,24 +75,35 @@ void EnergyMeter::measure()
 
     detachInterrupt(_pinInterrupt);
     uint32_t pulseCount = _pulseCount;
-    _pulseCount = 0;
-    attachInterrupt(_pinInterrupt, pulseISR, FALLING);
-
-    // Low power mode: aggregate multiple measure intervals to increase resolution.
-    if ((pulseCount == 0) && (_aggregations < _maxAggregations))
+    bool aggregate;
+    if ((pulseCount < 3) && (_aggregations < _maxAggregations))
     {
-        TRACE(F("No pulses. %d aggregations.\n"), static_cast<int>(_aggregations));
+        // Low power mode: aggregate multiple measure intervals to increase resolution.
         _aggregations++;
-        if (_power > _resolutionWatt) _power = 0;
+        aggregate = false;
     }
     else
     {
+        _pulseCount = 0;
+        aggregate = true;
+    }
+    attachInterrupt(_pinInterrupt, pulseISR, FALLING);
+
+    TRACE(
+        F("Pulse count: %d. Aggregations: %d."),
+        pulseCount,
+        static_cast<int>(_aggregations));
+
+    if (aggregate)
+    {
         _power = 3600000.0 * float(pulseCount) / ( _measureInterval * _pulsesPerKWh * _aggregations);
-        TRACE(
-            F("Pulse count: %d. Aggregations: %d => Power: %0.1f W\n"),
-            pulseCount,
-            static_cast<int>(_aggregations),
-            _power);
+        TRACE(F(" => Power: %0.1f W\n"), _power);
         _aggregations = 1;
+    }
+    else
+    {
+        // For low power, keep previous value, but for higher power first reset to 0.
+        if (_power > _resolutionWatt) _power = 0;
+        TRACE(F(" Keep aggregating.\n"));
     }
 }

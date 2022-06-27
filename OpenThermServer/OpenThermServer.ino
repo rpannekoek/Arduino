@@ -886,13 +886,13 @@ void handleHttpRootRequest()
     HttpResponse.println(F("<h1>OpenTherm Gateway status</h1>"));
 
     HttpResponse.println(F("<table>"));
+    HttpResponse.printf(F("<tr><th>RSSI</th><td>%d dBm</td></tr>\r\n"), static_cast<int>(WiFi.RSSI()));
+    HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
+    HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
     HttpResponse.printf(F("<tr><th>OTGW Errors</th><td>%u</td></tr>\r\n"), otgwErrors);
     HttpResponse.printf(F("<tr><th>OTGW Resets</th><td>%u</td></tr>\r\n"), OTGW.resets);
-    HttpResponse.printf(F("<tr><th>ESP Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><th>ESP Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
     HttpResponse.printf(F("<tr><th><a href=\"/log/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSyncTime.c_str());
-    if (PersistentData.ftpSyncEntries != 0)
-        HttpResponse.printf(F("<tr><th>FTP sync entries</th><td>%d</td></tr>"), otLogEntriesToSync);
+    HttpResponse.printf(F("<tr><th>FTP sync entries</th><td>%d / %d</td></tr>"), otLogEntriesToSync, PersistentData.ftpSyncEntries);
     HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
     HttpResponse.printf(F("<tr><th><a href=\"/log\">OpenTherm log</a></th><td>%d</td></tr>\r\n"), OpenThermLog.count());
     HttpResponse.println(F("</table>"));
@@ -935,7 +935,7 @@ void handleHttpRootRequest()
         if (HeatMon.isInitialized)
         {
             HttpResponse.print(F("<tr><th>P<sub>heatpump</sub></th>"));
-            Html.writeCell(HeatMon.pIn, F("%0.1f kW"));
+            Html.writeCell(HeatMon.pIn, F("%0.2f kW"));
             HttpResponse.print(F("<td class=\"graph\">"));
             Html.writeBar(HeatMon.pIn / MAX_HEATPUMP_POWER, F("powerBar"), true, false);
             HttpResponse.println(F("</td></tr>"));
@@ -1174,7 +1174,7 @@ void handleHttpOpenThermLogRequest()
         Html.writeCell(getDecimal(otLogEntryPtr->tReturn));
         Html.writeCell(getDecimal(otLogEntryPtr->tBuffer));
         Html.writeCell(getDecimal(otLogEntryPtr->tOutside));
-        Html.writeCell(getDecimal(otLogEntryPtr->pHeatPump));
+        Html.writeCell(getDecimal(otLogEntryPtr->pHeatPump), F("%0.2f"));
         HttpResponse.println(F("</tr>"));
 
         otLogEntryPtr = OpenThermLog.getNextEntry();
@@ -1276,7 +1276,7 @@ void writeCsvDataLine(OpenThermLogEntry* otLogEntryPtr, time_t time, Print& dest
     destination.printf(";%0.1f", getDecimal(otLogEntryPtr->tReturn));
     destination.printf(";%0.1f", getDecimal(otLogEntryPtr->tBuffer));
     destination.printf(";%0.1f", getDecimal(otLogEntryPtr->tOutside));
-    destination.printf(";%0.1f\r\n", getDecimal(otLogEntryPtr->pHeatPump));
+    destination.printf(";%0.2f\r\n", getDecimal(otLogEntryPtr->pHeatPump));
 }
 
 
