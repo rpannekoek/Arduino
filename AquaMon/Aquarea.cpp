@@ -422,6 +422,14 @@ Aquarea::Aquarea()
 }
 
 
+void Aquarea::resetPacketStats()
+{
+    _validPackets = 0;
+    _repairedPackets = 0;
+    _invalidPackets = 0;
+}
+
+
 bool Aquarea::begin()
 {
     Tracer tracer(F("Aquarea::begin"));
@@ -469,9 +477,13 @@ bool Aquarea::validateCheckSum()
         sum += _data[i];
 
     if (sum == 0)
+    {
+        _validPackets++;
         return true;
+    }
     else
     {
+        _invalidPackets++;
         _lastError = F("Checksum error: sum = 0x");
         _lastError += String(sum, 16);
         return false;           
@@ -564,6 +576,7 @@ bool Aquarea::readPacket()
     if (readBytes((uint8_t*)&header, sizeof(header)) != sizeof(header))
     {
         _lastError = F("Timeout reading packet header");
+        _invalidPackets++;
         return false;
     }
 
@@ -575,7 +588,11 @@ bool Aquarea::readPacket()
     {
         // Test packet for debug purposes
         bytesRead = readTestData(header);
-        if (bytesRead < 0) return false;
+        if (bytesRead < 0) 
+        {
+            _invalidPackets++;
+            return false;
+        }
     }
     else
     {
@@ -599,6 +616,7 @@ bool Aquarea::readPacket()
         if (bytesRead != header.dataSize + 1)
         {
             _lastError = formatPacketInfo(header.magic, header.dataSize, bytesRead);
+            _invalidPackets++;
             return false;
         }
     }
@@ -612,11 +630,12 @@ bool Aquarea::readPacket()
             _data[1] = AQUAREA_RESPONSE_DATA_SIZE;
             _data[2] = 1;
             memcpy(_data + 3, _invalidData + 2, 200);
-            repairedPackets++;
+            _repairedPackets++;
         }
         else
         {
             _lastError = formatPacketInfo(header.magic, header.dataSize, bytesRead);
+            _invalidPackets++;
             return false;
         }
     }

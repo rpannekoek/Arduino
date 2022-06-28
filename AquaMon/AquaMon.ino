@@ -24,6 +24,7 @@
 #define TOPIC_LOG_SIZE 150
 #define TOPIC_LOG_CSV_MAX_SIZE 100
 #define DEFAULT_BAR_LENGTH 60
+#define WIFI_TIMEOUT_MS 2000
 #define FTP_RETRY_INTERVAL (30 * 60)
 #define QUERY_AQUAREA_INTERVAL 6
 #define AGGREGATION_INTERVAL 60
@@ -49,7 +50,7 @@ const char* ContentTypeJson = "application/json";
 
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
-WiFiFTPClient FTPClient(2000); // 2 sec timeout
+WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
 StringBuilder HttpResponse(12288); // 12KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, DEFAULT_BAR_LENGTH);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
@@ -65,8 +66,6 @@ TopicLogEntry* lastTopicLogEntryPtr = nullptr;
 DayStatsEntry* lastDayStatsEntryPtr = nullptr;
 
 uint16_t ftpSyncEntries = 0;
-uint32_t validPackets = 0;
-uint32_t packetErrors = 0;
 bool heatPumpIsOn = false;
 bool antiFreezeActivated = false;
 bool testAntiFreeze = false;
@@ -174,14 +173,10 @@ void onWiFiInitialized()
     {
         digitalWrite(LED_BUILTIN, LED_ON);
         if (HeatPump.readPacket())
-        {
-            validPackets++;
             handleNewAquareaData();
-        }
         else
         {
             lastPacketErrorTime = currentTime;
-            packetErrors++;
             if (PersistentData.logPacketErrors)
                 logEvent(HeatPump.getLastError());
         }
@@ -275,9 +270,7 @@ void updateDayStats(uint32_t secondsSinceLastUpdate, float powerInKW, float powe
     if ((currentTime / SECONDS_PER_DAY) > (lastDayStatsEntryPtr->startTime / SECONDS_PER_DAY))
     {
         newDayStatsEntry();
-        validPackets = 0;
-        packetErrors = 0;
-        HeatPump.repairedPackets = 0;
+        HeatPump.resetPacketStats();
     }
 
     lastDayStatsEntryPtr->update(currentTime, secondsSinceLastUpdate, powerInKW, powerOutKW, antiFreezeActivated);
@@ -404,10 +397,8 @@ void handleHttpRootRequest()
         ftpSync = formatTime("%H:%M", lastFTPSyncTime);
 
     const char* lastPacket = (lastPacketReceivedTime == 0)
-        ? "Not received"
+        ? "Not yet"
         : formatTime("%H:%M:%S", lastPacketReceivedTime);
-
-    float packetErrorRatio = (packetErrors == 0) ? 0.0 : float(packetErrors) / (validPackets + packetErrors);
 
     Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
 
@@ -416,10 +407,10 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><th>RSSI</th><td>%d dBm</td></tr>\r\n"), static_cast<int>(WiFi.RSSI()));
     HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
-    HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync.c_str());
-    HttpResponse.printf(F("<tr><th>FTP Sync entries</th><td>%d</td></tr>\r\n"), ftpSyncEntries);
     HttpResponse.printf(F("<tr><th><a href=\"/topics\">Last packet</a></th><td>%s</td></tr>\r\n"), lastPacket);
-    HttpResponse.printf(F("<tr><th>Packet errors</th><td>%0.1f %%</td></tr>\r\n"), packetErrorRatio * 100);
+    HttpResponse.printf(F("<tr><th>Packet errors</th><td>%0.1f %%</td></tr>\r\n"), HeatPump.getPacketErrorRatio() * 100);
+    HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync.c_str());
+    HttpResponse.printf(F("<tr><th>FTP Sync entries</th><td>%d / %d</td></tr>\r\n"), ftpSyncEntries, PersistentData.ftpSyncEntries);
     HttpResponse.printf(F("<tr><th><a href=\"/topiclog\">Topic log</a></th><td>%d</td></p>\r\n"), TopicLog.count());
     HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
     Html.writeTableEnd();
@@ -589,9 +580,9 @@ void handleHttpHexDumpRequest()
 
     HttpResponse.printf(
         F("<p>Received %u valid packets, %u repaired packets, %u invalid packets.</p>\r\n"),
-        validPackets,
-        HeatPump.repairedPackets,
-        packetErrors);
+        HeatPump.getValidPackets(),
+        HeatPump.getRepairedPackets(),
+        HeatPump.getInvalidPackets());
 
     if (lastPacketReceivedTime != 0)
     {

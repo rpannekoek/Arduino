@@ -163,14 +163,32 @@ class Topic
 class Aquarea
 {
     public:
-        uint32_t repairedPackets = 0;
-
         // Constructor
         Aquarea();
 
         String inline getLastError()
         {
             return _lastError;
+        }
+
+        uint32_t inline getValidPackets()
+        {
+            return _validPackets;
+        }
+
+        uint32_t inline getInvalidPackets()
+        {
+            return _invalidPackets;
+        }
+
+        uint32_t inline getRepairedPackets()
+        {
+            return _repairedPackets;
+        }
+
+        float inline getPacketErrorRatio()
+        {
+            return float(_invalidPackets) / (_validPackets + _invalidPackets);
         }
 
         static std::vector<TopicId> getAllTopicIds();
@@ -182,10 +200,14 @@ class Aquarea
         bool setPump(bool pumpOn);
         bool readPacket();
         void writeHexDump(Print& printTo, bool unknownData);
+        void resetPacketStats();
 
     private:
         uint8_t _data[DATA_BUFFER_SIZE];
         uint8_t _invalidData[DATA_BUFFER_SIZE];
+        uint32_t _validPackets = 0;
+        uint32_t _repairedPackets = 0;
+        uint32_t _invalidPackets = 0;
         String _lastError;
         uint32_t _commandSentMillis = 0;
         bool _debugOutputOnSerial = false;
