@@ -15,6 +15,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
     float tInsideOffset;
     float tOutsideOffset;
     float tInsideNightOffset;
+    uint16_t ftpSyncEntries;
 
     PersistentDataStruct() : PersistentDataBase(
         sizeof(wifiSSID) +
@@ -28,8 +29,14 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         sizeof(tOutsideSensorAddress) +
         sizeof(tInsideOffset) +
         sizeof(tOutsideOffset) +
-        sizeof(tInsideNightOffset)
+        sizeof(tInsideNightOffset) +
+        sizeof(ftpSyncEntries)
         ) {}
+
+    bool isFTPEnabled()
+    {
+        return (ftpSyncEntries > 0);
+    }
 
     virtual void initialize()
     {
@@ -45,6 +52,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         tInsideOffset = 0;
         tOutsideOffset = 0;
         tInsideNightOffset = 0;
+        ftpSyncEntries = 0;
     }
 
     virtual void validate()

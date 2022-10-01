@@ -16,6 +16,7 @@
 #include <DallasTemperature.h>
 #include "PersistentData.h"
 #include "TempLogEntry.h"
+#include "TempStatsEntry.h"
 #include "DayStatistics.h"
 
 #define ICON "/apple-touch-icon.png"
@@ -25,8 +26,10 @@
 #define HTTP_POLL_INTERVAL 60
 #define EVENT_LOG_LENGTH 50
 #define FTP_RETRY_INTERVAL (60 * 60)
-#define TEMP_LOG_INTERVAL (30 * 60)
-#define TEMP_POLL_INTERVAL 10
+#define HOUR_LOG_INTERVAL (30 * 60)
+#define TEMP_POLL_INTERVAL 6
+#define TEMP_LOG_AGGREGATIONS 10
+#define TEMP_LOG_SIZE 250
 #define NIGHT_OFFSET_DELAY (10 * 60)
 
 #define LED_ON 0
@@ -39,9 +42,11 @@
 #define CFG_FTP_SERVER F("FTPServer")
 #define CFG_FTP_USER F("FTPUser")
 #define CFG_FTP_PASSWORD F("FTPPassword")
+#define CFG_FTP_ENTRIES F("FTPEntries")
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeJson = "application/json";
+const char* ContentTypeText = "text/plain";
 
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
@@ -49,7 +54,8 @@ WiFiFTPClient FTPClient(2000); // 2 sec timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, 40);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
-StaticLog<TempLogEntry> TempLog(24 * 2); // 24 hrs
+StaticLog<TempLogEntry> TempLog(TEMP_LOG_SIZE);
+StaticLog<TempStatsEntry> HourStats(24 * 2); // 24 hrs
 DayStatistics DayStats;
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 
@@ -64,7 +70,11 @@ time_t pollTempTime = 0;
 time_t syncFTPTime = 0;
 time_t lastFTPSyncTime = 0;
 
+int ftpSyncEntries = 0;
+TempLogEntry newTempLogEntry;
+
 TempLogEntry* lastTempLogEntryPtr = nullptr;
+TempStatsEntry* lastHoutStatsEntryPtr = nullptr;
 
 bool newSensorFound = false;
 bool hasOutsideSensor = false;
@@ -167,6 +177,7 @@ void setup()
     const char* cacheControl = "max-age=86400, public";
     WebServer.on("/", handleHttpRootRequest);
     WebServer.on("/json", handleHttpJsonRequest);
+    WebServer.on("/templog", handleHttpTempLogRequest);
     WebServer.on("/sync", handleHttpFtpSyncRequest);
     WebServer.on("/calibrate", HTTP_GET, handleHttpCalibrateFormRequest);
     WebServer.on("/calibrate", HTTP_POST, handleHttpCalibrateFormPost);
@@ -219,6 +230,7 @@ void loop()
 void onWiFiTimeSynced()
 {
     pollTempTime = currentTime;
+    newTempLogEntry.time = currentTime;
 }
 
 
@@ -408,17 +420,17 @@ void drawTempGraph()
 
     uint8_t x = graphX;
     uint8_t lastY = 0;
-    TempLogEntry* logEntryPtr = TempLog.getFirstEntry();
-    while (logEntryPtr != nullptr)
+    TempStatsEntry* hourStatsEntryPtr = HourStats.getFirstEntry();
+    while (hourStatsEntryPtr != nullptr)
     {
-        uint8_t y = graphY - getBarValue(logEntryPtr->getAvgTInside(), tMin, tMax) * graphHeight;
+        uint8_t y = graphY - getBarValue(hourStatsEntryPtr->getAvgTInside(), tMin, tMax) * graphHeight;
 
         if (lastY != 0)
             Display.drawLine(x-2, lastY, x, y);
 
         x += 2;
         lastY = y;
-        logEntryPtr = TempLog.getNextEntry();
+        hourStatsEntryPtr = HourStats.getNextEntry();
     }
 }
 
@@ -445,21 +457,12 @@ bool trySyncFTP(Print* printTo)
     WiFiClient& dataClient = FTPClient.append(filename);
     if (dataClient.connected())
     {
-        /* TODO
-        if (EnergyLog.count() > 1)
+        if (ftpSyncEntries > 0)
         {
-            EnergyLogEntry* energyLogEntryPtr = EnergyLog.getEntryFromEnd(2);
-            if (energyLogEntryPtr != nullptr)
-            {
-                dataClient.printf(
-                    "\"%s\";%0.1f;%0.1f\r\n",
-                    formatTime("%F", energyLogEntryPtr->time),
-                    energyLogEntryPtr->energyIn,
-                    energyLogEntryPtr->energyOut
-                    );
-            }
+            writeTempLogCsv(TempLog.getEntryFromEnd(ftpSyncEntries), dataClient);
+            ftpSyncEntries = 0;            
         }
-        else*/ if (printTo != nullptr)
+        else if (printTo != nullptr)
             printTo->println("Nothing to sync.");
         dataClient.stop();
 
@@ -480,13 +483,31 @@ bool trySyncFTP(Print* printTo)
 
 void updateTempLog()
 {
-    if ((lastTempLogEntryPtr == nullptr) || (currentTime >= lastTempLogEntryPtr->time + TEMP_LOG_INTERVAL))
+    newTempLogEntry.update(tInside, tOutside);
+    if (newTempLogEntry.count == TEMP_LOG_AGGREGATIONS)
     {
-        TempLogEntry newTempLogEntry;
-        newTempLogEntry.time = currentTime - (currentTime % TEMP_LOG_INTERVAL);
-        lastTempLogEntryPtr = TempLog.add(&newTempLogEntry);
+        if ((lastTempLogEntryPtr == nullptr) || !newTempLogEntry.equals(lastTempLogEntryPtr))
+        {
+            lastTempLogEntryPtr = TempLog.add(&newTempLogEntry);
+            newTempLogEntry.time = currentTime;
+            if (PersistentData.isFTPEnabled())
+            {
+                if (++ftpSyncEntries > TEMP_LOG_SIZE)
+                    ftpSyncEntries = TEMP_LOG_SIZE;
+                if (ftpSyncEntries >= PersistentData.ftpSyncEntries)
+                    syncFTPTime = currentTime;
+            }
+        }
+        newTempLogEntry.reset(); // Moving average
     }
-    lastTempLogEntryPtr->update(tInside, tOutside);
+
+    if ((lastHoutStatsEntryPtr == nullptr) || (currentTime >= lastHoutStatsEntryPtr->time + HOUR_LOG_INTERVAL))
+    {
+        TempStatsEntry newHourStatsEntry;
+        newHourStatsEntry.time = currentTime - (currentTime % HOUR_LOG_INTERVAL);
+        lastHoutStatsEntryPtr = HourStats.add(&newHourStatsEntry);
+    }
+    lastHoutStatsEntryPtr->update(tInside, tOutside);
 }
 
 
@@ -507,10 +528,10 @@ void test(String message)
         float tInside = 15;
         for (int i = 0; i < 48; i++)
         {
-            TempLogEntry tempLogEntry;
+            TempStatsEntry tempLogEntry;
             tempLogEntry.time = currentTime + (i * 1800);
             tempLogEntry.update(tInside, tInside - 10);
-            lastTempLogEntryPtr = TempLog.add(&tempLogEntry);
+            lastHoutStatsEntryPtr = HourStats.add(&tempLogEntry);
             if (tInside++ == 40) tInside = 15;
         }
     }
@@ -525,7 +546,7 @@ void getTemperatureRange(float& tMin, float& tMax)
 {
     tMin = 100;
     tMax = -100;
-    TempLogEntry* logEntryPtr = TempLog.getFirstEntry();
+    TempStatsEntry* logEntryPtr = HourStats.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
         float avgTInside = logEntryPtr->getAvgTInside();
@@ -537,7 +558,7 @@ void getTemperatureRange(float& tMin, float& tMax)
             tMin = std::min(tMin, avgTOutside);
             tMax = std::max(tMax, avgTOutside);
         }
-        logEntryPtr = TempLog.getNextEntry();
+        logEntryPtr = HourStats.getNextEntry();
     }
 
     tMax = std::max(tMax, tMin + 0.1F); // Prevent division by zero
@@ -561,7 +582,7 @@ void handleHttpRootRequest()
     }
 
     const char* ftpSync;
-    if (PersistentData.ftpServer[0] == 0)
+    if (!PersistentData.isFTPEnabled())
         ftpSync = "Disabled";
     else if (lastFTPSyncTime == 0)
         ftpSync = "Not yet";
@@ -570,14 +591,18 @@ void handleHttpRootRequest()
 
     Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
 
-    HttpResponse.println(F("<h1>Temperature Monitor status</h1>"));
+    Html.writeHeading(F("Temperature Monitor status"));
 
-    HttpResponse.println(F("<table>"));
-    HttpResponse.printf(F("<tr><th>ESP Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><th>ESP Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
+    Html.writeTableStart();
+    HttpResponse.printf(F("<tr><th>RSSI</th><td>%d dBm</td></tr>\r\n"), static_cast<int>(WiFi.RSSI()));
+    HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
+    HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
     HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync);
+    if (PersistentData.isFTPEnabled())
+        HttpResponse.printf(F("<tr><th>FTP Sync entries</th><td>%d / %d</td></tr>\r\n"), ftpSyncEntries, PersistentData.ftpSyncEntries);
+    HttpResponse.printf(F("<tr><th><a href=\"/templog\">Temperature log</a></th><td>%d</td></p>\r\n"), TempLog.count());
     HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
-    HttpResponse.println(F("</table>"));
+    Html.writeTableEnd();
 
     if (WiFiSM.shouldPerformAction("reset"))
     {
@@ -595,7 +620,7 @@ void handleHttpRootRequest()
     writeDayStats();
 
     HttpResponse.println(F("<h1>Last 24 hours</h1>"));
-    writeTempLog();
+    writeHourStats();
 
     Html.writeFooter();
 
@@ -657,7 +682,7 @@ void writeDayStats()
 }
 
 
-void writeTempLog()
+void writeHourStats()
 {
     float tMin, tMax;
     getTemperatureRange(tMin, tMax);
@@ -667,7 +692,7 @@ void writeTempLog()
     HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th colspan='3'>T<sub>inside</sub> (°C)</th><th colspan='3'>T<sub>outside</sub> (°C)</th></tr>"));
     HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
 
-    TempLogEntry* logEntryPtr = TempLog.getFirstEntry();
+    TempStatsEntry* logEntryPtr = HourStats.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
         HttpResponse.printf(
@@ -694,7 +719,7 @@ void writeTempLog()
             );
 
         HttpResponse.println(F("</td></tr>"));
-        logEntryPtr = TempLog.getNextEntry();
+        logEntryPtr = HourStats.getNextEntry();
     }
     HttpResponse.println(F("</table>"));
 }
@@ -717,6 +742,35 @@ void handleHttpJsonRequest()
     HttpResponse.print(F(" }"));
 
     WebServer.send(200, ContentTypeJson, HttpResponse);
+}
+
+
+void writeTempLogCsv(TempLogEntry* tempLogEntryPtr, Print& destination)
+{
+    while (tempLogEntryPtr != nullptr)
+    {
+        destination.printf(
+            "%s;%0.1f;%0.1f\r\n",
+            formatTime("%F %H:%M", tempLogEntryPtr->time),
+            tempLogEntryPtr->getAvgTinside(),
+            tempLogEntryPtr->getAvgToutside()
+            );
+
+        tempLogEntryPtr = TempLog.getNextEntry();
+    }
+}
+
+
+void handleHttpTempLogRequest()
+{
+    Tracer tracer(F("handleHttpTempLogRequest"));
+
+    HttpResponse.clear();
+    HttpResponse.println(F("Time;Tinside;Toutside"));
+
+    writeTempLogCsv(TempLog.getFirstEntry(), HttpResponse);
+
+    WebServer.send(200, ContentTypeText, HttpResponse);
 }
 
 
@@ -877,6 +931,7 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
     Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
     Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
+    Html.writeTextBox(CFG_FTP_ENTRIES, F("FTP sync entries"), String(PersistentData.ftpSyncEntries), 3);
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
     HttpResponse.println(F("</form>"));
@@ -905,6 +960,8 @@ void handleHttpConfigFormPost()
     copyString(WebServer.arg(CFG_FTP_SERVER), PersistentData.ftpServer, sizeof(PersistentData.ftpServer)); 
     copyString(WebServer.arg(CFG_FTP_USER), PersistentData.ftpUser, sizeof(PersistentData.ftpUser)); 
     copyString(WebServer.arg(CFG_FTP_PASSWORD), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword)); 
+
+    PersistentData.ftpSyncEntries = WebServer.arg(CFG_FTP_ENTRIES).toInt();
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();
