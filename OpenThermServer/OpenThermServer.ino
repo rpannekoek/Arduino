@@ -34,7 +34,7 @@
 #define KEEP_TSET_LOW_DURATION (15 * 60)
 #define WEATHER_SERVICE_POLL_INTERVAL (15 * 60)
 #define WEATHER_SERVICE_RESPONSE_TIMEOUT 10
-#define FTP_RETRY_INTERVAL (60 * 60)
+#define FTP_RETRY_INTERVAL (30 * 60)
 #define GLOBAL_LOG_INTERVAL (30 * 60)
 #define HEATMON_POLL_INTERVAL 60
 #define MAX_HEATPUMP_POWER 4
@@ -469,7 +469,7 @@ bool setOtgwResponse(OpenThermDataId dataId, float value)
 
 bool setBoilerLevel(BoilerLevel level)
 {
-    setBoilerLevel(level, 0);
+    return setBoilerLevel(level, 0);
 }
 
 bool setBoilerLevel(BoilerLevel level, time_t duration)
