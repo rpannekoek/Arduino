@@ -23,7 +23,7 @@ struct DayStatsEntry
 
     void update(time_t time, uint32_t secondsSinceLastUpdate, float powerInKW, float powerOutKW, bool antiFreezeActivated)
     {
-        float hoursSinceLastUpdate = secondsSinceLastUpdate / 3600;
+        float hoursSinceLastUpdate = float(secondsSinceLastUpdate) / 3600;
 
         if (powerInKW > 0)
         {

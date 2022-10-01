@@ -275,9 +275,10 @@ void updateDayStats(uint32_t secondsSinceLastUpdate, float powerInKW, float powe
 
     lastDayStatsEntryPtr->update(currentTime, secondsSinceLastUpdate, powerInKW, powerOutKW, antiFreezeActivated);
 
-    if ((powerInKW > 0) && !heatPumpIsOn)
+    const float onPowerKW = 0.2;
+    if ((powerInKW > onPowerKW) && !heatPumpIsOn)
         lastDayStatsEntryPtr->onCount++; // Heat pump was switched on
-    heatPumpIsOn = powerInKW > 0;
+    heatPumpIsOn = powerInKW > onPowerKW;
 }
 
 
@@ -303,7 +304,7 @@ void updateTopicLog()
         newTopicLogEntry.time = currentTime;
 
         ftpSyncEntries = std::min(ftpSyncEntries + 1, TOPIC_LOG_SIZE);
-        if (ftpSyncEntries == PersistentData.ftpSyncEntries)
+        if (ftpSyncEntries >= PersistentData.ftpSyncEntries)
             syncFTPTime = currentTime;
     }
 

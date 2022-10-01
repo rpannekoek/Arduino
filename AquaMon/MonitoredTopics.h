@@ -16,14 +16,15 @@ struct MonitoredTopic
     const char* formatValue(float value, bool includeUnitOfMeasure, int additionalDecimals = 0)
     {
         // First build the format string
-        static char buffer[16];
+        static char format[16];
         if (includeUnitOfMeasure)
-            snprintf(buffer, sizeof(buffer), "%%0.%df %s", decimals + additionalDecimals, unitOfMeasure);
+            snprintf(format, sizeof(format), "%%0.%df %s", decimals + additionalDecimals, unitOfMeasure);
         else
-            snprintf(buffer, sizeof(buffer), "%%0.%df", decimals + additionalDecimals);
+            snprintf(format, sizeof(format), "%%0.%df", decimals + additionalDecimals);
 
         // Then format the value
-        snprintf(buffer, sizeof(buffer), buffer, value);
+        static char buffer[16];
+        snprintf(buffer, sizeof(buffer), format, value);
 
         return buffer;
     }
