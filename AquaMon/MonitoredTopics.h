@@ -1,6 +1,6 @@
 #include "Aquarea.h"
 
-#define NUMBER_OF_MONITORED_TOPICS 14
+#define NUMBER_OF_MONITORED_TOPICS 15
 
 struct MonitoredTopic
 {
@@ -65,7 +65,8 @@ MonitoredTopic MonitoredTopics[] =
     { TopicId::Outside_Pipe_Temp, "Tpipe", "T<sub>pipe</sub>", "°C", "temp3", 0, -10, 20 },
     { TopicId::Outside_Temp, "Toutside", "T<sub>outside</sub>", "°C", "temp3", 0, -10, 20 },
     { TopicId::Defrosting_State, "Defrost", "Defrost", "", "in", 0, 0, 1 },
-    { TopicId::Pump_Flow, "Qpump", "Q<sub>pump</sub>", "l/min", "flow", 2, 0, 30 },
+    { TopicId::Fan1_Motor_Speed, "Fan", "Fan", "rpm", "flow", 0, 0, 900 },
+    { TopicId::Pump_Flow, "Qpump", "Q<sub>pump</sub>", "l/min", "flow", 1, 0, 30 },
     { TopicId::Compressor_Freq, "Fcomp", "F<sub>comp</sub>", "Hz", "freq", 0, 0, 60},
     { TopicId::Compressor_Power, "Pcomp", "P<sub>comp</sub>", "kW", "in", 1, 0, 6 },
     { TopicId::Heat_Power, "Pheat", "P<sub>heat</sub>", "kW", "out", 1, 0, 6 },
