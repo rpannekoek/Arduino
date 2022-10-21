@@ -18,6 +18,7 @@ struct PersistentDataStruct : PersistentDataBase
     uint16_t maxTSet;
     uint16_t minTSet;
     char heatmonHost[32];
+    bool usePumpModulation;
 
     PersistentDataStruct() : PersistentDataBase(
         sizeof(wifiSSID) +
@@ -34,7 +35,8 @@ struct PersistentDataStruct : PersistentDataBase
         sizeof(ftpSyncEntries) +
         sizeof(maxTSet) +
         sizeof(minTSet) +
-        sizeof(heatmonHost)
+        sizeof(heatmonHost) +
+        sizeof(usePumpModulation)
         ) {}
 
     virtual void initialize()
@@ -54,6 +56,7 @@ struct PersistentDataStruct : PersistentDataBase
         maxTSet = 60;
         minTSet = 40;
         heatmonHost[0] = 0;
+        usePumpModulation = false;
     }
 
     virtual void validate()

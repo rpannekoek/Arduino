@@ -56,6 +56,7 @@
 #define CFG_MIN_TSET F("minTSet")
 #define CFG_BOILER_ON_DELAY F("boilerOnDelay")
 #define CFG_HEATMON_HOST F("heatmonHost")
+#define CFG_PUMP_MOD F("pumpMod")
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeText = "text/plain";
@@ -123,6 +124,7 @@ bool updateTOutside = false;
 bool updateHeatmonData = false;
 int lastHeatmonResult = 0;
 
+OpenThermLogEntry newOTLogEntry;
 OpenThermLogEntry* lastOTLogEntryPtr = nullptr;
 StatusLogEntry* lastStatusLogEntryPtr = nullptr;
 
@@ -194,7 +196,6 @@ void setup()
     WebServer.on("/cmd", HTTP_POST, handleHttpCommandFormPost);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
     WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
-    WebServer.serveStatic("/favicon.ico", SPIFFS, "/favicon.ico", cacheControl);
     WebServer.serveStatic(ICON, SPIFFS, ICON, cacheControl);
     WebServer.serveStatic(CSS, SPIFFS, CSS, cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
@@ -486,8 +487,6 @@ bool setBoilerLevel(BoilerLevel level, time_t duration)
     if (level == currentBoilerLevel)
         return true;
 
-    currentBoilerLevel = level;
-
     if (level == BoilerLevel::Thermostat)
         totalOverrideDuration += (currentTime - boilerOverrideStartTime);
     else
@@ -503,6 +502,9 @@ bool setBoilerLevel(BoilerLevel level, time_t duration)
     {
         sprintf(stringBuffer, "%d", boilerTSet[level]);
         success = OTGW.sendCommand("CS", stringBuffer);
+
+        if (currentBoilerLevel == BoilerLevel::Off)
+            success = OTGW.sendCommand("CH", "1");
     }
 
     if (!success)
@@ -510,6 +512,8 @@ bool setBoilerLevel(BoilerLevel level, time_t duration)
         logEvent(F("Unable to set boiler level"));
         resetOpenThermGateway();
     }
+
+    currentBoilerLevel = level;
 
     return success;
 }
@@ -570,31 +574,25 @@ void updateStatusLog(time_t time, uint16_t status)
 
 void logOpenThermValues(bool forceCreate)
 {
-    OpenThermLogEntry* otLogEntryPtr = new OpenThermLogEntry();
-    otLogEntryPtr->time = currentTime;
-    otLogEntryPtr->thermostatTSet = thermostatRequests[OpenThermDataId::TSet];
-    otLogEntryPtr->thermostatMaxRelModulation = thermostatRequests[OpenThermDataId::MaxRelModulation];
-    otLogEntryPtr->boilerStatus = boilerResponses[OpenThermDataId::Status];
-    otLogEntryPtr->boilerTSet = boilerResponses[OpenThermDataId::TSet];
-    otLogEntryPtr->tBoiler = boilerResponses[OpenThermDataId::TBoiler];
-    otLogEntryPtr->tReturn = getResponse(OpenThermDataId::TReturn);
-    otLogEntryPtr->tBuffer = getResponse(OpenThermDataId::Tdhw);
-    otLogEntryPtr->tOutside = getResponse(OpenThermDataId::TOutside);
-    otLogEntryPtr->pHeatPump = HeatMon.pIn * 256;
+    newOTLogEntry.time = currentTime;
+    newOTLogEntry.thermostatTSet = thermostatRequests[OpenThermDataId::TSet];
+    newOTLogEntry.thermostatMaxRelModulation = thermostatRequests[OpenThermDataId::MaxRelModulation];
+    newOTLogEntry.boilerStatus = boilerResponses[OpenThermDataId::Status];
+    newOTLogEntry.boilerTSet = boilerResponses[OpenThermDataId::TSet];
+    newOTLogEntry.tBoiler = boilerResponses[OpenThermDataId::TBoiler];
+    newOTLogEntry.tReturn = getResponse(OpenThermDataId::TReturn);
+    newOTLogEntry.tBuffer = getResponse(OpenThermDataId::Tdhw);
+    newOTLogEntry.tOutside = getResponse(OpenThermDataId::TOutside);
+    newOTLogEntry.pHeatPump = HeatMon.pIn * 256;
 
-    if ((lastOTLogEntryPtr == nullptr) || !lastOTLogEntryPtr->equals(otLogEntryPtr) || forceCreate)
+    if ((lastOTLogEntryPtr == nullptr) || !newOTLogEntry.equals(lastOTLogEntryPtr) || forceCreate)
     {
-        lastOTLogEntryPtr = OpenThermLog.add(otLogEntryPtr);
-        if (++otLogEntriesToSync == PersistentData.ftpSyncEntries)
-            otLogSyncTime = currentTime;
-        if (otLogEntriesToSync > OT_LOG_LENGTH)
+        lastOTLogEntryPtr = OpenThermLog.add(&newOTLogEntry);
+        if (++otLogEntriesToSync > OT_LOG_LENGTH)
             otLogEntriesToSync = OT_LOG_LENGTH;
-
-        TRACE(F("%d OpenTherm log entries.\n"), OpenThermLog.count());
+        if (otLogEntriesToSync >= PersistentData.ftpSyncEntries)
+            otLogSyncTime = currentTime;
     }
-
-    // Entry is copied into the log, so can be discarded here.
-    delete otLogEntryPtr;
 }
 
 
@@ -735,7 +733,7 @@ void test(String message)
 }
 
 
-bool handleThermostatLowLoadMode()
+bool handleThermostatLowLoadMode(bool switchedOn)
 {
     bool isThermostatLowLoadMode = thermostatRequests[OpenThermDataId::MaxRelModulation] == 0;
 
@@ -748,8 +746,15 @@ bool handleThermostatLowLoadMode()
         }
         else
         {
-            // Keep boiler at Low level for a while (prevent on/off modulation)
-            setBoilerLevel(BoilerLevel::Low, KEEP_TSET_LOW_DURATION);
+            if (switchedOn || !PersistentData.usePumpModulation)
+            {
+                // Keep boiler at Low level for a while (prevent on/off modulation)
+                setBoilerLevel(BoilerLevel::Low, KEEP_TSET_LOW_DURATION);
+            }
+            else
+            {
+                setBoilerLevel(BoilerLevel::Off);
+            }
         }
     }
 
@@ -768,7 +773,7 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
         if (masterCHEnable && !lastMasterCHEnable)
         {
             // Thermostat switched CH on
-            if (!handleThermostatLowLoadMode() && PersistentData.boilerOnDelay != 0)
+            if (!handleThermostatLowLoadMode(true) && PersistentData.boilerOnDelay != 0)
             {
                 // Keep boiler at Pump Only level for a while (give heat pump a headstart)
                 setBoilerLevel(BoilerLevel::PumpOnly, PersistentData.boilerOnDelay);
@@ -777,7 +782,7 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
         else if (!masterCHEnable && lastMasterCHEnable)
         {
             // Thermostat switched CH off
-            handleThermostatLowLoadMode();
+            handleThermostatLowLoadMode(false);
         }        
     }
     else if (otFrame.dataId == OpenThermDataId::MaxRelModulation)
@@ -1397,6 +1402,7 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_MAX_TSET, F("Max TSet"), String(PersistentData.maxTSet), 2);
     Html.writeTextBox(CFG_MIN_TSET, F("Min TSet"), String(PersistentData.minTSet), 2);
     Html.writeTextBox(CFG_BOILER_ON_DELAY, F("Boiler on delay (s)"), String(PersistentData.boilerOnDelay), 4);
+    Html.writeCheckbox(CFG_PUMP_MOD, F("Pump Modulation"), PersistentData.usePumpModulation);
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
     HttpResponse.println(F("</form>"));
@@ -1434,6 +1440,7 @@ void handleHttpConfigFormPost()
     PersistentData.maxTSet = WebServer.arg(CFG_MAX_TSET).toInt();
     PersistentData.minTSet = WebServer.arg(CFG_MIN_TSET).toInt();
     PersistentData.boilerOnDelay = WebServer.arg(CFG_BOILER_ON_DELAY).toInt();
+    PersistentData.usePumpModulation = WebServer.hasArg(CFG_PUMP_MOD);
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();
