@@ -21,8 +21,8 @@
 #define SECONDS_PER_DAY (24 * 3600)
 #define HTTP_POLL_INTERVAL 60
 #define EVENT_LOG_LENGTH 50
-#define TOPIC_LOG_SIZE 150
-#define TOPIC_LOG_CSV_MAX_SIZE 100
+#define TOPIC_LOG_SIZE 200
+#define TOPIC_LOG_CSV_MAX_SIZE 80
 #define DEFAULT_BAR_LENGTH 60
 #define WIFI_TIMEOUT_MS 2000
 #define FTP_RETRY_INTERVAL (30 * 60)
@@ -51,7 +51,7 @@ const char* ContentTypeJson = "application/json";
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
-StringBuilder HttpResponse(12288); // 12KB HTTP response buffer
+StringBuilder HttpResponse(8192); // 8 KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, DEFAULT_BAR_LENGTH);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
 StaticLog<TopicLogEntry> TopicLog(TOPIC_LOG_SIZE);
