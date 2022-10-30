@@ -20,6 +20,11 @@ struct PersistentDataStruct : PersistentDataBase
     char heatmonHost[32];
     bool usePumpModulation;
 
+    bool isFTPEnabled()
+    {
+        return ftpSyncEntries > 0;
+    }
+
     PersistentDataStruct() : PersistentDataBase(
         sizeof(wifiSSID) +
         sizeof(wifiKey) +  

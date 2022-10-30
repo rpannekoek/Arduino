@@ -31,7 +31,8 @@
 #define OTGW_MESSAGE_LOG_LENGTH 40
 #define OT_LOG_LENGTH 250
 #define OT_LOG_PAGE_SIZE 50
-#define KEEP_TSET_LOW_DURATION (15 * 60)
+#define PWM_PERIOD (10 * 60)
+#define TSET_OVERRIDE_DURATION (15 * 60)
 #define WEATHER_SERVICE_POLL_INTERVAL (15 * 60)
 #define WEATHER_SERVICE_RESPONSE_TIMEOUT 10
 #define FTP_RETRY_INTERVAL (30 * 60)
@@ -135,8 +136,7 @@ time_t lastOTLogSyncTime = 0;
 BoilerLevel currentBoilerLevel = BoilerLevel::Thermostat;
 BoilerLevel changeBoilerLevel;
 time_t changeBoilerLevelTime = 0;
-time_t boilerOverrideStartTime = 0;
-uint32_t totalOverrideDuration = 0;
+float pwmDutyCycle = 1;
 
 char stringBuffer[128];
 String otgwResponse;
@@ -271,11 +271,21 @@ void loop()
         return;
     }
 
-    // Scheduled Boiler TSet change
+    // Scheduled Boiler TSet change (incl. forced PWM)
     if ((changeBoilerLevelTime != 0) && (currentTime >= changeBoilerLevelTime))
     {
-        changeBoilerLevelTime = 0;
-        setBoilerLevel(changeBoilerLevel);
+        if (pwmDutyCycle < 1)
+        {
+            if (currentBoilerLevel == BoilerLevel::Off)
+                setBoilerLevel(BoilerLevel::Low, pwmDutyCycle * PWM_PERIOD);
+            else
+                setBoilerLevel(BoilerLevel::Off, (1.0F - pwmDutyCycle) * PWM_PERIOD);
+        }
+        else
+        {
+            changeBoilerLevelTime = 0;
+            setBoilerLevel(changeBoilerLevel);
+        }
         return;
     }
 
@@ -312,8 +322,6 @@ void onTimeServerSynced()
         otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
     if (changeBoilerLevelTime != 0) 
         changeBoilerLevelTime = currentTime;
-    if (boilerOverrideStartTime != 0)
-        boilerOverrideStartTime = currentTime;
     
     updateLogTime = currentTime + 1;
     heatmonPollTime = currentTime + 10;
@@ -487,24 +495,18 @@ bool setBoilerLevel(BoilerLevel level, time_t duration)
     if (level == currentBoilerLevel)
         return true;
 
-    if (level == BoilerLevel::Thermostat)
-        totalOverrideDuration += (currentTime - boilerOverrideStartTime);
-    else
-        boilerOverrideStartTime = currentTime;
-
     if ((changeBoilerLevelTime != 0) && (level == changeBoilerLevel))
         changeBoilerLevelTime = 0;
 
     bool success;
     if (level == BoilerLevel::Off)
         success = OTGW.sendCommand("CH", "0");
+    else if (currentBoilerLevel == BoilerLevel::Off)
+        success = OTGW.sendCommand("CH", "1");
     else
     {
         sprintf(stringBuffer, "%d", boilerTSet[level]);
         success = OTGW.sendCommand("CS", stringBuffer);
-
-        if (currentBoilerLevel == BoilerLevel::Off)
-            success = OTGW.sendCommand("CH", "1");
     }
 
     if (!success)
@@ -514,7 +516,6 @@ bool setBoilerLevel(BoilerLevel level, time_t duration)
     }
 
     currentBoilerLevel = level;
-
     return success;
 }
 
@@ -569,6 +570,9 @@ void updateStatusLog(time_t time, uint16_t status)
         lastStatusLogEntryPtr->dhwSeconds++;
     if (status & OpenThermStatus::SlaveFlame)
         lastStatusLogEntryPtr->flameSeconds++;
+
+    if (currentBoilerLevel != BoilerLevel::Thermostat)
+        lastStatusLogEntryPtr->overrideSeconds++;
 }
 
 
@@ -590,7 +594,7 @@ void logOpenThermValues(bool forceCreate)
         lastOTLogEntryPtr = OpenThermLog.add(&newOTLogEntry);
         if (++otLogEntriesToSync > OT_LOG_LENGTH)
             otLogEntriesToSync = OT_LOG_LENGTH;
-        if (otLogEntriesToSync >= PersistentData.ftpSyncEntries)
+        if (PersistentData.isFTPEnabled() && otLogEntriesToSync >= PersistentData.ftpSyncEntries)
             otLogSyncTime = currentTime;
     }
 }
@@ -739,6 +743,7 @@ bool handleThermostatLowLoadMode(bool switchedOn)
 
     if (isThermostatLowLoadMode)
     {
+        pwmDutyCycle = 1;
         if (currentBoilerLevel == BoilerLevel::PumpOnly)
         {
             // Keep Pump Only level, but switch to Low level afterwards.
@@ -749,7 +754,7 @@ bool handleThermostatLowLoadMode(bool switchedOn)
             if (switchedOn || !PersistentData.usePumpModulation)
             {
                 // Keep boiler at Low level for a while (prevent on/off modulation)
-                setBoilerLevel(BoilerLevel::Low, KEEP_TSET_LOW_DURATION);
+                setBoilerLevel(BoilerLevel::Low, TSET_OVERRIDE_DURATION);
             }
             else
             {
@@ -782,17 +787,45 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
         else if (!masterCHEnable && lastMasterCHEnable)
         {
             // Thermostat switched CH off
-            handleThermostatLowLoadMode(false);
+            if (!handleThermostatLowLoadMode(false) && pwmDutyCycle < 1)
+            {
+                pwmDutyCycle = 1;
+                setBoilerLevel(BoilerLevel::Thermostat);
+            }
         }        
     }
     else if (otFrame.dataId == OpenThermDataId::MaxRelModulation)
     {
-        if (otFrame.dataValue != 0)
+        if (otFrame.dataValue != 0 && thermostatRequests[OpenThermDataId::MaxRelModulation] == 0)
         {
-            // Thermostat is requesting more than minimal Modulation (no longer in "Low Load Mode").
-            if (currentBoilerLevel == BoilerLevel::Low)
+            // Thermostat started requesting more than minimal Modulation (no longer in "Low Load Mode").
+            if (currentBoilerLevel == BoilerLevel::Low && pwmDutyCycle == 1)
             {
                 // Let thermostat control boiler TSet again.
+                setBoilerLevel(BoilerLevel::Thermostat);
+            }
+        }
+    }
+    else if (otFrame.dataId == OpenThermDataId::TSet)
+    {
+        bool masterCHEnable = thermostatRequests[OpenThermDataId::Status] & OpenThermStatus::MasterCHEnable;
+        if (masterCHEnable && PersistentData.usePumpModulation && currentBoilerLevel != BoilerLevel::PumpOnly)
+        {
+            bool pwmPending = pwmDutyCycle < 1;
+            float tSet = getDecimal(otFrame.dataValue);
+            if (tSet < PersistentData.minTSet)
+            {
+                // Requested TSet below configured minimum; use PWM.
+                const float pwmFloor = 20;
+                float pwmRange = PersistentData.minTSet + 5 - pwmFloor;
+                pwmDutyCycle = std::max((tSet - pwmFloor) / pwmRange, 0.1F);
+                if (!pwmPending)
+                    setBoilerLevel(BoilerLevel::Low, pwmDutyCycle * PWM_PERIOD);
+            }
+            else if (pwmPending)
+            {
+                // Requested TSet above configured minimum; cancel PWM.
+                pwmDutyCycle = 1;
                 setBoilerLevel(BoilerLevel::Thermostat);
             }
         }
@@ -879,7 +912,7 @@ void handleHttpRootRequest()
         otgwErrors += OTGW.errors[i];
 
     String ftpSyncTime;
-    if (PersistentData.ftpSyncEntries == 0)
+    if (!PersistentData.isFTPEnabled())
         ftpSyncTime = F("Disabled");
     else if (lastOTLogSyncTime == 0)
         ftpSyncTime = F("Not yet");
@@ -908,12 +941,6 @@ void handleHttpRootRequest()
         bool flame = boilerResponses[OpenThermDataId::Status] & OpenThermStatus::SlaveFlame;
         float maxRelMod = getDecimal(lastOTLogEntryPtr->thermostatMaxRelModulation);        
         float thermostatTSet = getDecimal(lastOTLogEntryPtr->thermostatTSet);
-
-        time_t overrideTimeLeft = 0;
-        if (changeBoilerLevelTime != 0)
-        {
-            overrideTimeLeft = changeBoilerLevelTime - currentTime;
-        }
 
         HttpResponse.println(F("<table>"));
         HttpResponse.print(F("<tr>"));
@@ -946,11 +973,28 @@ void handleHttpRootRequest()
             HttpResponse.println(F("</td></tr>"));
         }
 
-        HttpResponse.printf(
-            F("<tr><th>Override</sub></th><td>%s</td><td class=\"graph\">"),
-            formatTimeSpan(overrideTimeLeft));
-        Html.writeBar(float(overrideTimeLeft) / KEEP_TSET_LOW_DURATION, F("overrideBar"), true, false);
-        HttpResponse.println(F("</td></tr>"));
+        if (pwmDutyCycle < 1)
+        {
+            HttpResponse.printf(
+                F("<tr><th>PWM</sub></th><td>%0.0f %%</td><td class=\"graph\">"),
+                pwmDutyCycle * 100);
+            Html.writeBar(pwmDutyCycle, F("overrideBar"), true, false);
+            HttpResponse.println(F("</td></tr>"));
+        }
+        else
+        {
+            time_t overrideTimeLeft = 0;
+            if (changeBoilerLevelTime != 0)
+            {
+                overrideTimeLeft = changeBoilerLevelTime - currentTime;
+            }
+            HttpResponse.printf(
+                F("<tr><th>Override</sub></th><td>%s</td><td class=\"graph\">"),
+                formatTimeSpan(overrideTimeLeft));
+            Html.writeBar(float(overrideTimeLeft) / TSET_OVERRIDE_DURATION, F("overrideBar"), true, false);
+            HttpResponse.println(F("</td></tr>"));
+        }
+
         HttpResponse.println(F("</table>"));
     }
 
@@ -971,9 +1015,10 @@ void writeStatisticsPerDay()
     Html.writeHeaderCell(F("Day"));
     Html.writeHeaderCell(F("CH start"));
     Html.writeHeaderCell(F("CH stop"));
-    Html.writeHeaderCell(F("CH duration"));
-    Html.writeHeaderCell(F("DHW  duration"));
-    Html.writeHeaderCell(F("Flame duration"));
+    Html.writeHeaderCell(F("Override"));
+    Html.writeHeaderCell(F("CH on"));
+    Html.writeHeaderCell(F("DHW on"));
+    Html.writeHeaderCell(F("Flame"));
     HttpResponse.println(F("</tr>"));
     uint32_t maxFlameSeconds = getMaxFlameSeconds() + 1; // Prevent division by zero
     StatusLogEntry* logEntryPtr = StatusLog.getFirstEntry();
@@ -983,6 +1028,7 @@ void writeStatisticsPerDay()
         Html.writeCell(formatTime("%a", logEntryPtr->startTime));
         Html.writeCell(formatTime("%H:%M", logEntryPtr->startTime));
         Html.writeCell(formatTime("%H:%M", logEntryPtr->stopTime));
+        Html.writeCell(formatTimeSpan(logEntryPtr->overrideSeconds));
         Html.writeCell(formatTimeSpan(logEntryPtr->chSeconds));
         Html.writeCell(formatTimeSpan(logEntryPtr->dhwSeconds));
         Html.writeCell(formatTimeSpan(logEntryPtr->flameSeconds));
@@ -1075,7 +1121,6 @@ void handleHttpOpenThermRequest()
         HttpResponse.printf(F("<tr><td>Change to</td><td>%s</td></tr>\r\n"), BoilerLevelNames[changeBoilerLevel]);
         HttpResponse.printf(F("<tr><td>Change at</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", changeBoilerLevelTime));
     }
-    HttpResponse.printf(F("<tr><td>Override duration</td><td>%s</td></tr>\r\n"), formatTimeSpan(totalOverrideDuration));
     if (lastHeatmonUpdateTime != 0)
         HttpResponse.printf(F("<tr><td>HeatMon update</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastHeatmonUpdateTime));
     if (lastWeatherUpdateTime != 0)
