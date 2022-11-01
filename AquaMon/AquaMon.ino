@@ -577,39 +577,49 @@ void handleHttpHexDumpRequest()
 {
     Tracer tracer(F("handleHttpHexDumpRequest"));
 
-    Html.writeHeader(F("Hex dump"), true, true);
-
-    HttpResponse.printf(
-        F("<p>Received %u valid packets, %u repaired packets, %u invalid packets.</p>\r\n"),
-        HeatPump.getValidPackets(),
-        HeatPump.getRepairedPackets(),
-        HeatPump.getInvalidPackets());
-
-    if (lastPacketReceivedTime != 0)
+    if (WebServer.hasArg("raw"))
     {
-        Html.writeHeading(F("Last valid packet"), 2);
+        HttpResponse.clear();
+        HeatPump.writeHexDump(HttpResponse, false);
+
+        WebServer.send(200, ContentTypeText, HttpResponse);
+    }
+    else
+    {
+        Html.writeHeader(F("Hex dump"), true, true);
+
         HttpResponse.printf(
-            F("<p>Packet received @ %s</p>\r\n"),
-            formatTime("%H:%M:%S", lastPacketReceivedTime));
+            F("<p>Received %u valid packets, %u repaired packets, %u invalid packets.</p>\r\n"),
+            HeatPump.getValidPackets(),
+            HeatPump.getRepairedPackets(),
+            HeatPump.getInvalidPackets());
+
+        if (lastPacketReceivedTime != 0)
+        {
+            Html.writeHeading(F("Last valid packet"), 2);
+            HttpResponse.printf(
+                F("<p>Packet received @ %s</p>\r\n"),
+                formatTime("%H:%M:%S", lastPacketReceivedTime));
+
+            HttpResponse.println(F("<div class=\"hexdump\"><pre>"));
+            HeatPump.writeHexDump(HttpResponse, false);
+            HttpResponse.println(F("</pre></div>"));
+        }
+
+        Html.writeHeading(F("Last invalid packet"), 2);
+        HttpResponse.printf(
+            F("<p>Last error @ %s : %s</p>\r\n"),
+            formatTime("%H:%M:%S", lastPacketErrorTime),
+            HeatPump.getLastError().c_str());
 
         HttpResponse.println(F("<div class=\"hexdump\"><pre>"));
-        HeatPump.writeHexDump(HttpResponse, false);
+        HeatPump.writeHexDump(HttpResponse, true);
         HttpResponse.println(F("</pre></div>"));
+
+        Html.writeFooter();
+
+        WebServer.send(200, ContentTypeHtml, HttpResponse);
     }
-
-    Html.writeHeading(F("Last invalid packet"), 2);
-    HttpResponse.printf(
-        F("<p>Last error @ %s : %s</p>\r\n"),
-        formatTime("%H:%M:%S", lastPacketErrorTime),
-        HeatPump.getLastError().c_str());
-
-    HttpResponse.println(F("<div class=\"hexdump\"><pre>"));
-    HeatPump.writeHexDump(HttpResponse, true);
-    HttpResponse.println(F("</pre></div>"));
-
-    Html.writeFooter();
-
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
