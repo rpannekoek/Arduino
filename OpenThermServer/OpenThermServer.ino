@@ -362,10 +362,7 @@ void onWiFiInitialized()
             lastHeatmonUpdateTime = currentTime;
         }
         else if (result != lastHeatmonResult)
-        {
-            // TODO: symbolic name for error
-            WiFiSM.logEvent(F("HeatMon error %d"), result);
-        }
+            WiFiSM.logEvent(F("HeatMon: %s"), HeatMon.getLastError().c_str());
         lastHeatmonResult = result;
         return;
     }

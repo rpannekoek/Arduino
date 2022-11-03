@@ -20,9 +20,17 @@ class HeatMonClient
         bool begin(const char* host);
         int requestData();
 
+        inline String getLastError()
+        {
+            return _lastError;
+        }
+
     private:
         WiFiClient _wifiClient;
         HTTPClient _httpClient;
+        String _lastError;
+
+        bool parseJson(String json);
 };
 
 
