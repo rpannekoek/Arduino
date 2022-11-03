@@ -40,7 +40,8 @@ class WiFiStateMachine
         void run();
         void reset();
 
-        void logEvent(String msg);
+        void logEvent(String format, ...);
+        void logEvent(const char* msg);
         time_t getCurrentTime();
         bool shouldPerformAction(String name);
 
@@ -94,6 +95,7 @@ class WiFiStateMachine
         bool _isTimeServerAvailable = false;
         bool _isInAccessPointMode = false;
         IPAddress _ipAddress;
+        char _logMessage[64];
 
         void initializeAP();
         void initializeSTA();

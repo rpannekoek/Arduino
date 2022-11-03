@@ -142,12 +142,6 @@ char stringBuffer[128];
 String otgwResponse;
 
 
-void logEvent(String msg)
-{
-    WiFiSM.logEvent(msg);
-}
-
-
 void initBoilerLevels()
 {
     boilerTSet[BoilerLevel::Low] = PersistentData.minTSet;
@@ -259,7 +253,7 @@ void loop()
 
     if (currentTime >= otgwTimeout)
     {
-        logEvent(F("OTGW Timeout"));
+        WiFiSM.logEvent(F("OTGW Timeout"));
         resetOpenThermGateway();
         return;
     }
@@ -278,13 +272,20 @@ void loop()
         {
             if (currentBoilerLevel == BoilerLevel::Off)
                 setBoilerLevel(BoilerLevel::Low, pwmDutyCycle * PWM_PERIOD);
-            else
+            else if (currentBoilerLevel == BoilerLevel::Low)
                 setBoilerLevel(BoilerLevel::Off, (1.0F - pwmDutyCycle) * PWM_PERIOD);
+            else
+            {
+                WiFiSM.logEvent(F("PWM stopped. Unexpected level: %s"), BoilerLevelNames[currentBoilerLevel]);
+                pwmDutyCycle = 1;
+                setBoilerLevel(BoilerLevel::Thermostat);
+            }
         }
         else
         {
             changeBoilerLevelTime = 0;
             setBoilerLevel(changeBoilerLevel);
+            WiFiSM.logEvent(F("Override changed to %s"), BoilerLevelNames[changeBoilerLevel]);
         }
         return;
     }
@@ -362,9 +363,8 @@ void onWiFiInitialized()
         }
         else if (result != lastHeatmonResult)
         {
-            String event = F("HeatMon eror: ");
-            event += result;
-            logEvent(event);
+            // TODO: symbolic name for error
+            WiFiSM.logEvent(F("HeatMon error %d"), result);
         }
         lastHeatmonResult = result;
         return;
@@ -391,7 +391,7 @@ void onWiFiInitialized()
     {
         if (currentTime >= weatherServiceTimeout)
         {
-            logEvent(F("Weather service timeout"));
+            WiFiSM.logEvent(F("Weather service timeout"));
             WeatherService.close();
             weatherServiceTimeout = 0;
             return;
@@ -409,9 +409,7 @@ void onWiFiInitialized()
             }
             else
             {
-                String event = F("Weather service error: ");
-                event += httpCode;
-                logEvent(event);
+                WiFiSM.logEvent(F("Weather service error %d"), httpCode);
             }
         }
     }
@@ -420,14 +418,12 @@ void onWiFiInitialized()
     {
         if (trySyncOpenThermLog(nullptr))
         {
-            logEvent(F("FTP synchronized"));
+            WiFiSM.logEvent(F("FTP sync"));
             otLogSyncTime = 0;
         }
         else
         {
-            String event = F("FTP sync failed: ");
-            event += FTPClient.getLastResponse();
-            logEvent(event);
+            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastResponse());
             otLogSyncTime += FTP_RETRY_INTERVAL;
         }
     }
@@ -441,7 +437,7 @@ void initializeOpenThermGateway()
     bool success = setOtgwResponse(OpenThermDataId::MaxTSet, boilerTSet[BoilerLevel::High]);
 
     if (success)
-        logEvent(F("OTGW initialized"));
+        WiFiSM.logEvent(F("OTGW initialized"));
     else
         resetOpenThermGateway();
 }
@@ -455,7 +451,7 @@ void resetOpenThermGateway()
     otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
     otgwTimeout = otgwInitializeTime + OTGW_TIMEOUT;
 
-    logEvent(F("OTGW reset"));
+    WiFiSM.logEvent(F("OTGW reset"));
 }
 
 
@@ -467,9 +463,7 @@ bool setOtgwResponse(OpenThermDataId dataId, float value)
     bool success = OTGW.setResponse(dataId, value); 
     if (!success)
     {
-        String event = F("Unable to set OTGW response for #");
-        event += dataId; 
-        logEvent(event);
+        WiFiSM.logEvent(F("Unable to set OTGW response for #%d"), dataId);
     }
 
     return success;
@@ -501,7 +495,7 @@ bool setBoilerLevel(BoilerLevel level, time_t duration)
     bool success;
     if (level == BoilerLevel::Off)
         success = OTGW.sendCommand("CH", "0");
-    else if (currentBoilerLevel == BoilerLevel::Off)
+    else if ((level == BoilerLevel::Low) && (currentBoilerLevel == BoilerLevel::Off))
         success = OTGW.sendCommand("CH", "1");
     else
     {
@@ -511,7 +505,7 @@ bool setBoilerLevel(BoilerLevel level, time_t duration)
 
     if (!success)
     {
-        logEvent(F("Unable to set boiler level"));
+        WiFiSM.logEvent(F("Unable to set boiler level"));
         resetOpenThermGateway();
     }
 
@@ -679,8 +673,7 @@ void handleSerialData()
             }
 
         case OpenThermGatewayDirection::Error:
-            snprintf(stringBuffer, sizeof(stringBuffer), "OTGW: %s", otgwMessage.message.c_str());
-            logEvent(stringBuffer);
+            WiFiSM.logEvent(F("OTGW: '%s'"), otgwMessage.message.c_str());
     }
 }
 
@@ -694,7 +687,7 @@ void test(String message)
         OTGW.feedWatchdog();
         for (int i = 0; i < EVENT_LOG_LENGTH; i++)
         {
-            logEvent(F("Test event"));
+            WiFiSM.logEvent(F("Test event"));
             yield();
         }
     }
@@ -747,18 +740,27 @@ bool handleThermostatLowLoadMode(bool switchedOn)
         if (currentBoilerLevel == BoilerLevel::PumpOnly)
         {
             // Keep Pump Only level, but switch to Low level afterwards.
-            changeBoilerLevel = BoilerLevel::Low;
+            if (changeBoilerLevel == BoilerLevel::Thermostat)
+            {
+                changeBoilerLevel = BoilerLevel::Low;
+                WiFiSM.logEvent(F("Start low-load at %s"), formatTime("%H:%M", changeBoilerLevelTime));
+            }
         }
         else
         {
-            if (switchedOn || !PersistentData.usePumpModulation)
+            if (currentBoilerLevel == BoilerLevel::Thermostat)
+                WiFiSM.logEvent(F("Low-load started"));
+
+            if (switchedOn || !PersistentData.usePumpModulation || currentBoilerLevel == BoilerLevel::Thermostat)
             {
                 // Keep boiler at Low level for a while (prevent on/off modulation)
                 setBoilerLevel(BoilerLevel::Low, TSET_OVERRIDE_DURATION);
             }
             else
             {
-                setBoilerLevel(BoilerLevel::Off);
+                // Thermostat switched CH off and pump modulation is on.
+                // Switch CH off, but keep the TSet override (for a while). 
+                setBoilerLevel(BoilerLevel::Off, TSET_OVERRIDE_DURATION);
             }
         }
     }
@@ -780,15 +782,18 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
             // Thermostat switched CH on
             if (!handleThermostatLowLoadMode(true) && PersistentData.boilerOnDelay != 0)
             {
-                // Keep boiler at Pump Only level for a while (give heat pump a headstart)
+                // Keep boiler at Pump Only level for a while (give heatpump a headstart)
                 setBoilerLevel(BoilerLevel::PumpOnly, PersistentData.boilerOnDelay);
+                WiFiSM.logEvent(F("Pump-only until %s"), formatTime("%H:%M", changeBoilerLevelTime));
             }
         }
         else if (!masterCHEnable && lastMasterCHEnable)
         {
             // Thermostat switched CH off
-            if (!handleThermostatLowLoadMode(false) && pwmDutyCycle < 1)
+            if (!handleThermostatLowLoadMode(false) && currentBoilerLevel != BoilerLevel::Thermostat)
             {
+                // Not in low load mode; cancel pending override.
+                WiFiSM.logEvent(F("Override %s stopped"), BoilerLevelNames[currentBoilerLevel]);
                 pwmDutyCycle = 1;
                 setBoilerLevel(BoilerLevel::Thermostat);
             }
@@ -803,6 +808,7 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
             {
                 // Let thermostat control boiler TSet again.
                 setBoilerLevel(BoilerLevel::Thermostat);
+                WiFiSM.logEvent(F("Low-load stopped"));
             }
         }
     }
@@ -813,20 +819,24 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
         {
             bool pwmPending = pwmDutyCycle < 1;
             float tSet = getDecimal(otFrame.dataValue);
-            if (tSet < PersistentData.minTSet)
+            if (tSet >= 15 && tSet < PersistentData.minTSet)
             {
                 // Requested TSet below configured minimum; use PWM.
                 const float pwmFloor = 20;
                 float pwmRange = PersistentData.minTSet + 5 - pwmFloor;
                 pwmDutyCycle = std::max((tSet - pwmFloor) / pwmRange, 0.1F);
                 if (!pwmPending)
+                {
                     setBoilerLevel(BoilerLevel::Low, pwmDutyCycle * PWM_PERIOD);
+                    WiFiSM.logEvent(F("PWM started: %0.0f%%. TSet=%0.1f"), pwmDutyCycle * 100, tSet);
+                }
             }
             else if (pwmPending)
             {
-                // Requested TSet above configured minimum; cancel PWM.
+                // Requested TSet is below 15 or above configured minimum; cancel PWM.
                 pwmDutyCycle = 1;
                 setBoilerLevel(BoilerLevel::Thermostat);
+                WiFiSM.logEvent(F("PWM stopped. TSet=%0.1f"), tSet);
             }
         }
     }
@@ -867,7 +877,7 @@ void handleThermostatResponse(OpenThermGatewayMessage otFrame)
         int8_t maxTSet = getInteger(otFrame.dataValue);
         if (maxTSet != boilerTSet[BoilerLevel::High])
         {
-            logEvent(F("Max CH Water Setpoint is changed (by OTGW reset?)"));
+            WiFiSM.logEvent(F("Max CH Water setpoint is changed (by OTGW reset?)"));
             otgwInitializeTime = currentTime;
         }
     }
@@ -1089,8 +1099,11 @@ void handleHttpOpenThermRequest()
     if ((burnerStarts == DATA_VALUE_NONE) || (burnerStarts == 0))
         avgBurnerOnTime = 0.0;
     else
-        avgBurnerOnTime =  float(boilerResponses[OpenThermDataId::BoilerBurnerHours] * 3600)  
-            / boilerResponses[OpenThermDataId::BoilerBurnerStarts]; 
+    {
+        int totalBurnerHours = boilerResponses[OpenThermDataId::BoilerBurnerHours] 
+            + boilerResponses[OpenThermDataId::BoilerDHWBurnerHours];
+        avgBurnerOnTime =  float(totalBurnerHours * 3600) / burnerStarts; 
+    }
 
     Html.writeHeader(F("Current OpenTherm values"), true, true);
 
@@ -1356,7 +1369,7 @@ void handleHttpEventLogRequest()
     if (WiFiSM.shouldPerformAction(F("clear")))
     {
         EventLog.clear();
-        logEvent(F("Event log cleared."));
+        WiFiSM.logEvent(F("Event log cleared."));
     }
 
     Html.writeHeader(F("Event log"), true, true);

@@ -56,9 +56,7 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName, uint
     _isTimeServerAvailable = false;
     _resetTime = 0;
 
-    String event = "Booted from ";
-    event += getResetReason();
-    logEvent(event);
+    logEvent(F("Booted from %s"), getResetReason().c_str());
 
     ArduinoOTA.onStart(
         [this]() 
@@ -104,13 +102,26 @@ time_t WiFiStateMachine::getCurrentTime()
 }
 
 
-void WiFiStateMachine::logEvent(String msg)
+void WiFiStateMachine::logEvent(String format, ...)
 {
-    Tracer tracer(F("WiFiStateMachine::logEvent"), msg.c_str());
+    va_list args;
+    va_start(args, format);
+    vsnprintf(_logMessage, sizeof(_logMessage), format.c_str(), args);
+    va_end(args);
+
+    _logMessage[sizeof(_logMessage)-1] = 0; // Ensure the string is always null-terminated
+
+    logEvent(_logMessage);
+}
+
+
+void WiFiStateMachine::logEvent(const char* msg)
+{
+    Tracer tracer(F("WiFiStateMachine::logEvent"), msg);
 
     size_t timestamp_size = 23; // strlen("2019-01-30 12:23:34 : ") + 1;
 
-    char* event = new char[timestamp_size + msg.length()];
+    char* event = new char[timestamp_size + strlen(msg)];
 
     if (_isTimeServerAvailable)
     {
@@ -120,7 +131,7 @@ void WiFiStateMachine::logEvent(String msg)
     else
         snprintf(event, timestamp_size, "@ %u ms : ", static_cast<uint32_t>(millis()));
     
-    strcat(event, msg.c_str());
+    strcat(event, msg);
 
     if (_eventStringLogPtr == nullptr)
     {
@@ -168,9 +179,7 @@ void WiFiStateMachine::initializeAP()
         TRACE(F("Unable to start Access Point\n"));
 
     _ipAddress = WiFi.softAPIP();
-    String event = F("Started Access Point mode. IP address: ");
-    event += getIPAddress();
-    logEvent(event);
+    logEvent(F("Started Access Point mode. IP address: %s"), getIPAddress().c_str());
 }
 
 
@@ -339,9 +348,7 @@ void WiFiStateMachine::run()
             WiFi.printDiag(DEBUG_ESP_PORT);
 #endif
             _ipAddress = WiFi.localIP();
-            event = F("WiFi connected. IP address: ");
-            event += getIPAddress();
-            logEvent(event);
+            logEvent(F("WiFi connected. IP address: %s"), getIPAddress().c_str());
             ArduinoOTA.begin();
             _webServer.begin();
             setState(WiFiInitState::TimeServerInitializing);
@@ -381,9 +388,7 @@ void WiFiStateMachine::run()
         case WiFiInitState::TimeServerSynced:
             if (_isTimeServerAvailable)
             {
-                String event = F("Time synchronized using NTP server: ");
-                event += _timeServer.NTPServer; 
-                logEvent(event);
+                logEvent(F("Time synchronized using NTP server: %s"), _timeServer.NTPServer);
             }
             setState(WiFiInitState::Initialized);
             break;
