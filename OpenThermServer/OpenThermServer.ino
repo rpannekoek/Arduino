@@ -62,7 +62,7 @@
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeText = "text/plain";
 
-const char* BoilerLevelNames[5] = {"Off", "Pump only", "Low", "High", "Thermostat"};
+const char* BoilerLevelNames[5] = {"Off", "Pump-only", "Low", "High", "Thermostat"};
 
 enum BoilerLevel // Unscoped enum so it can be used as array index without casting
 {
@@ -268,6 +268,7 @@ void loop()
     // Scheduled Boiler TSet change (incl. forced PWM)
     if ((changeBoilerLevelTime != 0) && (currentTime >= changeBoilerLevelTime))
     {
+        changeBoilerLevelTime = 0;
         if (pwmDutyCycle < 1)
         {
             if (currentBoilerLevel == BoilerLevel::Off)
@@ -276,16 +277,23 @@ void loop()
                 setBoilerLevel(BoilerLevel::Off, (1.0F - pwmDutyCycle) * PWM_PERIOD);
             else
             {
-                WiFiSM.logEvent(F("PWM stopped. Unexpected level: %s"), BoilerLevelNames[currentBoilerLevel]);
                 pwmDutyCycle = 1;
+                WiFiSM.logEvent(F("PWM stopped. Unexpected level: %s"), BoilerLevelNames[currentBoilerLevel]);
                 setBoilerLevel(BoilerLevel::Thermostat);
             }
         }
+        else if (changeBoilerLevel == BoilerLevel::Thermostat)
+        {
+            WiFiSM.logEvent(F("Override %s stopped"), BoilerLevelNames[currentBoilerLevel]);
+            setBoilerLevel(BoilerLevel::Thermostat);
+        }
         else
         {
-            changeBoilerLevelTime = 0;
-            setBoilerLevel(changeBoilerLevel);
-            WiFiSM.logEvent(F("Override changed to %s"), BoilerLevelNames[changeBoilerLevel]);
+            WiFiSM.logEvent(
+                F("Override %s changed to %s"),
+                BoilerLevelNames[currentBoilerLevel],
+                BoilerLevelNames[changeBoilerLevel]);
+            setBoilerLevel(changeBoilerLevel, TSET_OVERRIDE_DURATION);
         }
         return;
     }
@@ -492,12 +500,13 @@ bool setBoilerLevel(BoilerLevel level, time_t duration)
     bool success;
     if (level == BoilerLevel::Off)
         success = OTGW.sendCommand("CH", "0");
-    else if ((level == BoilerLevel::Low) && (currentBoilerLevel == BoilerLevel::Off))
-        success = OTGW.sendCommand("CH", "1");
     else
     {
         sprintf(stringBuffer, "%d", boilerTSet[level]);
         success = OTGW.sendCommand("CS", stringBuffer);
+
+        if (success && (currentBoilerLevel == BoilerLevel::Off))
+            success = OTGW.sendCommand("CH", "1");
     }
 
     if (!success)
