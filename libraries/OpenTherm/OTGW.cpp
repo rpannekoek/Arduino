@@ -15,8 +15,8 @@ static const char* _slaveStatusNames[7] = {"Fault", "CH", "DHW", "Flame", "Cool"
 static const char* _faultFlagNames[6] = {"Svc", "Lockout", "PWater", "Flame", "PAir", "TWater"};
 
 
-OpenThermGateway::OpenThermGateway(Stream& serial, uint8_t resetPin)
-    : _serial(serial), _resetPin(resetPin)
+OpenThermGateway::OpenThermGateway(Stream& serial, uint8_t resetPin, uint32_t readTimeout)
+    : _serial(serial), _resetPin(resetPin), _responseTimeoutMs(readTimeout)
 {
     memset(errors, 0, sizeof(errors));
     resets = 0;
@@ -81,30 +81,59 @@ uint8_t OpenThermGateway::feedWatchdog()
 }
 
 
+bool OpenThermGateway::readLine()
+{
+    int i = 0;
+    uint32_t millis = 0;
+    const uint32_t waitMs = 10;
+    const uint32_t timeoutMs = 1000;
+    do
+    {
+        int c = _serial.read();
+        if (c < 0)
+        {
+            delay(waitMs);
+            millis += waitMs;
+            if (millis > timeoutMs)
+            {
+                _otgwMessage[i] = 0;
+                return false;
+            }
+        }
+        else if (c >= ' ')
+            _otgwMessage[i++] = c;
+        else if (c == '\n')
+            break;
+    }
+    while (i < sizeof(_otgwMessage) - 1);
+    
+    _otgwMessage[i] = 0;
+    return true;
+}
+
+
 OpenThermGatewayMessage OpenThermGateway::readMessage()
 {
     Tracer tracer(F("OpenThermGateway::readMessage"));
 
     OpenThermGatewayMessage result;
 
-    char otgwMessage[BUFFER_SIZE];
-    size_t bytesRead = _serial.readBytesUntil('\n',  otgwMessage, sizeof(otgwMessage));
-    if (bytesRead < 2) 
+    if (!readLine())
     {
-        result.message = F("[Timeout]");
+        TRACE(F("Read timeout\n"));
+        result.message = _otgwMessage;
         result.direction = OpenThermGatewayDirection::Unexpected;
         return result;
     }
-    otgwMessage[bytesRead] = 0;
-    result.message = otgwMessage;
-    result.message.trim();
-    TRACE(F("Message from OTGW: '%s'\n"), result.message.c_str());
+
+    TRACE(F("Message from OTGW: '%s'\n"), _otgwMessage);
+    result.message = _otgwMessage;
 
     // Check for gateway errors
     unsigned int errorCode;
-    if (strncmp(otgwMessage, "Error", 5) == 0)
+    if (strncmp(_otgwMessage, "Error", 5) == 0)
     {
-        if ((sscanf(otgwMessage + 6, "%x", &errorCode) == 1) && (errorCode > 0) && (errorCode < 5))
+        if ((sscanf(_otgwMessage + 6, "%x", &errorCode) == 1) && (errorCode > 0) && (errorCode < 5))
             errors[errorCode]++;
         else
             errors[0]++;
@@ -116,7 +145,7 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
     unsigned int otMsgType;
     unsigned int otDataId;
     unsigned int otDataValue;
-    int mappedItems = sscanf(otgwMessage + 1, "%02x%02x%04x", &otMsgType, &otDataId, &otDataValue); 
+    int mappedItems = sscanf(_otgwMessage + 1, "%02x%02x%04x", &otMsgType, &otDataId, &otDataValue); 
     if (mappedItems != 3)
     {
         TRACE(F("Failed parsing OpenTherm message. Mapped items: %d\n"), mappedItems);
@@ -127,7 +156,7 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
     result.dataId = static_cast<OpenThermDataId>(otDataId);
     result.dataValue = otDataValue;
 
-    switch (otgwMessage[0])
+    switch (_otgwMessage[0])
     {
         case 'T':
             result.direction = OpenThermGatewayDirection::FromThermostat;
@@ -159,54 +188,45 @@ OpenThermGatewayMessage OpenThermGateway::readMessage()
 }
 
 
-bool OpenThermGateway::sendCommand(const char* cmd, const char* value, char* response, size_t bufferSize)
+bool OpenThermGateway::sendCommand(String cmd, String value)
 {
-    Tracer tracer(F("OpenThermGateway::sendCommand"), cmd);
+    Tracer tracer(F("OpenThermGateway::sendCommand"), cmd.c_str());
 
-    char otgwCommand[BUFFER_SIZE];
-    int cmdBufferSize = sizeof(otgwCommand);
-    if (snprintf(otgwCommand, cmdBufferSize, "%s=%s\r\n", cmd, value) >= cmdBufferSize)
-    {
-        TRACE(F("Command too long"));
-        return false;
-    }
-
-    char* otgwResponse = response;
-    if (response == nullptr)
-    {
-        bufferSize = BUFFER_SIZE;
-        otgwResponse = new char[bufferSize];
-    }
-
-    int retries = 0;
-    bool responseReceived;
-    do
+    for (int retries = 0; retries < 2; retries++)
     {
         // Send OTWG command
-        _serial.print(otgwCommand);
+        _serial.print(cmd);
+        _serial.print('=');
+        _serial.println(value);
 
         // Read OTWG response
-        for (int i = 0; i < 3; i++)
+        // There may be a backlog of non-response messages in the queue, which we will skip here.
+        uint32_t timeoutMillis = millis() + _responseTimeoutMs;
+        do
         {
-            feedWatchdog();
-
-            size_t bytesRead = _serial.readBytesUntil('\n', otgwResponse, bufferSize - 1);
-            otgwResponse[bytesRead] = 0;
-            TRACE(F("OTGW: %s\n"), otgwResponse);
-            responseReceived = (strncmp(otgwResponse, cmd, 2) == 0);
-            if (responseReceived)
-                break;
+            if (readLine())
+            {
+                if (strncmp(_otgwMessage, cmd.c_str(), 2) == 0)
+                {
+                    TRACE(F("Response: '%s'\n"), _otgwMessage);
+                    return true;
+                }
+                else
+                    TRACE(F("Non-response: '%s'\n"), _otgwMessage);
+            }
+            else
+                TRACE(F("."));
         }
+        while (millis() < timeoutMillis);
 
-        if (!responseReceived)
-            TRACE(F("No valid response from OTGW\n"));
+        // No proper response message is received within the given timeout.
+        // Feed the OTGW watchdog and retry sending the command once more.
+        TRACE(F("Response timeout\n"));
+        feedWatchdog();  
+    }
 
-    } while (!responseReceived && (retries++ < 1));
-
-    if (response == nullptr)
-        delete otgwResponse;
-
-    return responseReceived;
+    // No proper response message is received even after a retry.
+    return false;
 }
 
 

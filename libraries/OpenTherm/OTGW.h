@@ -74,14 +74,14 @@ class OpenThermGateway
         uint32_t errors[5];
         uint32_t resets;
 
-        OpenThermGateway(Stream& serial, uint8_t resetPin);
+        OpenThermGateway(Stream& serial, uint8_t resetPin, uint32_t responseTimeoutMs);
 
         void reset();
         bool initWatchdog(uint8_t timeoutSeconds);
         int readWatchdogData(uint8_t addr);
         uint8_t feedWatchdog();
         OpenThermGatewayMessage readMessage();
-        bool sendCommand(const char* cmd, const char* value, char* response = nullptr, size_t bufferSize = 2);
+        bool sendCommand(String cmd, String value);
         bool setResponse(OpenThermDataId dataId, float value);
 
         static const char* getMasterStatus(uint16_t dataValue);
@@ -89,9 +89,18 @@ class OpenThermGateway
         static const char* getFaultFlags(uint16_t dataValue);
         static float getDecimal(uint16_t dataValue);
 
+        inline const char* getResponse()
+        {
+            return _otgwMessage;
+        }
+
     private:
         Stream& _serial;
         uint8_t _resetPin;
+        uint32_t _responseTimeoutMs;
+        char _otgwMessage[64];
+
+        bool readLine();
 };
 
 

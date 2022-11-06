@@ -40,6 +40,11 @@ int HeatMonClient::requestData()
             _lastError = F("Connection failed");
             break;
 
+        case HTTPC_ERROR_SEND_HEADER_FAILED:
+        case HTTPC_ERROR_SEND_PAYLOAD_FAILED:
+            _lastError = F("Send failed");
+            break;
+
         case HTTPC_ERROR_READ_TIMEOUT:
             _lastError = F("Read timeout");
             break;

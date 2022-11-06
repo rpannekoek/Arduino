@@ -21,9 +21,9 @@
 #define ICON "/apple-touch-icon.png"
 #define CSS "/styles.css"
 #define SECONDS_PER_DAY (24 * 3600)
+#define SET_BOILER_RETRY_INTERVAL 6
 #define OTGW_WATCHDOG_INTERVAL 10
 #define OTGW_STARTUP_TIME 5
-#define OTGW_TIMEOUT 60
 #define WIFI_TIMEOUT_MS 2000
 #define HTTP_POLL_INTERVAL 60
 #define DATA_VALUE_NONE 0xFFFF
@@ -39,6 +39,14 @@
 #define GLOBAL_LOG_INTERVAL (30 * 60)
 #define HEATMON_POLL_INTERVAL 60
 #define MAX_HEATPUMP_POWER 4
+
+#ifdef DEBUG_ESP_PORT
+    #define OTGW_TIMEOUT (5 * 60)
+    #define OTGW_RESPONSE_TIMEOUT_MS 5000
+#else
+    #define OTGW_TIMEOUT 60
+    #define OTGW_RESPONSE_TIMEOUT_MS 2000
+#endif
 
 #define LED_ON 0
 #define LED_OFF 1
@@ -90,7 +98,7 @@ const char* logHeaders[] PROGMEM =
     "Pheatpump"
 };
 
-OpenThermGateway OTGW(Serial, 14);
+OpenThermGateway OTGW(Serial, 14, OTGW_RESPONSE_TIMEOUT_MS);
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
@@ -136,9 +144,9 @@ time_t lastOTLogSyncTime = 0;
 BoilerLevel currentBoilerLevel = BoilerLevel::Thermostat;
 BoilerLevel changeBoilerLevel;
 time_t changeBoilerLevelTime = 0;
+int setBoilerLevelRetries = 0; 
 float pwmDutyCycle = 1;
 
-char stringBuffer[128];
 String otgwResponse;
 
 
@@ -161,7 +169,6 @@ void setup()
     digitalWrite(LED_BUILTIN, LED_ON);
 
     Serial.begin(9600);
-    Serial.setTimeout(1000);
     Serial.println("Boot"); // Flush garbage caused by ESP boot output.
 
     #ifdef DEBUG_ESP_PORT
@@ -194,8 +201,6 @@ void setup()
     WebServer.serveStatic(CSS, SPIFFS, CSS, cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
     
-    memset(stringBuffer, 0, sizeof(stringBuffer));
-
     memset(thermostatRequests, 0xFF, sizeof(thermostatRequests));
     memset(boilerResponses, 0xFF, sizeof(boilerResponses));
     memset(otgwRequests, 0xFF, sizeof(otgwRequests));
@@ -455,6 +460,7 @@ void resetOpenThermGateway()
     OTGW.reset();
     otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
     otgwTimeout = otgwInitializeTime + OTGW_TIMEOUT;
+    currentBoilerLevel = BoilerLevel::Thermostat;
 
     WiFiSM.logEvent(F("OTGW reset"));
 }
@@ -482,8 +488,8 @@ bool setBoilerLevel(BoilerLevel level)
 
 bool setBoilerLevel(BoilerLevel level, time_t duration)
 {
-    Tracer tracer(F("setBoilerLevel"));
-    TRACE(F("level: %d, duration: %d\n"), level, duration);
+    Tracer tracer(F("setBoilerLevel"), BoilerLevelNames[level]);
+    TRACE(F("Duration: %d\n"), static_cast<int>(duration));
 
     if (duration != 0)
     {
@@ -502,20 +508,37 @@ bool setBoilerLevel(BoilerLevel level, time_t duration)
         success = OTGW.sendCommand("CH", "0");
     else
     {
-        sprintf(stringBuffer, "%d", boilerTSet[level]);
-        success = OTGW.sendCommand("CS", stringBuffer);
+        success = OTGW.sendCommand("CS", String(boilerTSet[level]));
 
         if (success && (currentBoilerLevel == BoilerLevel::Off))
             success = OTGW.sendCommand("CH", "1");
     }
 
-    if (!success)
+    if (success)
     {
-        WiFiSM.logEvent(F("Unable to set boiler level"));
+        currentBoilerLevel = level;
+        setBoilerLevelRetries = 0;
+    }
+    else if (++setBoilerLevelRetries < 3)
+    {
+        changeBoilerLevel = level;
+        changeBoilerLevelTime = WiFiSM.getCurrentTime() + SET_BOILER_RETRY_INTERVAL;
+        WiFiSM.logEvent(
+            F("Unable to set boiler to %s. Retry %d at %s."),
+            BoilerLevelNames[level],
+            setBoilerLevelRetries,
+            formatTime("%H:%M:%S", changeBoilerLevelTime));
+    }
+    else
+    {
+        WiFiSM.logEvent(
+            F("Unable to set boiler to %s after %d attempts."),
+            BoilerLevelNames[level],
+            setBoilerLevelRetries);
+        setBoilerLevelRetries = 0;
         resetOpenThermGateway();
     }
 
-    currentBoilerLevel = level;
     return success;
 }
 
@@ -789,8 +812,8 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
             if (!handleThermostatLowLoadMode(true) && PersistentData.boilerOnDelay != 0)
             {
                 // Keep boiler at Pump Only level for a while (give heatpump a headstart)
-                setBoilerLevel(BoilerLevel::PumpOnly, PersistentData.boilerOnDelay);
-                WiFiSM.logEvent(F("Pump-only until %s"), formatTime("%H:%M", changeBoilerLevelTime));
+                if (setBoilerLevel(BoilerLevel::PumpOnly, PersistentData.boilerOnDelay))
+                    WiFiSM.logEvent(F("Pump-only until %s"), formatTime("%H:%M", changeBoilerLevelTime));
             }
         }
         else if (!masterCHEnable && lastMasterCHEnable)
@@ -813,8 +836,8 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
             if (currentBoilerLevel == BoilerLevel::Low && pwmDutyCycle == 1)
             {
                 // Let thermostat control boiler TSet again.
-                setBoilerLevel(BoilerLevel::Thermostat);
                 WiFiSM.logEvent(F("Low-load stopped"));
+                setBoilerLevel(BoilerLevel::Thermostat);
             }
         }
     }
@@ -833,16 +856,16 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
                 pwmDutyCycle = std::max((tSet - pwmFloor) / pwmRange, 0.1F);
                 if (!pwmPending)
                 {
-                    setBoilerLevel(BoilerLevel::Low, pwmDutyCycle * PWM_PERIOD);
                     WiFiSM.logEvent(F("PWM started: %0.0f%%. TSet=%0.1f"), pwmDutyCycle * 100, tSet);
+                    setBoilerLevel(BoilerLevel::Low, pwmDutyCycle * PWM_PERIOD);
                 }
             }
             else if (pwmPending)
             {
                 // Requested TSet is below 15 or above configured minimum; cancel PWM.
                 pwmDutyCycle = 1;
-                setBoilerLevel(BoilerLevel::Thermostat);
                 WiFiSM.logEvent(F("PWM stopped. TSet=%0.1f"), tSet);
+                setBoilerLevel(BoilerLevel::Thermostat);
             }
         }
     }
@@ -1399,12 +1422,25 @@ void handleHttpCommandFormRequest()
 {
     Tracer tracer(F("handleHttpCommandFormRequest"));
 
+    String cmd = WebServer.arg(F("cmd"));
+    String value = WebServer.arg(F("value"));
+
+    if (cmd.length() == 0) 
+    {
+        cmd = F("PR");
+        value = F("A");
+    }
+
     Html.writeHeader(F("Send OTGW Command"), true, true);
+
+    HttpResponse.printf(F("<p><a href=\"?cmd=PR&value=A\">OTGW version</a></p>\r\n"));
+    HttpResponse.printf(F("<p><a href=\"?cmd=CS&value=%d\">Set boiler level Low</a></p>\r\n"), boilerTSet[BoilerLevel::Low]);
+    HttpResponse.printf(F("<p><a href=\"?cmd=CS&value=0\">Stop override</a></p>\r\n"));
 
     HttpResponse.println(F("<form action=\"/cmd\" method=\"POST\">"));
     HttpResponse.println(F("<table>"));
-    Html.writeTextBox(F("cmd"), F("Command"), F("PR"), 2);
-    Html.writeTextBox(F("value"), F("Value"), F("A"), 16);
+    Html.writeTextBox(F("cmd"), F("Command"), cmd, 2);
+    Html.writeTextBox(F("value"), F("Value"), value, 16);
     HttpResponse.println(F("</table>"));
     HttpResponse.println(F("<input type=\"submit\">"));
     HttpResponse.println(F("</form>"));
@@ -1433,11 +1469,13 @@ void handleHttpCommandFormPost()
         otgwResponse = F("Invalid command. Must be 2 characters.");
     else
     {
-        bool success = OTGW.sendCommand(cmd.c_str(), value.c_str(), stringBuffer, sizeof(stringBuffer));
-        if (success)
-            otgwResponse = stringBuffer;
+        if (OTGW.sendCommand(cmd, value))
+            otgwResponse = OTGW.getResponse();
         else
-            otgwResponse = F("No valid response received from OTGW.");
+        {
+            otgwResponse = F("No valid response received. ");
+            otgwResponse += OTGW.getResponse();
+        }
     }
 
     handleHttpCommandFormRequest();
