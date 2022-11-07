@@ -36,7 +36,6 @@
 #define WEATHER_SERVICE_POLL_INTERVAL (15 * 60)
 #define WEATHER_SERVICE_RESPONSE_TIMEOUT 10
 #define FTP_RETRY_INTERVAL (30 * 60)
-#define GLOBAL_LOG_INTERVAL (30 * 60)
 #define HEATMON_POLL_INTERVAL 60
 #define MAX_HEATPUMP_POWER 4
 
@@ -128,6 +127,11 @@ time_t lastHeatmonUpdateTime = 0;
 time_t weatherServicePollTime = 0;
 time_t weatherServiceTimeout = 0;
 time_t lastWeatherUpdateTime = 0;
+
+time_t lowLoadLastOn = 0;
+time_t lowLoadLastOff = 0;
+uint32_t lowLoadPeriod = 0;
+uint32_t lowLoadDutyInterval = 0;
 
 bool updateTOutside = false;
 bool updateHeatmonData = false;
@@ -282,16 +286,12 @@ void loop()
                 setBoilerLevel(BoilerLevel::Off, (1.0F - pwmDutyCycle) * PWM_PERIOD);
             else
             {
-                pwmDutyCycle = 1;
-                WiFiSM.logEvent(F("PWM stopped. Unexpected level: %s"), BoilerLevelNames[currentBoilerLevel]);
-                setBoilerLevel(BoilerLevel::Thermostat);
+                WiFiSM.logEvent(F("Unexpected level for PWM: %s"), BoilerLevelNames[currentBoilerLevel]);
+                cancelOverride();
             }
         }
         else if (changeBoilerLevel == BoilerLevel::Thermostat)
-        {
-            WiFiSM.logEvent(F("Override %s stopped"), BoilerLevelNames[currentBoilerLevel]);
-            setBoilerLevel(BoilerLevel::Thermostat);
-        }
+            cancelOverride();
         else
         {
             WiFiSM.logEvent(
@@ -458,8 +458,10 @@ void resetOpenThermGateway()
     Tracer tracer(F("resetOpenThermGateway"));
 
     OTGW.reset();
+
     otgwInitializeTime = currentTime + OTGW_STARTUP_TIME;
     otgwTimeout = otgwInitializeTime + OTGW_TIMEOUT;
+
     currentBoilerLevel = BoilerLevel::Thermostat;
 
     WiFiSM.logEvent(F("OTGW reset"));
@@ -540,6 +542,16 @@ bool setBoilerLevel(BoilerLevel level, time_t duration)
     }
 
     return success;
+}
+
+
+void cancelOverride()
+{
+    pwmDutyCycle = 1;
+    lowLoadPeriod = 0;
+    lowLoadDutyInterval = 0;
+    WiFiSM.logEvent(F("Override %s stopped"), BoilerLevelNames[currentBoilerLevel]);
+    setBoilerLevel(BoilerLevel::Thermostat);
 }
 
 
@@ -765,7 +777,6 @@ bool handleThermostatLowLoadMode(bool switchedOn)
 
     if (isThermostatLowLoadMode)
     {
-        pwmDutyCycle = 1;
         if (currentBoilerLevel == BoilerLevel::PumpOnly)
         {
             // Keep Pump Only level, but switch to Low level afterwards.
@@ -777,20 +788,33 @@ bool handleThermostatLowLoadMode(bool switchedOn)
         }
         else
         {
-            if (currentBoilerLevel == BoilerLevel::Thermostat)
-                WiFiSM.logEvent(F("Low-load started"));
-
-            if (switchedOn || !PersistentData.usePumpModulation || currentBoilerLevel == BoilerLevel::Thermostat)
+            if (currentBoilerLevel == BoilerLevel::Thermostat || pwmDutyCycle < 1)
             {
-                // Keep boiler at Low level for a while (prevent on/off modulation)
-                setBoilerLevel(BoilerLevel::Low, TSET_OVERRIDE_DURATION);
+                pwmDutyCycle = 1;
+                WiFiSM.logEvent(F("Low-load started"));
+            }
+
+            BoilerLevel newBoilerLevel = BoilerLevel::Low;
+            if (switchedOn)
+            {
+                if (lowLoadLastOn != 0)
+                    lowLoadPeriod = currentTime - lowLoadLastOn;
+                lowLoadLastOn = currentTime;
             }
             else
             {
-                // Thermostat switched CH off and pump modulation is on.
-                // Switch CH off, but keep the TSet override (for a while). 
-                setBoilerLevel(BoilerLevel::Off, TSET_OVERRIDE_DURATION);
+                if (lowLoadLastOn != 0)
+                    lowLoadDutyInterval = currentTime - lowLoadLastOn;
+                lowLoadLastOff = currentTime;
+
+                if (PersistentData.usePumpModulation && currentBoilerLevel != BoilerLevel::Thermostat)
+                {
+                    // Thermostat switched CH off and pump modulation is on.
+                    // Switch CH off, but keep the TSet override (for a while). 
+                    newBoilerLevel = BoilerLevel::Off;
+                }
             }
+            setBoilerLevel(newBoilerLevel, TSET_OVERRIDE_DURATION);
         }
     }
 
@@ -809,22 +833,27 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
         if (masterCHEnable && !lastMasterCHEnable)
         {
             // Thermostat switched CH on
-            if (!handleThermostatLowLoadMode(true) && PersistentData.boilerOnDelay != 0)
+            if (!handleThermostatLowLoadMode(true))
             {
-                // Keep boiler at Pump Only level for a while (give heatpump a headstart)
-                if (setBoilerLevel(BoilerLevel::PumpOnly, PersistentData.boilerOnDelay))
-                    WiFiSM.logEvent(F("Pump-only until %s"), formatTime("%H:%M", changeBoilerLevelTime));
+                // Thermostat is not in low load mode
+                if (currentBoilerLevel != BoilerLevel::Thermostat)
+                    cancelOverride();
+                else if (PersistentData.boilerOnDelay != 0)
+                {
+                    // Keep boiler at Pump-only level for a while (give heatpump a headstart)
+                    if (setBoilerLevel(BoilerLevel::PumpOnly, PersistentData.boilerOnDelay))
+                        WiFiSM.logEvent(F("Pump-only until %s"), formatTime("%H:%M", changeBoilerLevelTime));
+                }
             }
         }
         else if (!masterCHEnable && lastMasterCHEnable)
         {
             // Thermostat switched CH off
-            if (!handleThermostatLowLoadMode(false) && currentBoilerLevel != BoilerLevel::Thermostat)
+            if (!handleThermostatLowLoadMode(false))
             {
-                // Not in low load mode; cancel pending override.
-                WiFiSM.logEvent(F("Override %s stopped"), BoilerLevelNames[currentBoilerLevel]);
-                pwmDutyCycle = 1;
-                setBoilerLevel(BoilerLevel::Thermostat);
+                // Thermostat is not in low load mode
+                if (currentBoilerLevel != BoilerLevel::Thermostat)
+                    cancelOverride();
             }
         }        
     }
@@ -832,13 +861,11 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
     {
         if (otFrame.dataValue != 0 && thermostatRequests[OpenThermDataId::MaxRelModulation] == 0)
         {
-            // Thermostat started requesting more than minimal Modulation (no longer in "Low Load Mode").
+            // Thermostat started requesting more than minimal Modulation (no longer in low-load mode).
+            // If we're still in low-load mode and CH is on, we cancel the override here.
+            // If the CH is off, it will be cancelled later when CH is switched on again.
             if (currentBoilerLevel == BoilerLevel::Low && pwmDutyCycle == 1)
-            {
-                // Let thermostat control boiler TSet again.
-                WiFiSM.logEvent(F("Low-load stopped"));
-                setBoilerLevel(BoilerLevel::Thermostat);
-            }
+                cancelOverride();
         }
     }
     else if (otFrame.dataId == OpenThermDataId::TSet)
@@ -863,9 +890,8 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
             else if (pwmPending)
             {
                 // Requested TSet is below 15 or above configured minimum; cancel PWM.
-                pwmDutyCycle = 1;
                 WiFiSM.logEvent(F("PWM stopped. TSet=%0.1f"), tSet);
-                setBoilerLevel(BoilerLevel::Thermostat);
+                cancelOverride();
             }
         }
     }
@@ -1002,40 +1028,40 @@ void handleHttpRootRequest()
         writeOpenThermTemperatureRow(F("T<sub>return</sub>"), F("waterBar"), lastOTLogEntryPtr->tReturn); 
         writeOpenThermTemperatureRow(F("T<sub>buffer</sub>"), F("waterBar"), lastOTLogEntryPtr->tBuffer); 
         writeOpenThermTemperatureRow(F("T<sub>outside</sub>"), F("outsideBar"), lastOTLogEntryPtr->tOutside, -10, 30); 
-
-        if (HeatMon.isInitialized)
-        {
-            HttpResponse.print(F("<tr><th>P<sub>heatpump</sub></th>"));
-            Html.writeCell(HeatMon.pIn, F("%0.2f kW"));
-            HttpResponse.print(F("<td class=\"graph\">"));
-            Html.writeBar(HeatMon.pIn / MAX_HEATPUMP_POWER, F("powerBar"), true, false);
-            HttpResponse.println(F("</td></tr>"));
-        }
-
-        if (pwmDutyCycle < 1)
-        {
-            HttpResponse.printf(
-                F("<tr><th>PWM</sub></th><td>%0.0f %%</td><td class=\"graph\">"),
-                pwmDutyCycle * 100);
-            Html.writeBar(pwmDutyCycle, F("overrideBar"), true, false);
-            HttpResponse.println(F("</td></tr>"));
-        }
-        else
-        {
-            time_t overrideTimeLeft = 0;
-            if (changeBoilerLevelTime != 0)
-            {
-                overrideTimeLeft = changeBoilerLevelTime - currentTime;
-            }
-            HttpResponse.printf(
-                F("<tr><th>Override</sub></th><td>%s</td><td class=\"graph\">"),
-                formatTimeSpan(overrideTimeLeft));
-            Html.writeBar(float(overrideTimeLeft) / TSET_OVERRIDE_DURATION, F("overrideBar"), true, false);
-            HttpResponse.println(F("</td></tr>"));
-        }
-
-        HttpResponse.println(F("</table>"));
     }
+
+    if (HeatMon.isInitialized)
+    {
+        HttpResponse.print(F("<tr><th>P<sub>heatpump</sub></th>"));
+        Html.writeCell(HeatMon.pIn, F("%0.2f kW"));
+        HttpResponse.print(F("<td class=\"graph\">"));
+        Html.writeBar(HeatMon.pIn / MAX_HEATPUMP_POWER, F("powerBar"), true, false);
+        HttpResponse.println(F("</td></tr>"));
+    }
+
+    time_t overrideTimeLeft =(changeBoilerLevelTime == 0) ? 0 : changeBoilerLevelTime - currentTime;
+    const char* duration = (overrideTimeLeft == 0) ? "" : formatTimeSpan(overrideTimeLeft, false); 
+    HttpResponse.printf(
+        F("<tr><th>Override</th><td>%s %s</td><td class=\"graph\">"),
+        BoilerLevelNames[currentBoilerLevel],
+        duration);
+    Html.writeBar(float(overrideTimeLeft) / TSET_OVERRIDE_DURATION, F("overrideBar"), true, false);
+    HttpResponse.println(F("</td></tr>"));
+
+    if (lowLoadPeriod != 0 || pwmDutyCycle < 1)
+    {
+        float dutyCycle = (pwmDutyCycle < 1) ? pwmDutyCycle : float(lowLoadDutyInterval) / lowLoadPeriod;
+        const char* pwmType = (pwmDutyCycle < 1) ? "Forced" : "Low-load";
+
+        HttpResponse.printf(
+            F("<tr><th>PWM</sub></th><td>%s %0.0f %%</td><td class=\"graph\">"),
+            pwmType,
+            dutyCycle * 100);
+        Html.writeBar(dutyCycle, F("overrideBar"), true, false);
+        HttpResponse.println(F("</td></tr>"));
+    }
+
+    HttpResponse.println(F("</table>"));
 
     writeStatisticsPerDay();
 
@@ -1163,6 +1189,10 @@ void handleHttpOpenThermRequest()
         HttpResponse.printf(F("<tr><td>Change to</td><td>%s</td></tr>\r\n"), BoilerLevelNames[changeBoilerLevel]);
         HttpResponse.printf(F("<tr><td>Change at</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", changeBoilerLevelTime));
     }
+    if (lowLoadPeriod != 0)
+        HttpResponse.printf(F("<tr><td>Low-load period</td><td>%s</td></tr>\r\n"), formatTimeSpan(lowLoadPeriod, false));
+    if (lowLoadDutyInterval != 0)
+        HttpResponse.printf(F("<tr><td>Low-load duty</td><td>%s</td></tr>\r\n"), formatTimeSpan(lowLoadDutyInterval, false));
     if (lastHeatmonUpdateTime != 0)
         HttpResponse.printf(F("<tr><td>HeatMon update</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastHeatmonUpdateTime));
     if (lastWeatherUpdateTime != 0)
