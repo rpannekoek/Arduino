@@ -2,6 +2,8 @@
 #include <ArduinoJson.h>
 #include <Tracer.h>
 
+#define MIN_CONTENT_LENGTH 100
+
 StaticJsonDocument<256> _response;
 
 // Constructor
@@ -9,6 +11,9 @@ HeatMonClient::HeatMonClient(uint16_t timeout)
 {
     isInitialized = false;
     _httpClient.setTimeout(timeout);
+     // Re-use TCP connection (using HTTP Keep-Alive)?
+     // ESP8266 WebServer Keep-Alive times out after 2 sec, so it's useless to request it.
+    _httpClient.setReuse(false);
 }
 
 bool HeatMonClient::begin(const char* host)
@@ -29,37 +34,35 @@ int HeatMonClient::requestData()
 
     int result = _httpClient.GET();
 
-    switch (result)
+    if (result < 0)
     {
-        case HTTP_CODE_OK:
-            if (!parseJson( _httpClient.getString()))
-                result = 0;
-            break;
-
-        case HTTPC_ERROR_CONNECTION_FAILED:
-            _lastError = F("Connection failed");
-            break;
-
-        case HTTPC_ERROR_SEND_HEADER_FAILED:
-        case HTTPC_ERROR_SEND_PAYLOAD_FAILED:
-            _lastError = F("Send failed");
-            break;
-
-        case HTTPC_ERROR_READ_TIMEOUT:
-            _lastError = F("Read timeout");
-            break;
-
-        default:
-            if (result > 0)
-                _lastError = F("HTTP status code ");
-            else
-                _lastError = F("Error ");
-            _lastError += result;
-            break;
+        _lastError = HTTPClient::errorToString(result);
+        return result;
+    }
+    else if (result != HTTP_CODE_OK)
+    {
+        _lastError = F("HTTP status code ");
+        _lastError += result;
+        return result;
+    }
+    else if (_httpClient.getSize() < MIN_CONTENT_LENGTH)
+    {
+        _lastError = F("Unexpected Content Length: ");
+        _lastError += _httpClient.getSize();
+        return 0;
     }
 
-    TRACE(F("result: %d\n"), result);
-    return result;
+    StreamString jsonResponse;
+    jsonResponse.reserve(_httpClient.getSize());
+
+    int bytesRead = _httpClient.writeToStream(&jsonResponse);
+    if (bytesRead < 0)
+    {
+        _lastError = HTTPClient::errorToString(bytesRead);
+        return bytesRead;
+    }
+
+    return parseJson(jsonResponse) ? HTTP_CODE_OK : 0;
 }
 
 

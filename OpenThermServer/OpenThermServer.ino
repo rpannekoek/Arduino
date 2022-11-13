@@ -1518,8 +1518,8 @@ void handleHttpConfigFormRequest()
 
     Html.writeHeader(F("Configuration"), true, true);
 
-    HttpResponse.println(F("<form action=\"/config\" method=\"POST\">"));
-    HttpResponse.println(F("<table>"));
+    Html.writeFormStart(F("/config"));
+    Html.writeTableStart();
     Html.writeTextBox(CFG_WIFI_SSID, F("WiFi SSID"), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID) - 1);
     Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1);
     Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
@@ -1535,9 +1535,14 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_MIN_TSET, F("Min TSet"), String(PersistentData.minTSet), 2);
     Html.writeTextBox(CFG_BOILER_ON_DELAY, F("Boiler on delay (s)"), String(PersistentData.boilerOnDelay), 4);
     Html.writeCheckbox(CFG_PUMP_MOD, F("Pump Modulation"), PersistentData.usePumpModulation);
-    HttpResponse.println(F("</table>"));
-    HttpResponse.println(F("<input type=\"submit\">"));
-    HttpResponse.println(F("</form>"));
+    Html.writeTableEnd();
+    Html.writeSubmitButton();
+    Html.writeFormEnd();
+
+    if (WiFiSM.shouldPerformAction(F("reset")))
+        WiFiSM.reset();
+    else
+        HttpResponse.printf(F("<p><a href=\"?reset=%u\">Reset ESP</a></p>\r\n"), currentTime);
 
     Html.writeFooter();
 
