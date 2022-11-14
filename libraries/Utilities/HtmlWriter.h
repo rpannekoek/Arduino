@@ -45,6 +45,8 @@ class HtmlWriter
         void writeCell(uint32_t value);
         void writeCell(float value, const __FlashStringHelper* format = nullptr);
 
+        void writePager(int totalPages, int currentPage);
+
     private:
         StringBuilder& _output;
         const char* _icon;

@@ -333,3 +333,19 @@ void HtmlWriter::writeCell(float value, const __FlashStringHelper* format)
     _output.printf(format, value);
     _output.print(F("</td>"));
 }
+
+
+void HtmlWriter::writePager(int totalPages, int currentPage)
+{
+    _output.print(F("<p>Pages: "));
+    for (int i = 0; i < totalPages; i++)
+    {
+        if (i > 0)
+            _output.print(F(" | "));
+        if (i == currentPage)
+            _output.printf(F("%d"), i + 1);
+        else
+            _output.printf(F("<a href='?page=%d'>%d</a>"), i, i + 1);           
+    }
+    _output.println(F("</p>"));
+}

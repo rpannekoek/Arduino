@@ -21,8 +21,8 @@
 #define SECONDS_PER_DAY (24 * 3600)
 #define HTTP_POLL_INTERVAL 60
 #define EVENT_LOG_LENGTH 50
-#define TOPIC_LOG_SIZE 180
-#define TOPIC_LOG_CSV_MAX_SIZE 100
+#define TOPIC_LOG_SIZE 240
+#define TOPIC_LOG_PAGE_SIZE 50
 #define DEFAULT_BAR_LENGTH 60
 #define WIFI_TIMEOUT_MS 2000
 #define FTP_RETRY_INTERVAL (30 * 60)
@@ -51,7 +51,7 @@ const char* ContentTypeJson = "application/json";
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
-StringBuilder HttpResponse(12*1024); // 12 KB HTTP response buffer
+StringBuilder HttpResponse(8 * 1024); // 8 KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, DEFAULT_BAR_LENGTH);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
 StaticLog<TopicLogEntry> TopicLog(TOPIC_LOG_SIZE);
@@ -77,12 +77,6 @@ time_t lastPacketErrorTime = 0;
 time_t topicLogAggregationTime = 0;
 time_t syncFTPTime = 0;
 time_t lastFTPSyncTime = 0;
-
-
-void logEvent(String msg)
-{
-    WiFiSM.logEvent(msg);
-}
 
 
 // Boot code
@@ -112,8 +106,7 @@ void setup()
     WebServer.on("/topiclog", handleHttpTopicLogRequest);
     WebServer.on("/hexdump", handleHttpHexDumpRequest);
     WebServer.on("/test", handleHttpTestRequest);
-    WebServer.on("/json", handleHttpHeishamonJsonRequest);
-    WebServer.on("/json2", handleHttpAquaMonJsonRequest);
+    WebServer.on("/json", handleHttpAquaMonJsonRequest);
     WebServer.on("/sync", handleHttpFtpSyncRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
@@ -178,7 +171,7 @@ void onWiFiInitialized()
         {
             lastPacketErrorTime = currentTime;
             if (PersistentData.logPacketErrors)
-                logEvent(HeatPump.getLastError());
+                WiFiSM.logEvent(HeatPump.getLastError());
         }
         digitalWrite(LED_BUILTIN, LED_OFF);
     }
@@ -187,21 +180,19 @@ void onWiFiInitialized()
     {
         queryAquareaTime += QUERY_AQUAREA_INTERVAL;
         if (!HeatPump.sendQuery())
-            logEvent(F("Failed sending Aquarea query"));
+            WiFiSM.logEvent(F("Failed sending Aquarea query"));
     }
 
     if ((syncFTPTime != 0) && (currentTime >= syncFTPTime) && WiFiSM.isConnected())
     {
         if (trySyncFTP(nullptr))
         {
-            logEvent(F("FTP synchronized"));
+            WiFiSM.logEvent(F("FTP sync"));
             syncFTPTime = 0;
         }
         else
         {
-            String event = F("FTP sync failed: ");
-            event += FTPClient.getLastResponse();
-            logEvent(event);
+            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastResponse());
             syncFTPTime += FTP_RETRY_INTERVAL;
         }
     }
@@ -237,9 +228,9 @@ void antiFreezeControl(int inletTemp, int outletTemp, float compPower)
         if ((std::min(inletTemp, outletTemp) <= antiFreezeOnTemp) || testAntiFreeze)
         {
             antiFreezeActivated = true;
-            logEvent(F("Anti-freeze activated."));
+            WiFiSM.logEvent(F("Anti-freeze activated."));
             if (!HeatPump.setPump(true))
-                logEvent(F("Unable to activate pump."));
+                WiFiSM.logEvent(F("Unable to activate pump."));
         }  
     }
     else
@@ -248,16 +239,16 @@ void antiFreezeControl(int inletTemp, int outletTemp, float compPower)
         if ((std::min(inletTemp, outletTemp) > antiFreezeOffTemp) && !testAntiFreeze)
         {
             antiFreezeActivated = false;
-            logEvent(F("Anti-freeze deactivated."));
+            WiFiSM.logEvent(F("Anti-freeze deactivated."));
 
             // Don't stop pump if compressor started in the meantime.
             if (compPower == 0)
             {
                 if (!HeatPump.setPump(false))
-                    logEvent(F("Unable to deactivate pump."));
+                    WiFiSM.logEvent(F("Unable to deactivate pump."));
             }
             else
-                logEvent(F("Compressor is on."));
+                WiFiSM.logEvent(F("Compressor is on."));
         }  
     }
 }
@@ -304,7 +295,7 @@ void updateTopicLog()
         newTopicLogEntry.time = currentTime;
 
         ftpSyncEntries = std::min(ftpSyncEntries + 1, TOPIC_LOG_SIZE);
-        if (ftpSyncEntries >= PersistentData.ftpSyncEntries)
+        if (PersistentData.ftpIsEnabled() && ftpSyncEntries >= PersistentData.ftpSyncEntries)
             syncFTPTime = currentTime;
     }
 
@@ -409,7 +400,7 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
     HttpResponse.printf(F("<tr><th><a href=\"/topics\">Last packet</a></th><td>%s</td></tr>\r\n"), lastPacket);
-    HttpResponse.printf(F("<tr><th>Packet errors</th><td>%0.1f %%</td></tr>\r\n"), HeatPump.getPacketErrorRatio() * 100);
+    HttpResponse.printf(F("<tr><th><a href=\"/hexdump\">Packet errors</a></th><td>%0.1f %%</td></tr>\r\n"), HeatPump.getPacketErrorRatio() * 100);
     HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync.c_str());
     HttpResponse.printf(F("<tr><th>FTP Sync entries</th><td>%d / %d</td></tr>\r\n"), ftpSyncEntries, PersistentData.ftpSyncEntries);
     HttpResponse.printf(F("<tr><th><a href=\"/topiclog\">Topic log</a></th><td>%d</td></p>\r\n"), TopicLog.count());
@@ -487,7 +478,7 @@ void writeStatisticsPerDay()
         Html.writeCell(formatTime("%a", dayStatsEntryPtr->startTime));
         Html.writeCell(formatTime("%H:%M", dayStatsEntryPtr->startTime));
         Html.writeCell(formatTime("%H:%M", dayStatsEntryPtr->stopTime));
-        Html.writeCell(formatTimeSpan(dayStatsEntryPtr->antiFreezeSeconds));
+        Html.writeCell(formatTimeSpan(dayStatsEntryPtr->antiFreezeSeconds, false));
         Html.writeCell(formatTimeSpan(dayStatsEntryPtr->onSeconds));
         Html.writeCell(formatTimeSpan(dayStatsEntryPtr->getAvgOnSeconds()));
         Html.writeCell(dayStatsEntryPtr->onCount);
@@ -523,7 +514,7 @@ void handleHttpTopicsRequest()
     if (lastPacketReceivedTime != 0)
     {
         HttpResponse.printf(
-            F("<p>Packet received @ %s. <a href=\"/hexdump\">Show hex dump</a></p>\r\n"),
+            F("<p>Packet received @ %s</p>\r\n"),
             formatTime("%H:%M:%S", lastPacketReceivedTime));
 
         Html.writeTableStart();
@@ -552,24 +543,54 @@ void handleHttpTopicLogRequest()
 {
     Tracer tracer(F("handleHttpTopicLogRequest"));
 
-    HttpResponse.clear();
+    int currentPage = WebServer.hasArg("page") ? WebServer.arg("page").toInt() : 0;
+    int totalPages = ((TopicLog.count() - 1) / TOPIC_LOG_PAGE_SIZE) + 1;
 
-    // Write CSV header
-    HttpResponse.print("Time");
+    WebServer.chunkedResponseModeStart(200, ContentTypeHtml);
+
+    Html.writeHeader(F("Topic log"), true, true);
+    Html.writePager(totalPages, currentPage);
+    Html.writeTableStart();
+
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("Time"));
     for (int i = 0; i < NUMBER_OF_MONITORED_TOPICS; i++)
     {
-        HttpResponse.print(";");
-        HttpResponse.print(MonitoredTopics[i].label);
+        Html.writeHeaderCell(MonitoredTopics[i].htmlLabel);
     }
-    HttpResponse.println();
+    Html.writeRowEnd();
 
-    // Write CSV data lines
-    TopicLogEntry* firstEntryPtr = (TopicLog.count() <= TOPIC_LOG_CSV_MAX_SIZE)
-        ? TopicLog.getFirstEntry()
-        : TopicLog.getEntryFromEnd(TOPIC_LOG_CSV_MAX_SIZE);
-    writeTopicLogCsv(firstEntryPtr, HttpResponse);
+    TopicLogEntry* logEntryPtr = TopicLog.getFirstEntry();
+    for (int i = 0; i < (currentPage * TOPIC_LOG_PAGE_SIZE) && logEntryPtr != nullptr; i++)
+    {
+        logEntryPtr = TopicLog.getNextEntry();
+    }
+    for (int i = 0; i < TOPIC_LOG_PAGE_SIZE && logEntryPtr != nullptr; i++)
+    {
+        Html.writeRowStart();
+        Html.writeCell(formatTime("%H:%M", logEntryPtr->time));
+        for (int k = 0; k < NUMBER_OF_MONITORED_TOPICS; k++)
+        {
+            Html.writeCell(MonitoredTopics[k].formatValue(logEntryPtr->topicValues[k], false, 1));
+        }
+        Html.writeRowEnd();
 
-    WebServer.send(200, ContentTypeText, HttpResponse);
+        if (i % 10 == 0)
+        {
+            TRACE(F("Chunk size: %d\n"), strlen(HttpResponse));
+            WebServer.sendContent(HttpResponse);
+            HttpResponse.clear();
+        }
+
+        logEntryPtr = TopicLog.getNextEntry();
+    }
+
+    Html.writeTableEnd();
+    Html.writeFooter();
+
+    TRACE(F("Chunk size: %d\n"), strlen(HttpResponse));
+    WebServer.sendContent(HttpResponse);
+    WebServer.chunkedResponseFinalize();
 }
 
 
@@ -594,12 +615,18 @@ void handleHttpHexDumpRequest()
             HeatPump.getRepairedPackets(),
             HeatPump.getInvalidPackets());
 
+        HttpResponse.printf(
+            F("<p>Last valid packet @ %s</p>\r\n"),
+            formatTime("%H:%M:%S", lastPacketReceivedTime));
+
+        HttpResponse.printf(
+            F("<p>Last error @ %s : %s</p>\r\n"),
+            formatTime("%H:%M:%S", lastPacketErrorTime),
+            HeatPump.getLastError().c_str());
+
         if (lastPacketReceivedTime != 0)
         {
             Html.writeHeading(F("Last valid packet"), 2);
-            HttpResponse.printf(
-                F("<p>Packet received @ %s</p>\r\n"),
-                formatTime("%H:%M:%S", lastPacketReceivedTime));
 
             HttpResponse.println(F("<div class=\"hexdump\"><pre>"));
             HeatPump.writeHexDump(HttpResponse, false);
@@ -607,10 +634,6 @@ void handleHttpHexDumpRequest()
         }
 
         Html.writeHeading(F("Last invalid packet"), 2);
-        HttpResponse.printf(
-            F("<p>Last error @ %s : %s</p>\r\n"),
-            formatTime("%H:%M:%S", lastPacketErrorTime),
-            HeatPump.getLastError().c_str());
 
         HttpResponse.println(F("<div class=\"hexdump\"><pre>"));
         HeatPump.writeHexDump(HttpResponse, true);
@@ -658,37 +681,24 @@ void handleHttpTestRequest()
             F("<p><a href=\"?fillDayStats=%u\">Fill Day Stats</a></p>\r\n"),
             currentTime);
 
+    if (WiFiSM.shouldPerformAction(F("fillTopicLog")))
+    {
+        for (int i = 0; i < TOPIC_LOG_SIZE; i++)
+        {
+            newTopicLogEntry.time = currentTime + (i * 60);
+            lastTopicLogEntryPtr = TopicLog.add(&newTopicLogEntry);
+        }
+        HttpResponse.println(F("Topic Log filled."));
+    }
+    else
+        HttpResponse.printf(
+            F("<p><a href=\"?fillTopicLog=%u\">Fill Topic Log</a></p>\r\n"),
+            currentTime);
+
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
-
-
-void handleHttpHeishamonJsonRequest()
-{
-    Tracer tracer(F("handleHttpHeishamonJsonRequest"));
-
-    HttpResponse.clear();
-    HttpResponse.print(F("{ \"heatpump\": [ "));
-
-    int i = 0;
-    for (TopicId topicId : HeatPump.getAllTopicIds())
-    {
-        Topic topic = HeatPump.getTopic(topicId);
-        if (i++ > 0) HttpResponse.print(F(", "));
-        HttpResponse.printf(
-            F("{ \"Topic\": \"%s\", \"Name\": \"%s\", \"Value\": \"%s\", \"Description\": \"%s\" }"),
-            topic.getId().c_str(),
-            topic.getName().c_str(),
-            topic.getValue().c_str(),
-            topic.getDescription().c_str());
-    }
-
-    HttpResponse.println(F(" ] }"));
-
-    WebServer.send(200, ContentTypeJson, HttpResponse);
-}
-
 
 
 void handleHttpAquaMonJsonRequest()
@@ -733,7 +743,16 @@ void handleHttpFtpSyncRequest()
     }
     else
         HttpResponse.println(F("<p>Failed!</p>"));
- 
+
+    Html.writeHeading(F("CSV header"), 2);
+    HttpResponse.print("<div><pre>Time");
+    for (int i = 0; i < NUMBER_OF_MONITORED_TOPICS; i++)
+    {
+        HttpResponse.print(";");
+        HttpResponse.print(MonitoredTopics[i].label);
+    }
+    HttpResponse.println(F("</pre></div>"));
+
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
@@ -750,7 +769,7 @@ void handleHttpEventLogRequest()
     if (WiFiSM.shouldPerformAction(F("clear")))
     {
         EventLog.clear();
-        logEvent(F("Event log cleared."));
+        WiFiSM.logEvent(F("Event log cleared."));
     }
     else
         HttpResponse.printf(F("<p><a href=\"?clear=%u\">Clear event log</a></p>\r\n"), currentTime);
