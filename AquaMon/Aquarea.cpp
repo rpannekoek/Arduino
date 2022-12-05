@@ -2,7 +2,7 @@
 #include <Tracer.h>
 #include "Aquarea.h"
 
-#define NUMBER_OF_TOPICS 109
+#define NUMBER_OF_TOPICS 110
 #define AQUAREA_COMMAND_DATA_SIZE 108
 #define AQUAREA_RESPONSE_DATA_SIZE 200
 
@@ -366,6 +366,7 @@ TopicDesc _topicDescriptors[] PROGMEM =
     { "Solar_DeltaT", 0, getSolarDeltaT, Celsius },
     { "Compressor_Power", 165, getPower, KW },
     { "Heat_Power", 0, getHeatPower, KW },
+    { "EEV", 175, getIntMinus1, Duty },
 };
 
 

@@ -67,6 +67,7 @@ DayStatsEntry* lastDayStatsEntryPtr = nullptr;
 
 uint16_t ftpSyncEntries = 0;
 bool heatPumpIsOn = false;
+bool isDefrosting = false;
 bool antiFreezeActivated = false;
 bool testAntiFreeze = false;
 
@@ -210,9 +211,10 @@ void handleNewAquareaData()
     int outletTemp = HeatPump.getTopic(TopicId::Main_Outlet_Temp).getValue().toInt();
     float compPower = HeatPump.getTopic(TopicId::Compressor_Power).getValue().toFloat();
     float heatPower = HeatPump.getTopic(TopicId::Heat_Power).getValue().toFloat();
+    int defrostingState = HeatPump.getTopic(TopicId::Defrosting_State).getValue().toInt();
 
     antiFreezeControl(inletTemp, outletTemp, compPower);
-    updateDayStats(secondsSinceLastUpdate, compPower, heatPower);
+    updateDayStats(secondsSinceLastUpdate, compPower, heatPower, defrostingState);
     updateTopicLog();
 }
 
@@ -254,8 +256,9 @@ void antiFreezeControl(int inletTemp, int outletTemp, float compPower)
 }
 
 
-void updateDayStats(uint32_t secondsSinceLastUpdate, float powerInKW, float powerOutKW)
+void updateDayStats(uint32_t secondsSinceLastUpdate, float powerInKW, float powerOutKW, int defrostingState)
 {
+    const float onPowerKW = 0.2;
     TRACE(F("Pin: %0.2f kW, Pout: %0.2f kW, dt: %u s\n"), powerInKW, powerOutKW, secondsSinceLastUpdate);
 
     if ((currentTime / SECONDS_PER_DAY) > (lastDayStatsEntryPtr->startTime / SECONDS_PER_DAY))
@@ -266,9 +269,11 @@ void updateDayStats(uint32_t secondsSinceLastUpdate, float powerInKW, float powe
 
     lastDayStatsEntryPtr->update(currentTime, secondsSinceLastUpdate, powerInKW, powerOutKW, antiFreezeActivated);
 
-    const float onPowerKW = 0.2;
-    if ((powerInKW > onPowerKW) && !heatPumpIsOn)
-        lastDayStatsEntryPtr->onCount++; // Heat pump was switched on
+    if (defrostingState != 0 && !isDefrosting)
+        lastDayStatsEntryPtr->defrosts++; // Defrost started
+    isDefrosting = defrostingState != 0;
+    if (!isDefrosting && (powerInKW > onPowerKW) && !heatPumpIsOn)
+        lastDayStatsEntryPtr->onCount++; // Heat pump was switched on during normal operation
     heatPumpIsOn = powerInKW > onPowerKW;
 }
 
@@ -462,10 +467,11 @@ void writeStatisticsPerDay()
     Html.writeHeaderCell(F("Day"));
     Html.writeHeaderCell(F("Start"));
     Html.writeHeaderCell(F("Stop"));
-    Html.writeHeaderCell(F("Anti-freeze"));
     Html.writeHeaderCell(F("On time"));
     Html.writeHeaderCell(F("Avg on time"));
-    Html.writeHeaderCell(F("On count"));
+    Html.writeHeaderCell(F("Runs"));
+    Html.writeHeaderCell(F("Defrosts"));
+    Html.writeHeaderCell(F("Anti-freeze"));
     Html.writeHeaderCell(F("E<sub>in</sub> (kWh)"));
     Html.writeHeaderCell(F("E<sub>out</sub> (kWh)"));
     Html.writeHeaderCell(F("COP"));
@@ -478,10 +484,11 @@ void writeStatisticsPerDay()
         Html.writeCell(formatTime("%a", dayStatsEntryPtr->startTime));
         Html.writeCell(formatTime("%H:%M", dayStatsEntryPtr->startTime));
         Html.writeCell(formatTime("%H:%M", dayStatsEntryPtr->stopTime));
-        Html.writeCell(formatTimeSpan(dayStatsEntryPtr->antiFreezeSeconds, false));
         Html.writeCell(formatTimeSpan(dayStatsEntryPtr->onSeconds));
         Html.writeCell(formatTimeSpan(dayStatsEntryPtr->getAvgOnSeconds()));
         Html.writeCell(dayStatsEntryPtr->onCount);
+        Html.writeCell(dayStatsEntryPtr->defrosts);
+        Html.writeCell(formatTimeSpan(dayStatsEntryPtr->antiFreezeSeconds, false));
         Html.writeCell(dayStatsEntryPtr->energyIn, F("%0.2f"));
         Html.writeCell(dayStatsEntryPtr->energyOut, F("%0.2f"));
         Html.writeCell(dayStatsEntryPtr->getCOP());

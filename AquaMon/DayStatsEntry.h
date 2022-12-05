@@ -5,6 +5,7 @@ struct DayStatsEntry
     uint32_t antiFreezeSeconds = 0;
     uint32_t onSeconds = 0;
     uint32_t onCount = 0;
+    uint32_t defrosts = 0;
     float energyIn = 0; // kWh
     float energyOut = 0; // kWh
 
