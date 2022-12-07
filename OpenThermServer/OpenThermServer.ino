@@ -875,15 +875,16 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
         {
             bool pwmPending = pwmDutyCycle < 1;
             float tSet = getDecimal(otFrame.dataValue);
-            if (tSet >= 15 && tSet < PersistentData.minTSet)
+            float tPwmCeiling = std::max((float)PersistentData.minTSet, HeatMon.tBuffer);
+            const float tPwmFloor = 20;
+            if (tSet >= tPwmFloor && tSet < tPwmCeiling)
             {
-                // Requested TSet below configured minimum; use PWM.
-                const float pwmFloor = 20;
-                float pwmRange = PersistentData.minTSet + 5 - pwmFloor;
-                pwmDutyCycle = std::max((tSet - pwmFloor) / pwmRange, 0.1F);
+                // Requested TSet in PWM range; use PWM.
+                pwmDutyCycle = (tSet - tPwmFloor) / (tPwmCeiling - tPwmFloor);
+                pwmDutyCycle = std::min(std::max(pwmDutyCycle, 0.1F), 0.9F); // Keep between 10% and 90%
                 if (!pwmPending)
                 {
-                    WiFiSM.logEvent(F("PWM started: %0.0f%%. TSet=%0.1f"), pwmDutyCycle * 100, tSet);
+                    WiFiSM.logEvent(F("PWM started: %0.0f%%. TSet=%0.1f < %0.1f"), pwmDutyCycle * 100, tSet, tPwmCeiling);
                     setBoilerLevel(BoilerLevel::Low, pwmDutyCycle * PWM_PERIOD);
                 }
             }
