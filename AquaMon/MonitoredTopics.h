@@ -55,8 +55,8 @@ struct TopicLogEntry
 
 MonitoredTopic MonitoredTopics[] =
 {
-    { TopicId::Main_Inlet_Temp, "Tinlet", "T<sub>inlet</sub>", "°C", "temp1", 0, 0, 60 },
-    { TopicId::Main_Outlet_Temp, "Toutlet", "T<sub>outlet</sub>", "°C", "temp1", 0, 0, 60 },
+    { TopicId::Main_Inlet_Temp, "Tinlet", "T<sub>inlet</sub>", "°C", "temp1", 1, 0, 60 },
+    { TopicId::Main_Outlet_Temp, "Toutlet", "T<sub>outlet</sub>", "°C", "temp1", 1, 0, 60 },
     { TopicId::Z1_Water_Temp, "Tzone1", "T<sub>zone1</sub>", "°C", "temp1", 0, 0, 60 },
     { TopicId::Buffer_Temp, "Tbuffer", "T<sub>buffer</sub>", "°C", "temp1", 0, 0, 60 },
     { TopicId::Solar_DeltaT, "dTsolar", "ΔT<sub>solar</sub>", "°C", "deltat", 0, 0, 15 },

@@ -166,6 +166,11 @@ class Aquarea
         // Constructor
         Aquarea();
 
+        void setZone1Offset(float offset)
+        {
+            _zone1Offset = offset;
+        }
+
         String inline getLastError()
         {
             return _lastError;
@@ -211,6 +216,7 @@ class Aquarea
         String _lastError;
         uint32_t _commandSentMillis = 0;
         bool _debugOutputOnSerial = false;
+        static float _zone1Offset;
 
         static TopicDesc getTopicDescriptor(TopicId topicId);
         static uint8_t checkSum(uint8_t magic, uint8_t dataSize, uint8_t* dataPtr);
@@ -220,6 +226,7 @@ class Aquarea
         bool setTopicValue();
         static size_t readBytes(uint8_t* bufferPtr, size_t count);
         static size_t readHexBytes(uint8_t* bufferPtr, size_t count);
+        friend String getZone1Temp(uint8_t*);
 };
 
 #endif

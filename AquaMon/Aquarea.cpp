@@ -9,6 +9,8 @@
 #define AQUAREA_QUERY_MAGIC 0x71
 #define AQUAREA_RESPONSE_MAGIC 0x71
 
+float Aquarea::_zone1Offset = 0;
+
 static uint8_t _queryData[AQUAREA_COMMAND_DATA_SIZE];
 static uint8_t _commandData[AQUAREA_COMMAND_DATA_SIZE];
 
@@ -224,6 +226,29 @@ String getOpMode(uint8_t* dataPtr)
     }
 }
 
+float getFraction(uint8_t data)
+{
+    return 0.25F * ((data & 0b111) - 1);
+}
+
+String getInletTemp(uint8_t* dataPtr)
+{
+    float value = getFraction(dataPtr[118]) + dataPtr[143] - 128;
+    return (String)value;
+}
+
+String getOutletTemp(uint8_t* dataPtr)
+{
+    float value = getFraction(dataPtr[118] >> 3) + dataPtr[144] - 128;
+    return (String)value;
+}
+
+String getZone1Temp(uint8_t* dataPtr)
+{
+    float value = Aquarea::_zone1Offset + (int)*dataPtr - 128;
+    return (String)value;
+}
+
 String getEnergy(uint8_t* dataPtr)
 {
     int value = ((int)*dataPtr - 1) * 200;
@@ -248,9 +273,9 @@ String getHeatPower(uint8_t* dataPtr)
 {
     float pumpFlow = getPumpFlow(dataPtr + 169).toFloat();
     if (pumpFlow < 0.5) return F("0.0");
-    int inletTemp = static_cast<int>(dataPtr[143]) - 128;
-    int outletTemp = static_cast<int>(dataPtr[144]) - 128;
-    float heatPowerKW = 4.186 * (pumpFlow / 60) * std::max(outletTemp - inletTemp, 0);
+    float inletTemp = getInletTemp(dataPtr).toFloat();
+    float outletTemp = getOutletTemp(dataPtr).toFloat();
+    float heatPowerKW = 4.186 * (pumpFlow / 60) * std::max(outletTemp - inletTemp, 0.0F);
     return String(heatPowerKW, 1);
 }
 
@@ -262,8 +287,8 @@ TopicDesc _topicDescriptors[] PROGMEM =
     { "Force_DHW_State", 4, getBit1and2, DisabledEnabled },
     { "Quiet_Mode_Schedule", 7, getBit1and2, DisabledEnabled },
     { "Operating_Mode_State", 6, getOpMode, OpModeDesc },
-    { "Main_Inlet_Temp", 143, getIntMinus128, Celsius },
-    { "Main_Outlet_Temp", 144, getIntMinus128, Celsius },
+    { "Main_Inlet_Temp", 0, getInletTemp, Celsius },
+    { "Main_Outlet_Temp", 0, getOutletTemp, Celsius },
     { "Main_Target_Temp", 153, getIntMinus128, Celsius },
     { "Compressor_Freq", 166, getIntMinus1, Hertz },
     { "DHW_Target_Temp", 42, getIntMinus128, Celsius },
@@ -293,7 +318,7 @@ TopicDesc _topicDescriptors[] PROGMEM =
     { "Room_Thermostat_Temp", 156, getIntMinus128, Celsius },
     { "Z2_Heat_Request_Temp", 40, getIntMinus128, Celsius },
     { "Z2_Cool_Request_Temp", 41, getIntMinus128, Celsius },
-    { "Z1_Water_Temp", 145, getIntMinus128, Celsius },
+    { "Z1_Water_Temp", 145, getZone1Temp, Celsius },
     { "Z2_Water_Temp", 146, getIntMinus128, Celsius },
     { "Cool_Energy_Production", 196, getEnergy, Watt },
     { "Cool_Energy_Consumption", 195, getEnergy, Watt },
@@ -313,7 +338,7 @@ TopicDesc _topicDescriptors[] PROGMEM =
     { "Eva_Outlet_Temp", 160, getIntMinus128, Celsius },
     { "Bypass_Outlet_Temp", 161, getIntMinus128, Celsius },
     { "Ipm_Temp", 162, getIntMinus128, Celsius },
-    { "Z1_Temp", 139, getIntMinus128, Celsius },
+    { "Z1_Temp", 139, getZone1Temp, Celsius },
     { "Z2_Temp", 140, getIntMinus128, Celsius },
     { "DHW_Heater_State", 9, getBit5and6, BlockedFree },
     { "Room_Heater_State", 9, getBit7and8, BlockedFree },

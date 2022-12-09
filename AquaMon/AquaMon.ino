@@ -43,6 +43,7 @@
 #define CFG_FTP_SYNC_ENTRIES F("FTPSyncEntries")
 #define CFG_ANTI_FREEZE_TEMP F("AntiFreezeTemp")
 #define CFG_LOG_PACKET_ERRORS F("LogPacketErrors")
+#define CFG_ZONE1_OFFSET F("Zone1Offset")
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeText = "text/plain";
@@ -122,6 +123,7 @@ void setup()
 
     Tracer::traceFreeHeap();
 
+    HeatPump.setZone1Offset(PersistentData.zone1Offset);
     HeatPump.begin();
 
     digitalWrite(LED_BUILTIN, LED_OFF);
@@ -207,8 +209,8 @@ void handleNewAquareaData()
     uint32_t secondsSinceLastUpdate = (lastPacketReceivedTime == 0) ? 0 : (currentTime - lastPacketReceivedTime);
     lastPacketReceivedTime = currentTime;
 
-    int inletTemp = HeatPump.getTopic(TopicId::Main_Inlet_Temp).getValue().toInt();
-    int outletTemp = HeatPump.getTopic(TopicId::Main_Outlet_Temp).getValue().toInt();
+    float inletTemp = HeatPump.getTopic(TopicId::Main_Inlet_Temp).getValue().toFloat();
+    float outletTemp = HeatPump.getTopic(TopicId::Main_Outlet_Temp).getValue().toFloat();
     float compPower = HeatPump.getTopic(TopicId::Compressor_Power).getValue().toFloat();
     float heatPower = HeatPump.getTopic(TopicId::Heat_Power).getValue().toFloat();
     int defrostingState = HeatPump.getTopic(TopicId::Defrosting_State).getValue().toInt();
@@ -219,7 +221,7 @@ void handleNewAquareaData()
 }
 
 
-void antiFreezeControl(int inletTemp, int outletTemp, float compPower)
+void antiFreezeControl(float inletTemp, float outletTemp, float compPower)
 {
     int antiFreezeOnTemp = PersistentData.antiFreezeTemp;
     int antiFreezeOffTemp = antiFreezeOnTemp + ANTI_FREEZE_DELTA_T;
@@ -811,6 +813,7 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
     Html.writeTextBox(CFG_FTP_SYNC_ENTRIES, F("FTP sync entries"), String(PersistentData.ftpSyncEntries), 3);
     Html.writeTextBox(CFG_ANTI_FREEZE_TEMP, F("Anti-freeze temperature"), String(PersistentData.antiFreezeTemp), 2);
+    Html.writeTextBox(CFG_ZONE1_OFFSET, F("Zone1 offset"), String(PersistentData.zone1Offset), 4);
     Html.writeCheckbox(CFG_LOG_PACKET_ERRORS, F("Log packet errors"), PersistentData.logPacketErrors);
     Html.writeTableEnd();
     Html.writeSubmitButton();
@@ -848,10 +851,13 @@ void handleHttpConfigFormPost()
 
     PersistentData.ftpSyncEntries = WebServer.arg(CFG_FTP_SYNC_ENTRIES).toInt();
     PersistentData.antiFreezeTemp = WebServer.arg(CFG_ANTI_FREEZE_TEMP).toInt();
+    PersistentData.zone1Offset = WebServer.arg(CFG_ZONE1_OFFSET).toFloat();
     PersistentData.logPacketErrors = WebServer.arg(CFG_LOG_PACKET_ERRORS) == "true";
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();
+
+    HeatPump.setZone1Offset(PersistentData.zone1Offset);
 
     handleHttpConfigFormRequest();
 }
