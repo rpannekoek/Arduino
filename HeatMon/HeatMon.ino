@@ -32,6 +32,7 @@
 #define WIFI_TIMEOUT_MS 2000
 #define FTP_RETRY_INTERVAL (60 * 60)
 #define HEAT_LOG_INTERVAL (30 * 60)
+#define DS18_INIT_VALUE_C 85.0F
 
 #define MAX_TEMP_VALVE_PIN D8
 #define MAX_TEMP_DELTA_T 5
@@ -82,12 +83,6 @@ float currentValues[NUMBER_OF_TOPICS];
 bool testOverrides[NUMBER_OF_TOPICS];
 
 
-void logEvent(String msg)
-{
-    WiFiSM.logEvent(msg);
-}
-
-
 void logSensorInfo(TopicId sensorId)
 {
     MonitoredTopic topic = MonitoredTopics[sensorId];
@@ -115,8 +110,7 @@ void logSensorInfo(TopicId sensorId)
             );
     }
 
-    String event(message);
-    logEvent(event);
+    WiFiSM.logEvent(message);
 }
 
 
@@ -124,11 +118,7 @@ void setMaxTempValve(bool activated)
 {
     maxTempValveActivated = activated;
     digitalWrite(MAX_TEMP_VALVE_PIN, maxTempValveActivated ? 1 : 0);
-
-    if (activated)
-        logEvent(F("Max temperature valve set on"));
-    else
-        logEvent(F("Max temperature valve set off"));
+    WiFiSM.logEvent(F("Max temperature valve set %s"), activated ? "on" : "off");
 }
 
 
@@ -148,9 +138,7 @@ void initTempSensors()
             newSensorFound = TempSensors.getAddress(PersistentData.tempSensorAddress[i], i);
             if (!newSensorFound)
             {
-                String event = F("ERROR: Unable to obtain sensor address for ");
-                event += topic.label;
-                logEvent(event);
+                WiFiSM.logEvent(F("ERROR: Unable to obtain sensor address for %s"), topic.label);
             }
         }
 
@@ -252,7 +240,12 @@ void loop()
         {
             float tMeasured = TempSensors.getTempC(PersistentData.tempSensorAddress[i]);
             if (tMeasured != DEVICE_DISCONNECTED_C)
-                currentValues[i] = tMeasured + PersistentData.tempSensorOffset[i];
+            {
+                if ((tMeasured == DS18_INIT_VALUE_C) && (abs(tMeasured - currentValues[i]) > 5.0F))
+                    WiFiSM.logEvent(F("Invalid %s sensor value"), MonitoredTopics[i].label);
+                else
+                    currentValues[i] = tMeasured + PersistentData.tempSensorOffset[i];
+            }
         }
         TempSensors.requestTemperatures();
         digitalWrite(LED_BUILTIN, LED_OFF);
@@ -308,14 +301,12 @@ void onWiFiInitialized()
     {
         if (trySyncFTP(nullptr))
         {
-            logEvent(F("FTP synchronized"));
+            WiFiSM.logEvent(F("FTP synchronized"));
             syncFTPTime = 0;
         }
         else
         {
-            String event = F("FTP sync failed: ");
-            event += FTPClient.getLastResponse();
-            logEvent(event);
+            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastResponse());
             syncFTPTime += FTP_RETRY_INTERVAL;
         }
     }
@@ -437,7 +428,7 @@ void test(String message)
     {
         for (int i = 0; i < EVENT_LOG_LENGTH; i++)
         {
-            logEvent(F("Test event to fill the event log"));
+            WiFiSM.logEvent(F("Test event to fill the event log"));
             yield();
         }
     }
@@ -931,8 +922,6 @@ void handleHttpCalibrateFormRequest()
     }
     else
     {
-        HttpResponse.println(F("<p>Ensure that all temperature sensors are measuring the same temperature.</p>"));
-    
         Html.writeFormStart(F("/calibrate"));
 
         Html.writeTableStart();
@@ -1022,7 +1011,7 @@ void handleHttpEventLogRequest()
     if (WiFiSM.shouldPerformAction(F("clear")))
     {
         EventLog.clear();
-        logEvent(F("Event log cleared."));
+        WiFiSM.logEvent(F("Event log cleared."));
     }
 
     Html.writeHeader(F("Event log"), true, true);
@@ -1057,7 +1046,7 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
     Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
     Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
-    Html.writeTextBox(CFG_MAX_TEMP, F("Buffer max"), String(PersistentData.tBufferMax), 3);
+    Html.writeTextBox(CFG_MAX_TEMP, F("Buffer max"), String(PersistentData.tBufferMax, 1), 5);
     Html.writeTableEnd();
     Html.writeSubmitButton();
     Html.writeFormEnd();
