@@ -306,6 +306,7 @@ void WiFiStateMachine::run()
             if (wifiStatus == WL_CONNECTED)
             {
                 logEvent(F("WiFi reconnected"));
+                _staDisconnected = false;
                 setState(WiFiInitState::Initialized);
             }
             else if ((_reconnectInterval != 0) && (currentStateMillis >= _reconnectInterval))
@@ -347,6 +348,7 @@ void WiFiStateMachine::run()
 #ifdef DEBUG_ESP_PORT
             WiFi.printDiag(DEBUG_ESP_PORT);
 #endif
+            _staDisconnected = false;
             _ipAddress = WiFi.localIP();
             logEvent(F("WiFi connected. IP address: %s"), getIPAddress().c_str());
             ArduinoOTA.begin();
