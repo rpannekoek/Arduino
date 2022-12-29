@@ -9,9 +9,9 @@
 #include <Tracer.h>
 #include <StringBuilder.h>
 #include <HtmlWriter.h>
-#include <OTGW.h>
+#include "OTGW.h"
 #include <Log.h>
-#include <WeatherAPI.h>
+#include "WeatherAPI.h"
 #include <Wire.h>
 #include "PersistentData.h"
 #include "OpenThermLogEntry.h"
