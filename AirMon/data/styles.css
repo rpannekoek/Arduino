@@ -26,11 +26,13 @@ td,th
 	padding-left: 0.5em;
 	padding-right: 0.5em;
     border: thin solid gray;
+    text-align: right;
 }
 
 td.graph
 {
     border: none;
+    text-align: left;
 }
 
 

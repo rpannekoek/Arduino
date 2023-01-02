@@ -24,20 +24,20 @@ struct MonitoredTopic
     int minValue;
     int maxValue;
 
-    const char* formatValue(float value, bool includeUnitOfMeasure, int additionalDecimals = 0)
+    String formatValue(float value, bool includeUnitOfMeasure, int additionalDecimals = 0)
     {
         // First build the format string
-        static char format[16];
+        char format[16];
         snprintf(format, sizeof(format), "%%0.%df%%s%%s", decimals + additionalDecimals);
 
         // Then format the value & unit of measure
-        static char buffer[16];
+        char buffer[16];
         if (includeUnitOfMeasure)
             snprintf(buffer, sizeof(buffer), format, value, " ", unitOfMeasure);
         else
             snprintf(buffer, sizeof(buffer), format, value, "", "");
 
-        return buffer;
+        return String(buffer);
     }
 };
 
@@ -48,7 +48,7 @@ struct TopicLogEntry
     uint32_t count = 0;
     float topicValues[NUMBER_OF_MONITORED_TOPICS];
 
-    float getAverage(int topicId)
+    float inline getAverage(int topicId)
     {
         return (count == 0) ? 0.0F : topicValues[topicId] / count;
     }
@@ -57,17 +57,18 @@ struct TopicLogEntry
     {
         for (int i = 0; i < NUMBER_OF_MONITORED_TOPICS; i++)
         {
-            if (std::abs(topicValues[i]- otherPtr->topicValues[i]) >= 0.1)
+            float otherAvg = otherPtr->getAverage(i);
+            if (std::abs(getAverage(i) - otherAvg) / otherAvg >= 0.01) // +/- 1%
                 return false;
         }
         return true;
     }
 
-    void aggregate(TopicLogEntry* otherPtr)
+    void aggregate(float* values)
     {
         for (int i = 0; i < NUMBER_OF_MONITORED_TOPICS; i++)
         {
-            topicValues[i] += otherPtr->topicValues[i];
+            topicValues[i] += values[i];
         }
         count++;
     }
@@ -83,11 +84,11 @@ struct TopicLogEntry
 MonitoredTopic MonitoredTopics[] =
 {
     { TopicId::Temperature, "Temperature", "Temperature", "°C", "temperature", 1, 0, 30 },
-    { TopicId::Pressure, "Pressure", "Pressure", "hPa", "pressure", 0, 900, 1200 },
+    { TopicId::Pressure, "Pressure", "Pressure", "hPa", "pressure", 0, 900, 1100 },
     { TopicId::Humidity, "Humidity", "Humidity", "%", "humidity", 0, 0, 100 },
     { TopicId::IAQ, "IAQ", "IAQ", "", "iaq", 0, 0, 300 },
     { TopicId::CO2Equivalent, "CO2", "CO<sub>2</sub>", "ppm", "ppm", 0, 400, 1600 },
-    { TopicId::BVOCEquivalent, "BVOC", "BVOC", "ppm", "ppm", 0, 0, 1500 },
+    { TopicId::BVOCEquivalent, "BVOC", "BVOC", "ppm", "ppm", 1, 0, 6 },
     { TopicId::Accuracy, "Accuracy", "Accuracy", "", "accuracy", 0, 0, 3 },
     { TopicId::Fan, "Fan", "Fan", "", "fan", 0, 0, 1 }
 };

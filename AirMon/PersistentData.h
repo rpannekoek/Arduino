@@ -12,6 +12,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
     uint16_t ftpSyncEntries;
     uint16_t fanIAQThreshold;
     uint16_t fanIAQHysteresis;
+    float tOffset;
 
     PersistentDataStruct() : PersistentDataBase(
         sizeof(wifiSSID) +
@@ -23,7 +24,8 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         sizeof(ftpPassword) + 
         sizeof(ftpSyncEntries) +
         sizeof(fanIAQThreshold) +
-        sizeof(fanIAQHysteresis)
+        sizeof(fanIAQHysteresis) +
+        sizeof(tOffset)
         ) {}
 
     bool isFTPEnabled()
@@ -44,6 +46,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
 
         fanIAQThreshold = 100;
         fanIAQHysteresis = 10;
+        tOffset = 0;
     }
 
     virtual void validate()
@@ -59,6 +62,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
 
         fanIAQThreshold = std::min(fanIAQThreshold, (uint16_t)500);
         fanIAQHysteresis = std::min(fanIAQHysteresis, fanIAQThreshold);
+        tOffset = std::min(std::max(tOffset, -5.0F), 5.0F);
     }
 };
 
