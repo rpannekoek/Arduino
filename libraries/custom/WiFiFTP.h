@@ -19,7 +19,7 @@ class WiFiFTPClient
         bool begin(const char* host, const char* userName, const char* password, uint16_t port = FTP_DEFAULT_CONTROL_PORT, Print* printTo = nullptr);
         void end();
 
-        int sendCommand(const char* cmd, const char* arg = nullptr, bool awaitResponse = true);
+        int sendCommand(String cmd, const char* arg = nullptr, bool awaitResponse = true);
         int readServerResponse(char* responseBuffer = nullptr, size_t responseBufferSize = 0);
         WiFiClient& getDataClient();
 
@@ -31,14 +31,21 @@ class WiFiFTPClient
             return _responseBuffer;
         }
 
+        String inline getLastError()
+        {
+            return _lastError;
+        }
+
+        void setUnexpectedResponse(const char* response = nullptr);
+
     private:
         WiFiClient _controlClient;
         WiFiClient _dataClient;
         char _responseBuffer[128];
-        char _cmdBuffer[128];
         int _serverDataPort;
         const char* _host;
         Print* _printPtr;
+        String _lastError;
 
         bool initialize(const char* userName, const char* password);
 };
