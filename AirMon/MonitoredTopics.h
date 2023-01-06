@@ -57,7 +57,7 @@ struct TopicLogEntry
     {
         for (int i = 0; i < NUMBER_OF_MONITORED_TOPICS; i++)
         {
-            float otherAvg = otherPtr->getAverage(i);
+            float otherAvg = std::max(otherPtr->getAverage(i), 0.01F);
             if (std::abs(getAverage(i) - otherAvg) / otherAvg >= 0.01) // +/- 1%
                 return false;
         }

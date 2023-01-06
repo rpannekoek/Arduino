@@ -13,6 +13,8 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
     uint16_t fanIAQThreshold;
     uint16_t fanIAQHysteresis;
     float tOffset;
+    time_t bsecStateTime;
+    uint8_t bsecState[BSEC_MAX_STATE_BLOB_SIZE];
 
     PersistentDataStruct() : PersistentDataBase(
         sizeof(wifiSSID) +
@@ -25,7 +27,9 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         sizeof(ftpSyncEntries) +
         sizeof(fanIAQThreshold) +
         sizeof(fanIAQHysteresis) +
-        sizeof(tOffset)
+        sizeof(tOffset) +
+        sizeof(bsecStateTime) +
+        sizeof(bsecState)
         ) {}
 
     bool isFTPEnabled()
@@ -47,6 +51,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         fanIAQThreshold = 100;
         fanIAQHysteresis = 10;
         tOffset = 0;
+        bsecStateTime = 0;
     }
 
     virtual void validate()

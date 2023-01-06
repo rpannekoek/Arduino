@@ -24,6 +24,8 @@
 #define CSS "/styles.css"
 
 #define SECONDS_PER_DAY (24 * 3600)
+#define BSEC_STATE_SAVE_INTERVAL (24 * 3600)
+#define AGGREGATION_INTERVAL 60
 #define HTTP_POLL_INTERVAL 60
 #define DISPLAY_INTERVAL 2.0F
 #define EVENT_LOG_LENGTH 50
@@ -71,6 +73,7 @@ time_t syncFTPTime = 0;
 time_t lastFTPSyncTime = 0;
 
 bool fanIsOn = false;
+bool isNightMode = false;
 int ftpSyncEntries = 0;
 int showTopic = 0;
 
@@ -94,7 +97,6 @@ bsec_virtual_sensor_t iaqSensorIds[IAQ_SENSOR_COUNT] =
     BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE,
     BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY
 };
-bsec_library_return_t lastBsecStatus = BSEC_OK;
 int8_t lastBme680Status = BME680_OK;
 
 
@@ -223,19 +225,23 @@ bool initializeIAQSensor()
     IAQSensor.setConfig(iaqSensorConfig);
     if (IAQSensor.status != BSEC_OK)
     {
-        WiFiSM.logEvent(F("Failed setting IAQ config: %d"), IAQSensor.status);
-        lastBsecStatus = IAQSensor.status;
+        WiFiSM.logEvent(F("Failed setting BSEC config: %d"), IAQSensor.status);
         return false;
     }
 
     IAQSensor.setTemperatureOffset(PersistentData.tOffset);
 
-    IAQSensor.updateSubscription(iaqSensorIds, IAQ_SENSOR_COUNT, BSEC_SAMPLE_RATE_LP);
-    if (IAQSensor.status != BSEC_OK)
+    if (PersistentData.bsecStateTime != 0)
     {
-        WiFiSM.logEvent(F("Failed BSEC subscription: %d"), IAQSensor.status);
-        lastBsecStatus = IAQSensor.status;
-        return false;
+        IAQSensor.setState(PersistentData.bsecState);
+        if (IAQSensor.status == BSEC_OK)
+            WiFiSM.logEvent(F("Restored BSEC state from %s"), formatTime("%F %H:%M", PersistentData.bsecStateTime));
+        else
+        {
+            PersistentData.bsecStateTime = 0;
+            WiFiSM.logEvent(F("Failed restoring BSEC state: %d"), IAQSensor.status);
+            return false;
+        }
     }
 
     return true;
@@ -247,8 +253,7 @@ bool checkIAQStatus()
     bool result = true;
     if (IAQSensor.status != BSEC_OK)
     {
-        if (IAQSensor.status != lastBsecStatus)
-            WiFiSM.logEvent(F("BSEC status: %d"), IAQSensor.status);
+        WiFiSM.logEvent(F("BSEC status: %d"), IAQSensor.status);
         result = false;
     }
     else if (IAQSensor.bme680Status != BME680_OK) 
@@ -258,10 +263,34 @@ bool checkIAQStatus()
         result = false;
     }
 
-    lastBsecStatus = IAQSensor.status;
     lastBme680Status = IAQSensor.bme680Status;
 
     return result;
+}
+
+
+void setNightMode(bool on)
+{
+    Tracer tracer(F(__func__), on ? "on" : "off");
+
+    isNightMode = on;
+
+    float sampleRate;
+    if (isNightMode)
+    {
+        sampleRate = BSEC_SAMPLE_RATE_ULP;
+        DisplayTicker.detach();
+        Display.clearDisplay();
+    }
+    else
+    {
+        sampleRate = BSEC_SAMPLE_RATE_LP;
+        DisplayTicker.attach(DISPLAY_INTERVAL, displayTopic);
+    }
+
+    IAQSensor.updateSubscription(iaqSensorIds, IAQ_SENSOR_COUNT, sampleRate);
+    if (IAQSensor.status != BSEC_OK)
+        WiFiSM.logEvent(F("Failed BSEC subscription: %d"), IAQSensor.status);
 }
 
 
@@ -301,7 +330,7 @@ void onWiFiTimeSynced()
     newLogEntry.time = currentTime;
     newLogEntry.reset();
     displayMessage(formatTime("%F %H:%M", currentTime));
-    DisplayTicker.attach(DISPLAY_INTERVAL, displayTopic);
+    setNightMode(false);
 }
 
 
@@ -312,9 +341,15 @@ void onWiFiInitialized()
     else        
         checkIAQStatus();
 
-    if (!WiFiSM.isConnected())
+    if (WiFiSM.isConnected())
     {
-        // WiFi connection is lost. 
+        if (isNightMode) setNightMode(false);
+    }
+    else
+    {
+        // WiFi connection is lost.
+        if (!isNightMode) setNightMode(true);
+
         // Skip stuff that requires a WiFi connection.
         return;
     }
@@ -328,7 +363,7 @@ void onWiFiInitialized()
         }
         else
         {
-            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastResponse());
+            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError().c_str());
             syncFTPTime += FTP_RETRY_INTERVAL;
         }
     }
@@ -339,14 +374,6 @@ void updateIAQ()
 {
     Tracer tracer(F(__func__));
 
-    if (fanIsOn)
-    {
-        if (IAQSensor.staticIaq < (PersistentData.fanIAQThreshold - PersistentData.fanIAQHysteresis))
-            setFanState(false);
-    }
-    else if (IAQSensor.staticIaq >= PersistentData.fanIAQThreshold)
-        setFanState(true);
-
     currentTopicValues[TopicId::Temperature] = IAQSensor.temperature;
     currentTopicValues[TopicId::Pressure] = IAQSensor.pressure / 100; // hPa
     currentTopicValues[TopicId::Humidity] = IAQSensor.humidity;
@@ -354,10 +381,18 @@ void updateIAQ()
     currentTopicValues[TopicId::IAQ] = IAQSensor.staticIaq;
     currentTopicValues[TopicId::CO2Equivalent] = IAQSensor.co2Equivalent;
     currentTopicValues[TopicId::BVOCEquivalent] = IAQSensor.breathVocEquivalent;
-    currentTopicValues[TopicId::Fan] = fanIsOn ? 1.0F : 0.0F;
 
-    if (currentTime >= newLogEntry.time + 60)
+    if (currentTime >= newLogEntry.time + AGGREGATION_INTERVAL)
     {
+        float avgIAQ = newLogEntry.getAverage(TopicId::IAQ);
+        if (fanIsOn)
+        {
+            if (avgIAQ < (PersistentData.fanIAQThreshold - PersistentData.fanIAQHysteresis))
+                setFanState(false);
+        }
+        else if (avgIAQ >= PersistentData.fanIAQThreshold)
+            setFanState(true);
+
         if (lastLogEntryPtr == nullptr || !newLogEntry.equals(lastLogEntryPtr))
         {
             lastLogEntryPtr = IAQLog.add(&newLogEntry);
@@ -368,6 +403,8 @@ void updateIAQ()
         newLogEntry.reset(); // Moving average
         newLogEntry.time = currentTime;
     }
+
+    currentTopicValues[TopicId::Fan] = fanIsOn ? 1.0F : 0.0F;
     newLogEntry.aggregate(currentTopicValues);
 
     if (lastStatsEntryPtr == nullptr || currentTime >= (lastStatsEntryPtr->time + HOUR_LOG_INTERVAL))
@@ -378,6 +415,20 @@ void updateIAQ()
         lastStatsEntryPtr = HourStats.add(&statsEntry);
     }
     lastStatsEntryPtr->aggregate(currentTopicValues);
+
+    if ((currentTopicValues[TopicId::Accuracy] == 3) && (currentTime >= PersistentData.bsecStateTime + BSEC_STATE_SAVE_INTERVAL))
+    {
+        IAQSensor.getState(PersistentData.bsecState);
+        if (IAQSensor.status == BSEC_OK)
+        {
+            PersistentData.bsecStateTime = currentTime;
+            PersistentData.writeToEEPROM();
+
+            WiFiSM.logEvent(F("Saved BSEC state"));
+        }
+        else
+            WiFiSM.logEvent(F("Failed retrieving BSEC state: %d"), IAQSensor.status);
+    }
 }
 
 
@@ -428,14 +479,14 @@ bool trySyncFTP(Print* printTo)
             ftpSyncEntries = 0;            
         }
         else if (printTo != nullptr)
-            printTo->println("Nothing to sync.");
+            printTo->println(F("Nothing to sync."));
         dataClient.stop();
 
         if (FTPClient.readServerResponse() == 226)
             lastFTPSyncTime = currentTime;
         else
         {
-            TRACE(F("FTP Append command failed: %s\n"), FTPClient.getLastResponse());
+            FTPClient.setUnexpectedResponse();
             success = false;
         }
     }
@@ -491,9 +542,10 @@ void test(String message)
             lastStatsEntryPtr = HourStats.add(&statsEntry);
         }
     }
-    else if (message.startsWith("testR"))
+    else if (message.startsWith("testN"))
     {
-        WiFiSM.reset();
+        bool on = message.substring(5).toInt();
+        setNightMode(on);
     }
 }
 
@@ -531,14 +583,35 @@ void handleHttpRootRequest()
     Html.writeHeading(F("Air Monitor status"));
 
     Html.writeTableStart();
-    HttpResponse.printf(F("<tr><th>RSSI</th><td>%d dBm</td></tr>\r\n"), static_cast<int>(WiFi.RSSI()));
-    HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
-    HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync);
+    HttpResponse.printf(
+        F("<tr><th>RSSI</th><td>%d dBm</td></tr>\r\n"),
+        static_cast<int>(WiFi.RSSI()));
+    HttpResponse.printf(
+        F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"),
+        ESP.getFreeHeap());
+    HttpResponse.printf(
+        F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"),
+        float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
+    HttpResponse.printf(
+        F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"),
+        ftpSync);
     if (PersistentData.isFTPEnabled())
-        HttpResponse.printf(F("<tr><th>FTP Sync entries</th><td>%d / %d</td></tr>\r\n"), ftpSyncEntries, PersistentData.ftpSyncEntries);
-    HttpResponse.printf(F("<tr><th><a href=\"/iaqlog\">IAQ log</a></th><td>%d</td></p>\r\n"), IAQLog.count());
-    HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
+        HttpResponse.printf(
+            F("<tr><th>FTP Sync entries</th><td>%d / %d</td></tr>\r\n"),
+            ftpSyncEntries,
+            PersistentData.ftpSyncEntries);
+    HttpResponse.printf(
+        F("<tr><th><a href=\"/iaqlog\">IAQ log</a></th><td>%d</td>\r\n"),
+        IAQLog.count());
+    HttpResponse.printf(
+        F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td>\r\n"),
+        EventLog.count());
+    HttpResponse.printf(
+        F("<tr><th>Fan on</th><td>%d IAQ</td></tr>\r\n"),
+        PersistentData.fanIAQThreshold);
+    HttpResponse.printf(
+        F("<tr><th>Fan off</th><td>%d IAQ</td></tr>\r\n"),
+        PersistentData.fanIAQThreshold - PersistentData.fanIAQHysteresis);
     Html.writeTableEnd();
 
     writeCurrentValues();
