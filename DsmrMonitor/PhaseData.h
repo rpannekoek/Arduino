@@ -1,5 +1,6 @@
 struct PhaseData
 {
+    String label;
     float voltage;
     float current;
     float powerDelivered = 0;
