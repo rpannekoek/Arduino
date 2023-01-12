@@ -35,4 +35,14 @@ const char* formatTimeSpan(uint32_t seconds, bool includeHours = true)
     return result;
 }
 
+
+time_t getStartOfDay(time_t time)
+{
+    tm* tmPtr = localtime(&time);
+    tmPtr->tm_hour = 0;
+    tmPtr->tm_min = 0;
+    tmPtr->tm_sec = 0;
+    return mktime(tmPtr);
+}
+
 #endif

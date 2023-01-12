@@ -15,6 +15,8 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
     float tOffset;
     time_t bsecStateTime;
     uint8_t bsecState[BSEC_MAX_STATE_BLOB_SIZE];
+    uint16_t fanOffFromMinutes;
+    uint16_t fanOffToMinutes;
 
     PersistentDataStruct() : PersistentDataBase(
         sizeof(wifiSSID) +
@@ -29,7 +31,9 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         sizeof(fanIAQHysteresis) +
         sizeof(tOffset) +
         sizeof(bsecStateTime) +
-        sizeof(bsecState)
+        sizeof(bsecState) +
+        sizeof(fanOffFromMinutes) +
+        sizeof(fanOffToMinutes)
         ) {}
 
     bool isFTPEnabled()
@@ -52,6 +56,8 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         fanIAQHysteresis = 10;
         tOffset = 0;
         bsecStateTime = 0;
+        fanOffFromMinutes = 0;
+        fanOffToMinutes = 0;
     }
 
     virtual void validate()
@@ -68,6 +74,10 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         fanIAQThreshold = std::min(fanIAQThreshold, (uint16_t)500);
         fanIAQHysteresis = std::min(fanIAQHysteresis, fanIAQThreshold);
         tOffset = std::min(std::max(tOffset, -5.0F), 5.0F);
+
+        const uint16_t minutesPerDay = 24 * 60;
+        fanOffFromMinutes = std::min(fanOffFromMinutes, minutesPerDay);
+        fanOffToMinutes = std::min(fanOffToMinutes, fanOffFromMinutes);
     }
 };
 

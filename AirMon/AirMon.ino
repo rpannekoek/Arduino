@@ -51,6 +51,8 @@
 #define CFG_FAN_THRESHOLD F("FanThreshold")
 #define CFG_FAN_HYSTERESIS F("FanHysteresis")
 #define CFG_TEMP_OFFSET F("TempOffset")
+#define CFG_FAN_OFF_FROM F("FanOffFrom")
+#define CFG_FAN_OFF_TO F("FanOffTo")
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeJson = "application/json";
@@ -281,6 +283,7 @@ void setNightMode(bool on)
         sampleRate = BSEC_SAMPLE_RATE_ULP;
         DisplayTicker.detach();
         Display.clearDisplay();
+        Display.display();
     }
     else
     {
@@ -387,10 +390,12 @@ void updateIAQ()
         float avgIAQ = newLogEntry.getAverage(TopicId::IAQ);
         if (fanIsOn)
         {
-            if (avgIAQ < (PersistentData.fanIAQThreshold - PersistentData.fanIAQHysteresis))
+            if (avgIAQ < (PersistentData.fanIAQThreshold - PersistentData.fanIAQHysteresis)
+                || currentTime >= getStartOfDay(currentTime) + PersistentData.fanOffFromMinutes * 60)
                 setFanState(false);
         }
-        else if (avgIAQ >= PersistentData.fanIAQThreshold)
+        else if (avgIAQ >= PersistentData.fanIAQThreshold
+            && currentTime >= getStartOfDay(currentTime) + PersistentData.fanOffToMinutes * 60)
             setFanState(true);
 
         if (lastLogEntryPtr == nullptr || !newLogEntry.equals(lastLogEntryPtr))
@@ -607,10 +612,12 @@ void handleHttpRootRequest()
         F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td>\r\n"),
         EventLog.count());
     HttpResponse.printf(
-        F("<tr><th>Fan on</th><td>%d IAQ</td></tr>\r\n"),
+        F("<tr><th>Fan on</th><td><div>%s</div><div>%d IAQ</div></td></tr>\r\n"),
+        formatTime("%H:%M", getStartOfDay(currentTime) + PersistentData.fanOffToMinutes * 60),
         PersistentData.fanIAQThreshold);
     HttpResponse.printf(
-        F("<tr><th>Fan off</th><td>%d IAQ</td></tr>\r\n"),
+        F("<tr><th>Fan off</th><td><div>%s</div><div>%d IAQ</div></td></tr>\r\n"),
+        formatTime("%H:%M", getStartOfDay(currentTime) + PersistentData.fanOffFromMinutes * 60),
         PersistentData.fanIAQThreshold - PersistentData.fanIAQHysteresis);
     Html.writeTableEnd();
 
@@ -863,6 +870,8 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_FTP_ENTRIES, F("FTP sync entries"), String(PersistentData.ftpSyncEntries), 3);
     Html.writeTextBox(CFG_FAN_THRESHOLD, F("Fan threshold"), String(PersistentData.fanIAQThreshold), 3);
     Html.writeTextBox(CFG_FAN_HYSTERESIS, F("Fan hysteresis"), String(PersistentData.fanIAQHysteresis), 3);
+    Html.writeTextBox(CFG_FAN_OFF_FROM, F("Fan off from"), formatTime("%H:%M", getStartOfDay(currentTime) + PersistentData.fanOffFromMinutes * 60), 5);
+    Html.writeTextBox(CFG_FAN_OFF_TO, F("Fan off to"), formatTime("%H:%M", getStartOfDay(currentTime) + PersistentData.fanOffToMinutes * 60), 5);
     Html.writeTextBox(CFG_TEMP_OFFSET, F("Temp offset"), String(PersistentData.tOffset, 1), 4);
     Html.writeTableEnd();
     Html.writeSubmitButton();
@@ -886,6 +895,17 @@ void copyString(const String& input, char* buffer, size_t bufferSize)
 }
 
 
+uint16_t parseMinutes(const String& input)
+{
+    int hours = 0;
+    int minutes = 0;
+    if (sscanf(input.c_str(), "%d:%d", &hours, &minutes) != 2)
+        WiFiSM.logEvent(F("Can't parse '%s' as hours/minutes"), input.c_str());
+
+    return hours * 60 + minutes;
+}
+
+
 void handleHttpConfigFormPost()
 {
     Tracer tracer(F(__func__));
@@ -902,6 +922,9 @@ void handleHttpConfigFormPost()
     PersistentData.fanIAQThreshold = WebServer.arg(CFG_FAN_THRESHOLD).toInt();
     PersistentData.fanIAQHysteresis = WebServer.arg(CFG_FAN_HYSTERESIS).toInt();
     PersistentData.tOffset = WebServer.arg(CFG_TEMP_OFFSET).toFloat();
+
+    PersistentData.fanOffFromMinutes = parseMinutes(WebServer.arg(CFG_FAN_OFF_FROM));
+    PersistentData.fanOffToMinutes = parseMinutes(WebServer.arg(CFG_FAN_OFF_TO));
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();
