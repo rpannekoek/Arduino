@@ -282,7 +282,9 @@ void WiFiStateMachine::run()
         case WiFiInitState::Reconnecting:
             if (wifiStatus == WL_CONNECTED)
             {
-                logEvent(F("WiFi reconnected"));
+                logEvent(F("WiFi reconnected. Access Point %s\n"), WiFi.BSSIDstr().c_str());
+                if (_scanAccessPointsInterval > 0)
+                    _scanAccessPointsTime = getCurrentTime() + _scanAccessPointsInterval;
                 setState(WiFiInitState::Initialized);
             }
             else if (_staDisconnected || (wifiStatus == WL_NO_SSID_AVAIL) || (currentStateMillis >= CONNECT_TIMEOUT_MS))
@@ -305,7 +307,7 @@ void WiFiStateMachine::run()
         case WiFiInitState::ConnectionLost:
             if (wifiStatus == WL_CONNECTED)
             {
-                logEvent(F("WiFi reconnected"));
+                logEvent(F("WiFi reconnected. Access Point %s"), WiFi.BSSIDstr().c_str());
                 _staDisconnected = false;
                 setState(WiFiInitState::Initialized);
             }
@@ -333,6 +335,14 @@ void WiFiStateMachine::run()
             }
             break;
 
+        case WiFiInitState::SwitchingAP:
+            if (_staDisconnected || currentStateMillis > CONNECT_TIMEOUT_MS)
+            {
+                _staDisconnected = false;
+                setState(WiFiInitState::Reconnecting);
+            }
+            break;
+
         case WiFiInitState::ConnectFailed:
             if (currentStateMillis >= _retryInterval)
             {
@@ -350,7 +360,7 @@ void WiFiStateMachine::run()
 #endif
             _staDisconnected = false;
             _ipAddress = WiFi.localIP();
-            logEvent(F("WiFi connected. IP address: %s"), getIPAddress().c_str());
+            logEvent(F("WiFi connected. Access Point %s"), WiFi.BSSIDstr().c_str());
             ArduinoOTA.begin();
             _webServer.begin();
             setState(WiFiInitState::TimeServerInitializing);
@@ -391,6 +401,8 @@ void WiFiStateMachine::run()
             if (_isTimeServerAvailable)
             {
                 logEvent(F("Time synchronized using NTP server: %s"), _timeServer.NTPServer);
+                if (_scanAccessPointsInterval > 0)
+                    _scanAccessPointsTime = getCurrentTime() + _scanAccessPointsInterval;
             }
             setState(WiFiInitState::Initialized);
             break;
@@ -409,6 +421,9 @@ void WiFiStateMachine::run()
                 }
                 setState(WiFiInitState::ConnectionLost);
             }
+            else if (_scanAccessPointsTime > 0)
+                scanForBetterAccessPoint();
+            
             break;
 
         default:
@@ -434,6 +449,85 @@ void WiFiStateMachine::run()
         // The ESP8266 will not restart immediately. Please do not call other functions after calling this API. 
         delay(1000); 
     }
+}
+
+
+void WiFiStateMachine::scanForBetterAccessPoint()
+{
+    time_t currentTime = getCurrentTime();
+    if (currentTime >= _scanAccessPointsTime)
+    {
+        uint8_t currentChannel = WiFi.channel();
+        TRACE(F("Scanning for better Access Point (SSID: '%s', channel %d)...\n"), _ssid.c_str(), currentChannel);
+#ifdef ESP32
+        int scanResult = WiFi.scanNetworks(
+            true, // async
+            false, // skip hidden SSID
+            true, // passive
+            300, // max_ms_per_chan
+            currentChannel,
+            _ssid.c_str()); 
+#else
+        int scanResult = WiFi.scanNetworks(
+            true, // async
+            false, // skip hidden SSID
+            currentChannel,
+            (uint8_t*)_ssid.c_str()); 
+#endif
+        if (scanResult != WIFI_SCAN_RUNNING)
+            logEvent(F("WiFi scan failed"));
+        _scanAccessPointsTime = currentTime + _scanAccessPointsInterval;
+        return;
+    }
+
+    int8_t scannedAPs = WiFi.scanComplete();
+    if (scannedAPs < 0) return; // Scan failed or still pending
+
+    if (scannedAPs == 1)
+        TRACE(F("Found only one Access Point.\n"));
+    else
+    {
+        TRACE(F("Found %d Access Points:\n"), scannedAPs);
+
+        int8_t bestRSSI = -100;
+        int8_t currentRSSI;
+        String bestBSSID;
+        String currentBSSID = WiFi.BSSIDstr();
+
+        for (int i = 0; i < scannedAPs; i++)
+        {
+            String bssid = WiFi.BSSIDstr(i);
+            int8_t rssi = WiFi.RSSI(i);
+            TRACE(F("BSSID: %s (RSSI: %d dBm)\n"), bssid.c_str(), rssi);
+            if (rssi > bestRSSI)
+            {
+                bestRSSI = rssi;
+                bestBSSID = bssid;               
+            }
+            if (bssid == currentBSSID) currentRSSI = rssi;
+        }
+
+        if (bestBSSID != currentBSSID && bestRSSI > (currentRSSI + _rssiThreshold))
+        {
+            logEvent(F("Found better Access Point: %s (%d vs %d dBm)"), bestBSSID.c_str(), bestRSSI, currentRSSI);
+            _staDisconnected = false;
+            if (WiFi.reconnect())
+            {
+                // To prevent frequent switching between equivalent Access Points
+                // we delay the next scan after switching.
+                _scanAccessPointsTime += _switchAccessPointDelay;
+                setState(WiFiInitState::SwitchingAP);
+            }
+            else
+                TRACE(F("WiFi.reconnect() failed.\n"));
+        }
+        else
+            TRACE(F("Sticking with current AP: %s\n"), currentBSSID.c_str());
+    }
+
+    WiFi.scanDelete();
+
+    TRACE(F("Next scan in %d seconds.\n"), (int)(_scanAccessPointsTime - currentTime));
 }
 
 

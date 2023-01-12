@@ -14,14 +14,15 @@ enum struct WiFiInitState
     Connecting = 3,
     ConnectFailed = 4,
     ConnectionLost = 5,
-    Reconnecting = 6,
-    Connected = 7,
-    TimeServerInitializing = 8,
-    TimeServerSyncing = 9,
-    TimeServerSyncFailed = 10,
-    TimeServerSynced = 11,
-    Initialized = 12,
-    Updating = 13
+    SwitchingAP = 6,
+    Reconnecting = 7,
+    Connected = 8,
+    TimeServerInitializing = 9,
+    TimeServerSyncing = 10,
+    TimeServerSyncFailed = 11,
+    TimeServerSynced = 12,
+    Initialized = 13,
+    Updating = 14
 };
 
 
@@ -75,11 +76,22 @@ class WiFiStateMachine
             return _state >= WiFiInitState::Connected;
         }
 
+        void scanAccessPoints(uint32_t intervalSeconds = 300, uint32_t switchDelaySeconds = 600, int8_t rssiThreshold = 3)
+        {
+            _scanAccessPointsInterval = intervalSeconds;
+            _switchAccessPointDelay = switchDelaySeconds;
+            _rssiThreshold = rssiThreshold;
+        }
+
     private:
         WiFiInitState _state = WiFiInitState::Booting;
         static bool _staDisconnected;
         uint32_t _reconnectInterval = 0;
         uint32_t _stateChangeTime = 0;
+        time_t _scanAccessPointsTime = 0;
+        uint32_t _scanAccessPointsInterval = 0;
+        uint32_t _switchAccessPointDelay;
+        int8_t _rssiThreshold;
         uint32_t _retryInterval;
         uint32_t _resetTime = 0;
         time_t _initTime = 0;
@@ -102,6 +114,7 @@ class WiFiStateMachine
         void setState(WiFiInitState newState, bool callHandler = false);
         void blinkLED(int tOn, int tOff);
         String getResetReason();
+        void scanForBetterAccessPoint();
         
 #ifdef ESP8266
         WiFiEventHandler _staDisconnectedEvent; 
