@@ -19,6 +19,7 @@ class Tracer
     static void hexDump(uint8_t* data, size_t length);
 
   private:
+    static Print* _traceToPtr;
     String _name;
     unsigned long _startMicros;
 

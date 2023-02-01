@@ -1,8 +1,8 @@
 #include "Tracer.h"
 #include <Arduino.h>
 
-Print* _traceToPtr = nullptr;
-char _traceMsg[128];
+Print* Tracer::_traceToPtr = nullptr;
+char _traceMsg[256];
 
 
 void Tracer::traceTo(Print& dest)
@@ -18,7 +18,8 @@ void Tracer::trace(String format, ...)
 
     va_list args;
     va_start(args, format);
-    vsnprintf(_traceMsg, sizeof(_traceMsg), format.c_str(), args);
+    int length = vsnprintf(_traceMsg, sizeof(_traceMsg) - 1, format.c_str(), args);
+    _traceMsg[length] = 0;
     va_end(args);
 
     _traceToPtr->print(_traceMsg);
