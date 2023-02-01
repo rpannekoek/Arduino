@@ -24,7 +24,7 @@ void HtmlWriter::setTitlePrefix(const char* prefix)
 }
 
 
-void HtmlWriter::writeHeader(String title, bool includeHomePageLink, bool includeHeading, uint16_t refreshInterval)
+void HtmlWriter::writeHeader(const String& title, bool includeHomePageLink, bool includeHeading, uint16_t refreshInterval)
 {
     _output.clear();
     _output.println(F("<html>"));
@@ -52,7 +52,7 @@ void HtmlWriter::writeFooter()
 }
 
 
-void HtmlWriter::writeBar(float value, String cssClass, bool fill, bool useDiv, size_t maxBarLength)
+void HtmlWriter::writeBar(float value, const String& cssClass, bool fill, bool useDiv, size_t maxBarLength)
 {
     char* bar;
     if (maxBarLength == 0)
@@ -95,7 +95,7 @@ void HtmlWriter::writeBar(float value, String cssClass, bool fill, bool useDiv, 
 }
 
 
-void HtmlWriter::writeStackedBar(float value1, float value2, String cssClass1, String cssClass2, bool fill, bool useDiv)
+void HtmlWriter::writeStackedBar(float value1, float value2, const String& cssClass1, const String& cssClass2, bool fill, bool useDiv)
 {
     value1 = std::max(std::min(value1, 1.0f), 0.0f);
     value2 = std::max(std::min(value2, 1.0f - value1), 0.0f);
@@ -131,7 +131,7 @@ void HtmlWriter::writeStackedBar(float value1, float value2, String cssClass1, S
 }
 
 
-void HtmlWriter::writeGraphCell(float value, String barCssClass, bool fill, size_t maxBarLength)
+void HtmlWriter::writeGraphCell(float value, const String& barCssClass, bool fill, size_t maxBarLength)
 {
     writeCellStart(F("graph"));
     writeBar(value, barCssClass, fill, false, maxBarLength);
@@ -139,7 +139,7 @@ void HtmlWriter::writeGraphCell(float value, String barCssClass, bool fill, size
 }
 
 
-void HtmlWriter::writeGraphCell(float value1, float value2, String barCssClass1, String barCssClass2, bool fill)
+void HtmlWriter::writeGraphCell(float value1, float value2, const String& barCssClass1, const String& barCssClass2, bool fill)
 {
     writeCellStart(F("graph"));
     writeStackedBar(value1, value2, barCssClass1, barCssClass2, fill, false);
@@ -147,7 +147,7 @@ void HtmlWriter::writeGraphCell(float value1, float value2, String barCssClass1,
 }
 
 
-void HtmlWriter::writeFormStart(String action)
+void HtmlWriter::writeFormStart(const String& action)
 {
     _output.printf(
         F("<form action=\"%s\" method=\"POST\">\r\n"),
@@ -167,7 +167,7 @@ void HtmlWriter::writeSubmitButton()
 }
 
 
-void HtmlWriter::writeTextBox(String name, String label, String value,  uint16_t maxLength)
+void HtmlWriter::writeTextBox(const String& name, const String& label, const String& value,  uint16_t maxLength)
 {
     _output.printf(
         F("<tr><td><label for=\"%s\">%s</label></td><td><input type=\"text\" name=\"%s\" value=\"%s\" maxlength=\"%d\"></td></tr>\r\n"), 
@@ -180,7 +180,7 @@ void HtmlWriter::writeTextBox(String name, String label, String value,  uint16_t
 }
 
 
-void HtmlWriter::writeCheckbox(String name, String label, bool value)
+void HtmlWriter::writeCheckbox(const String& name, const String& label, bool value)
 {
     const char* checked = value ? "checked" : "";
 
@@ -194,7 +194,7 @@ void HtmlWriter::writeCheckbox(String name, String label, bool value)
 }
 
 
-void HtmlWriter::writeRadioButtons(String name, String label, const char** values, int numValues, int index)
+void HtmlWriter::writeRadioButtons(const String& name, const String& label, const char** values, int numValues, int index)
 {
     _output.printf(
         F("<tr><td><label for=\"%s\">%s</label></td><td>"), 
@@ -218,7 +218,7 @@ void HtmlWriter::writeRadioButtons(String name, String label, const char** value
 }
 
 
-void HtmlWriter::writeSlider(String name, String label, String unitOfMeasure, int value, int minValue, int maxValue, int denominator)
+void HtmlWriter::writeSlider(const String& name, const String& label, const String& unitOfMeasure, int value, int minValue, int maxValue, int denominator)
 {
     _output.printf(F("<tr><td><label for=\"%s\">%s</label></td><td>"), name.c_str(), label.c_str());
     _output.printf(
@@ -236,7 +236,7 @@ void HtmlWriter::writeSlider(String name, String label, String unitOfMeasure, in
 }
 
 
-void HtmlWriter::writeHeading(String title, int level)
+void HtmlWriter::writeHeading(const String& title, int level)
 {
     _output.printf(
         F("<h%d>%s</h%d>\r\n"),
@@ -270,7 +270,7 @@ void HtmlWriter::writeRowEnd()
 }
 
 
-void HtmlWriter::writeCellStart(String cssClass)
+void HtmlWriter::writeCellStart(const String& cssClass)
 {
     _output.printf(
         F("<td class=\"%s\">"),
@@ -284,7 +284,7 @@ void HtmlWriter::writeCellEnd()
 }
 
 
-void HtmlWriter::writeHeaderCell(String value, int colspan, int rowspan)
+void HtmlWriter::writeHeaderCell(const String& value, int colspan, int rowspan)
 {
     _output.print(F("<th"));
     if (colspan > 0) _output.printf(F(" colspan=\"%d\""), colspan);
@@ -295,7 +295,7 @@ void HtmlWriter::writeHeaderCell(String value, int colspan, int rowspan)
 }
 
 
-void HtmlWriter::writeCell(String value)
+void HtmlWriter::writeCell(const String& value)
 {
     return writeCell(value.c_str());
 }
@@ -347,5 +347,13 @@ void HtmlWriter::writePager(int totalPages, int currentPage)
         else
             _output.printf(F("<a href='?page=%d'>%d</a>"), i, i + 1);           
     }
+    _output.println(F("</p>"));
+}
+
+
+void HtmlWriter::writeParagraph(const String& innerHtml)
+{
+    _output.print(F("<p>"));
+    _output.print(innerHtml);
     _output.println(F("</p>"));
 }
