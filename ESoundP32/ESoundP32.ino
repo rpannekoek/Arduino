@@ -493,8 +493,9 @@ void handleHttpRootRequest()
 
     HttpResponse.println(F("<h1><a href=\"/bt\">Bluetooth Status</a></h1>"));
     HttpResponse.println(F("<table class=\"status\">"));
-    HttpResponse.printf(F("<tr><td>State</td><td>%s</td></tr>\r\n"), BTAudio.getStateName().c_str());
-    HttpResponse.printf(F("<tr><td>Remote device</td><td>%s</td></tr>\r\n"), BTAudio.getRemoteDevice().c_str());
+    HttpResponse.printf(F("<tr><td>State</td><td>%s</td></tr>\r\n"), BTAudio.getStateName());
+    HttpResponse.printf(F("<tr><td>Audio State</td><td>%s</td></tr>\r\n"), BTAudio.getAudioStateName());
+    HttpResponse.printf(F("<tr><td>Remote device</td><td>%s</td></tr>\r\n"), BTAudio.getRemoteDeviceName().c_str());
     HttpResponse.printf(F("<tr><td>Sample rate</td><td>%d</td></tr>\r\n"), BTAudio.getSampleRate());
     HttpResponse.println(F("</table>"));
 
@@ -553,8 +554,9 @@ void handleHttpBluetoothRequest()
     Html.writeHeader(F("Bluetooth"), true, true, 5);
 
     HttpResponse.println(F("<table class=\"status\">"));
-    HttpResponse.printf(F("<tr><td>State</td><td>%s</td></tr>\r\n"), BTAudio.getStateName().c_str());
-    HttpResponse.printf(F("<tr><td>Remote device</td><td>%s</td></tr>\r\n"), BTAudio.getRemoteDevice().c_str());
+    HttpResponse.printf(F("<tr><td>State</td><td>%s</td></tr>\r\n"), BTAudio.getStateName());
+    HttpResponse.printf(F("<tr><td>Audio State</td><td>%s</td></tr>\r\n"), BTAudio.getAudioStateName());
+    HttpResponse.printf(F("<tr><td>Remote device</td><td>%s</td></tr>\r\n"), BTAudio.getRemoteDeviceName().c_str());
     HttpResponse.printf(F("<tr><td>Sample rate</td><td>%d</td></tr>\r\n"), BTAudio.getSampleRate());
     HttpResponse.printf(F("<tr><td>A2DP Samples</td><td>%u</td></tr>\r\n"), a2dpSamples);
     HttpResponse.printf(F("<tr><td>Sample rate</td><td>%0.2f kHz</td></tr>\r\n"), a2dpSampleRateKHz);
@@ -570,11 +572,11 @@ void handleHttpBluetoothRequest()
     }
     else
     {
-        switch (BTAudio.getState())
+        switch (BTAudio.getAudioState())
         {
-            case BluetoothState::AudioConnected:
-            case BluetoothState::AudioSuspended:
-            case BluetoothState::AudioStopped:
+            case BluetoothAudioState::Connected:
+            case BluetoothAudioState::Suspended:
+            case BluetoothAudioState::Stopped:
                 HttpResponse.printf(
                     F("<p><a href=\"?audio=%u&ctrl=%d\">Start Audio</a></p>\r\n"),
                     currentTime,
@@ -582,7 +584,7 @@ void handleHttpBluetoothRequest()
                     );
                 break;
             
-            case BluetoothState::AudioStarted:
+            case BluetoothAudioState::Started:
                 HttpResponse.printf(
                     F("<p><a href=\"?audio=%u&ctrl=%d\">Stop Audio</a></p>\r\n"),
                     currentTime,
@@ -596,7 +598,7 @@ void handleHttpBluetoothRequest()
     bool allowConnect = (BTAudio.isSinkStarted() || BTAudio.isSourceStarted()) ? false :
         (BTAudio.getState() == BluetoothState::Initialized) || 
         (BTAudio.getState() == BluetoothState::DiscoveryComplete) ||
-        (BTAudio.getState() == BluetoothState::AudioDisconnected); 
+        (BTAudio.getAudioState() == BluetoothAudioState::Disconnected); 
 
     if (shouldPerformAction(F("startSink")))
     {
@@ -626,7 +628,7 @@ void handleHttpBluetoothRequest()
 
     if (BTAudio.isSourceStarted())
     {
-        if (shouldPerformAction(F("disconnect")) || BTAudio.getState() == BluetoothState::AudioDisconnected)
+        if (shouldPerformAction(F("disconnect")) || BTAudio.getAudioState() == BluetoothAudioState::Disconnected)
         {
             if (BTAudio.disconnectSource())
                 HttpResponse.println(F("<p>Disconnecting...</p>\r\n"));
@@ -656,33 +658,30 @@ void handleHttpBluetoothRequest()
     HttpResponse.println(F("<table class=\"btDevices\""));
     HttpResponse.println(F("<tr><th>Name</th><th>Address</th><th>COD</th><th>Device</th><th>Service</th><th>RSSI</th><th></th></tr>"));
     int i = 1;
-    BluetoothDeviceInfo* devInfoPtr = BTAudio.discoveredDevices.getFirstEntry();
-    while (devInfoPtr != nullptr)
+    for (BluetoothDeviceInfo& btDeviceInfo : BTAudio.getDiscoveredDevices())
     {
         HttpResponse.printf(
             F("<tr><td>%s</td><td>%s</td><td>%X</td><td>%X</td><td>%X</td><td>%d</td><td>"),
-            devInfoPtr->deviceName.c_str(),
-            BluetoothAudio::formatDeviceAddress(devInfoPtr->deviceAddress),
-            devInfoPtr->cod,
-            devInfoPtr->codMajorDevice,
-            devInfoPtr->codServices,
-            devInfoPtr->rssi
+            btDeviceInfo.name,
+            btDeviceInfo.getAddress(),
+            btDeviceInfo.cod,
+            btDeviceInfo.codMajorDevice,
+            btDeviceInfo.codServices,
+            btDeviceInfo.rssi
             );
         if (handleBluetoothConnection(
-            devInfoPtr->deviceAddress,
+            btDeviceInfo.address,
             i,
             connIndex,
-            allowConnect && ((devInfoPtr->codServices & COD_AUDIO_RENDERING) == COD_AUDIO_RENDERING))
+            allowConnect && ((btDeviceInfo.codServices & COD_AUDIO_RENDERING) == COD_AUDIO_RENDERING))
             )
         {
-            memcpy(PersistentData.btSinkAddress, devInfoPtr->deviceAddress, sizeof(esp_bd_addr_t));
-            strncpy(PersistentData.btSinkName, devInfoPtr->deviceName.c_str(), sizeof(PersistentData.btSinkName));
+            memcpy(PersistentData.btSinkAddress, btDeviceInfo.address, sizeof(esp_bd_addr_t));
+            strncpy(PersistentData.btSinkName, btDeviceInfo.name, sizeof(PersistentData.btSinkName));
             PersistentData.validate();
             PersistentData.writeToEEPROM();
         }
         HttpResponse.println(F("</td></tr>"));
-
-        devInfoPtr = BTAudio.discoveredDevices.getNextEntry();
         i++;
     }
     HttpResponse.println("</table>");

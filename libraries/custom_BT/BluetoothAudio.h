@@ -5,29 +5,21 @@
 #include <esp_gap_bt_api.h>
 #include <esp_a2dp_api.h>
 #include <Log.h>
+#include <BluetoothClassic.h>
 
-#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
-    #error Bluetooth is not enabled!
-#endif
-
-enum struct BluetoothState
+enum struct BluetoothAudioState
 {
-    Uninitialized = 0,
-    Initialized,
-    Discovering,
-    DiscoveryComplete,
+    Idle = 0,
     AwaitingConnection,
-    Authenticated,
-    AuthenticationFailed,
     AwaitingSource,
     SourceNotReady,
-    AudioConnecting,
-    AudioConnected,
-    AudioStarted,
-    AudioSuspended,
-    AudioStopped,
-    AudioDisconnecting,
-    AudioDisconnected
+    Connecting,
+    Connected,
+    Started,
+    Suspended,
+    Stopped,
+    Disconnecting,
+    Disconnected
 };
 
 
@@ -38,41 +30,15 @@ struct StereoData
 } __attribute__((packed));
 
 
-struct BluetoothDeviceInfo
-{
-    esp_bd_addr_t deviceAddress;
-    String deviceName;
-    uint32_t cod;
-    uint32_t codMajorDevice;
-    uint32_t codServices;
-    int8_t rssi;
-    uint16_t eirLength; 
-    uint8_t* eirData = nullptr;
-
-    ~BluetoothDeviceInfo()
-    {
-        if (eirData != nullptr)
-            free(eirData);
-    }
-};
-
-
-class BluetoothAudio
+class BluetoothAudio : public BluetoothClassic
 {
     public:
-        Log<BluetoothDeviceInfo> discoveredDevices;
-
         // Constructor
         BluetoothAudio();
 
-        BluetoothState inline getState()
+        BluetoothAudioState inline getAudioState()
         {
-            return _state;
-        }
-
-        String inline getRemoteDevice()
-        {
-            return _remoteDevice;
+            return _audioState;
         }
 
         esp_a2d_mct_t inline getCodecType()
@@ -110,11 +76,8 @@ class BluetoothAudio
             return mediaControl(ESP_A2D_MEDIA_CTRL_STOP);
         }
 
-        String getStateName();
-        static const char* formatDeviceAddress(esp_bd_addr_t bda);
+        const char* getAudioStateName();
 
-        bool begin(const char* deviceName, const char* pinCode = nullptr);
-        bool startDiscovery(uint8_t inquiryTime = 5);
         bool startSink(esp_a2d_sink_data_cb_t dataCallback);
         bool stopSink();
         bool connectSource(esp_bd_addr_t sinkAddress, esp_a2d_source_data_cb_t dataCallback);
@@ -122,26 +85,18 @@ class BluetoothAudio
         bool mediaControl(esp_a2d_media_ctrl_t ctrl);
 
     protected:
-        const char* _deviceName;
-        const char* _pinCode;
-        volatile BluetoothState _state = BluetoothState::Uninitialized;
-        String _remoteDevice;
-        esp_bd_addr_t _remoteDeviceAddress;
+        static const char* _audioStateNames[];
+        volatile BluetoothAudioState _audioState = BluetoothAudioState::Idle;
         esp_a2d_mct_t _codecType = 0;
         uint16_t _sampleRate = 0;
         bool _sourceStarted = false;
         bool _sinkStarted = false;
 
-        bool startBluetooth();
-        void addDiscoveredDevice(esp_bt_gap_cb_param_t* gapParam);
         bool awaitAudioDisconnect();
 
-        void gapCallback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param);
         void a2dpCallback(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param);
 
-    private:
-        friend void bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t* param);
-        friend void bt_a2d_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param);
+        static void bt_a2d_cb(esp_a2d_cb_event_t event, esp_a2d_cb_param_t *param);
 };
 
 #endif
