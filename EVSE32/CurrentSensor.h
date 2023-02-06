@@ -1,16 +1,17 @@
+#include <driver/adc.h>
 #include <Ticker.h>
 
 class CurrentSensor
 {
     public:
-        CurrentSensor(int8_t pin);
+        CurrentSensor(uint8_t pin);
 
         bool begin(uint16_t zero = 2048, float scale = 0.016F); // Defaults are approximates
 
         uint16_t calibrateZero();
         float calibrateScale(float actualRMS);
 
-        uint16_t measure(uint16_t periods = 1);
+        uint16_t measure(uint16_t periods = 5);
 
         float inline getSample(uint16_t index)
         {
@@ -22,8 +23,11 @@ class CurrentSensor
         float getRMS();
         float getDC();
 
+        void writeSampleCsv(Print& writeTo, bool raw);
+
     private:
-        int8_t _pin;
+        uint8_t _pin;
+        adc1_channel_t _adcChannel;
         Ticker _ticker;
         uint16_t _sampleBufferSize;
         uint16_t volatile _sampleIndex;

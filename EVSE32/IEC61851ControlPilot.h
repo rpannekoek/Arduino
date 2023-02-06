@@ -1,3 +1,4 @@
+#include <driver/adc.h>
 #include <Ticker.h>
 
 
@@ -16,7 +17,7 @@ class IEC61851ControlPilot
     public:
         IEC61851ControlPilot(uint8_t outputPin, uint8_t inputPin, uint8_t feedbackPin, uint8_t pwmChannel = 0, float maxCurrent = 16);
 
-        bool begin(float scale = 0.0033); // Approximation using 68k/22k voltage divider
+        bool begin(float scale = 0.0041); // Approximation using 82k/22k voltage divider
 
         float calibrate();
 
@@ -35,7 +36,7 @@ class IEC61851ControlPilot
 
         const char* getStatusName();
 
-        float getDutyCycle()
+        float inline getDutyCycle()
         {
             return _dutyCycle;
         }
@@ -45,6 +46,7 @@ class IEC61851ControlPilot
         uint8_t _inputPin;
         uint8_t _feedbackPin;
         uint8_t _pwmChannel;
+        adc1_channel_t _adcChannel;
         float _dutyCycle;
         float _scale;
         float _maxCurrent;

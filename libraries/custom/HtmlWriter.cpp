@@ -357,3 +357,15 @@ void HtmlWriter::writeParagraph(const String& innerHtml)
     _output.print(innerHtml);
     _output.println(F("</p>"));
 }
+
+
+void HtmlWriter::writeActionLink(const String& action, const String& label, time_t currentTime, bool useParagraph)
+{
+    if (useParagraph) _output.print(F("<p>"));
+    _output.printf(
+        F("<a href=\"?%s=%u\">%s</a>"),
+        action.c_str(),
+        currentTime,
+        label.c_str());
+    if (useParagraph) _output.println(F("</p>"));
+}

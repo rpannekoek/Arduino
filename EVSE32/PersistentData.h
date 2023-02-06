@@ -1,3 +1,4 @@
+#include <OneWire.h>
 #include <PersistentDataBase.h>
 
 #define MAX_BT_DEVICES 4
@@ -15,6 +16,9 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
     uint16_t registeredDeviceCount;
     esp_bd_addr_t registeredDevices[MAX_BT_DEVICES];
     float currentScale;
+    DeviceAddress tempSensorAddress;
+    float tempSensorOffset;
+
 
     PersistentDataStruct() : PersistentDataBase(
         sizeof(wifiSSID) +
@@ -27,7 +31,9 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         sizeof(currentZero) +
         sizeof(registeredDeviceCount) +
         sizeof(registeredDevices) +
-        sizeof(currentScale)
+        sizeof(currentScale) +
+        sizeof(tempSensorAddress) +
+        sizeof(tempSensorOffset)
         ) {}
 
     bool isDeviceRegistered(const esp_bd_addr_t& bda)
@@ -53,6 +59,8 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         currentScale = 0.016;
         registeredDeviceCount = 0;
         memset(registeredDevices, 0, sizeof(registeredDevices));
+        memset(tempSensorAddress, 0, sizeof(DeviceAddress));
+        tempSensorOffset = 0;
     }
 
     virtual void validate()
@@ -67,6 +75,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         dsmrPhase = std::min(dsmrPhase, (uint8_t)2);
         currentLimit = std::min(std::max(currentLimit, (uint8_t)6), (uint8_t)25);
         registeredDeviceCount = std::min(registeredDeviceCount, (uint16_t)MAX_BT_DEVICES);
+        tempSensorOffset == std::min(std::max(tempSensorOffset, 5.0F), -5.0F);
     }
 };
 

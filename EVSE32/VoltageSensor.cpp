@@ -5,6 +5,7 @@
 VoltageSensor::VoltageSensor(uint8_t pin)
 {
     _pin = pin;
+    _pinInterrupt = digitalPinToInterrupt(pin);
 }
 
 

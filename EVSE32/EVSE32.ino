@@ -17,6 +17,8 @@
 #include <BLE.h>
 #include <BLEDevice.h>
 #include <BLEScan.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 #include "PersistentData.h"
 #include "CurrentSensor.h"
 #include "VoltageSensor.h"
@@ -31,6 +33,7 @@
 #define SECONDS_PER_DAY (24 * 3600)
 #define WIFI_TIMEOUT_MS 2000
 #define HTTP_POLL_INTERVAL 60
+#define TEMP_POLL_INTERVAL 6
 #define CHARGE_MEASURE_INTERVAL 1.0F
 #define EVENT_LOG_LENGTH 50
 #define FTP_RETRY_INTERVAL (30 * 60)
@@ -43,8 +46,10 @@
 #define CP_OUTPUT_PIN 15
 #define CP_INPUT_PIN 33
 #define CP_FEEDBACK_PIN 16
+#define TEMP_SENSOR_PIN 14
 
-#define ZERO_CURRENT_THRESHOLD 0.01F
+#define TEMP_TOO_HIGH 60
+#define ZERO_CURRENT_THRESHOLD 0.25F
 #define CHARGE_VOLTAGE 230
 
 #define LED_ON 0
@@ -62,6 +67,9 @@
 #define CFG_DSMR_PHASE F("DSMRPhase")
 #define CFG_CURRENT_LIMIT F("CurrentLimit")
 #define CAL_CURRENT F("ActualCurrent")
+#define CAL_CURRENT_ZERO F("CurrentZero")
+#define CAL_CONTROL_PILOT F("ControlPilot")
+#define CAL_TEMP_OFFSET F("TempOffset")
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeJson = "application/json";
@@ -80,9 +88,12 @@ CurrentSensor OutputCurrentSensor(CURRENT_SENSE_PIN);
 VoltageSensor OutputVoltageSensor(VOLTAGE_SENSE_PIN);
 IEC61851ControlPilot ControlPilot(CP_OUTPUT_PIN, CP_INPUT_PIN, CP_FEEDBACK_PIN);
 StatusLED RGBLED(RGB_LED_PIN);
+OneWire OneWireBus(TEMP_SENSOR_PIN);
+DallasTemperature TempSensors(&OneWireBus);
 Ticker ChargeControlTicker;
 
 EVSEState state = EVSEState::Booting;
+float temperature = 0;
 float energyCharged = 0;
 float outputCurrent = 0;
 float currentLimit = 0;
@@ -90,6 +101,7 @@ bool isRelayActivated = false;
 bool isWebAuthorized = false;
 
 time_t currentTime = 0;
+time_t tempPollTime = 0;
 time_t chargingStartedTime = 0;
 time_t chargingFinishedTime = 0;
 
@@ -120,10 +132,10 @@ void setup()
     WebServer.on("/", handleHttpRootRequest);
     WebServer.on("/bt", HTTP_GET, handleHttpBluetoothRequest);
     WebServer.on("/bt", HTTP_POST, handleHttpBluetoothFormPost);
-    WebServer.on("/blejson", HTTP_GET, handleHttpBLEJsonRequest);
+    WebServer.on("/blejson", handleHttpBLEJsonRequest);
+    WebServer.on("/current", handleHttpCurrentRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
-    WebServer.on("/calibrate", HTTP_GET, handleHttpCalibrateRequest);
-    WebServer.on("/calibrate", HTTP_POST, handleHttpCalibrateFormPost);
+    WebServer.on("/calibrate", handleHttpCalibrateRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
     WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
     WebServer.serveStatic(ICON, SPIFFS, ICON, cacheControl);
@@ -164,6 +176,8 @@ void setup()
             setFailure(F("Failed initializing Smart Meter"));
     }
 
+    initTempSensor();
+
     Tracer::traceFreeHeap();
 
     digitalWrite(LED_BUILTIN, LED_OFF);
@@ -203,10 +217,53 @@ void setUnexpectedControlPilotStatus()
 }
 
 
+bool initTempSensor()
+{
+    Tracer tracer(F(__func__));
+
+    TempSensors.begin();
+    TempSensors.setWaitForConversion(false);
+
+    TRACE(F("Found %d OneWire devices.\n"), TempSensors.getDeviceCount());
+    TRACE(F("Found %d temperature sensors.\n"), TempSensors.getDS18Count());
+
+    if (TempSensors.getDS18Count() > 0 && !TempSensors.validFamily(PersistentData.tempSensorAddress))
+    {
+        bool newSensorFound = TempSensors.getAddress(PersistentData.tempSensorAddress, 0);
+        if (newSensorFound)
+            PersistentData.writeToEEPROM();
+        else
+        {
+            setFailure(F("Unable to obtain temperature sensor address."));
+            return false;
+        }
+    }
+
+    DeviceAddress& addr = PersistentData.tempSensorAddress;
+    if (!TempSensors.isConnected(addr))
+    {
+        setFailure(F("Temperature sensor is not connected"));
+        return false;
+    }
+
+    WiFiSM.logEvent(
+        F("Temperature sensor address: %02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X. Offset: %0.2f"),
+        addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7],
+        PersistentData.tempSensorOffset);
+
+    TempSensors.requestTemperatures();
+
+    return true;
+}
+
+
 bool setRelay(bool on)
 {
     const char* relayState = on ? "on" : "off";
     Tracer tracer(F(__func__), relayState);
+
+    isRelayActivated = on;
+    WiFiSM.logEvent(F("Relay set %s"), relayState);
 
     if (on)
     {
@@ -214,27 +271,15 @@ bool setRelay(bool on)
         delay(500);
         digitalWrite(RELAY_ON_PIN, 1);
         digitalWrite(RELAY_START_PIN, 0);
-
-        if (!OutputVoltageSensor.detectSignal())
-        {
-            digitalWrite(RELAY_ON_PIN, 0);
-            return false;
-        }
     }
     else
     {
         digitalWrite(RELAY_ON_PIN, 0);
         digitalWrite(RELAY_START_PIN, 0);
         delay(100);
-
-        if (OutputVoltageSensor.detectSignal())
-            return false;
     }
 
-    isRelayActivated = on;
-
-    WiFiSM.logEvent(F("Relay set %s"), relayState);
-    return true;
+    return (OutputVoltageSensor.detectSignal() == on);
 }
 
 
@@ -266,8 +311,8 @@ void runEVSEStateMachine()
         case EVSEState::SelfTest:
             if (selfTest())
             {
-                setState(EVSEState::Ready);
                 WiFiSM.logEvent(F("Self-test passed"));
+                setState(EVSEState::Ready);
                 ControlPilot.setReady();
             }
             else
@@ -390,7 +435,7 @@ void chargeControl()
             currentLimit = ControlPilot.setCurrentLimit(cl);
     }
 
-    OutputCurrentSensor.measure(5); // Measure 5 periods (100 ms) for better accuracy
+    OutputCurrentSensor.measure();
     outputCurrent = OutputCurrentSensor.getRMS();
 
     energyCharged += outputCurrent * CHARGE_VOLTAGE * CHARGE_MEASURE_INTERVAL; // Ws (J)
@@ -411,7 +456,7 @@ bool selfTest()
     float outputCurrent = OutputCurrentSensor.getRMS(); 
     if (outputCurrent > ZERO_CURRENT_THRESHOLD)
     {
-        WiFiSM.logEvent(F("Output current before relay activation: %0.3f A"), outputCurrent);
+        WiFiSM.logEvent(F("Output current before relay activation: %0.2f A"), outputCurrent);
         return false;
     }
 
@@ -426,7 +471,7 @@ bool selfTest()
     outputCurrent = OutputCurrentSensor.getRMS(); 
     if (outputCurrent > ZERO_CURRENT_THRESHOLD)
     {
-        WiFiSM.logEvent(F("Output current after relay activation: %0.3f A"), outputCurrent);
+        WiFiSM.logEvent(F("Output current after relay activation: %0.2f A"), outputCurrent);
         setRelay(false);
         return false;
     }
@@ -441,7 +486,7 @@ bool selfTest()
     outputCurrent = OutputCurrentSensor.getRMS(); 
     if (outputCurrent > ZERO_CURRENT_THRESHOLD)
     {
-        WiFiSM.logEvent(F("Output current after relay deactivation: %0.3f A"), outputCurrent);
+        WiFiSM.logEvent(F("Output current after relay deactivation: %0.2f A"), outputCurrent);
         return false;
     }
 
@@ -453,11 +498,38 @@ void onWiFiTimeSynced()
 {
     if (state == EVSEState::Booting)
         setState(EVSEState::SelfTest);
+    tempPollTime = currentTime;
 }
 
 
 void onWiFiInitialized()
 {
+    if (currentTime >= tempPollTime && TempSensors.getDS18Count() > 0)
+    {
+        tempPollTime = currentTime + TEMP_POLL_INTERVAL;
+        TempSensors.requestTemperatures();
+    }
+
+    if (TempSensors.isConversionComplete() && state != EVSEState::Failure)
+    {
+        digitalWrite(LED_BUILTIN, LED_ON);
+
+        float tMeasured = TempSensors.getTempC(PersistentData.tempSensorAddress);
+        if (tMeasured == DEVICE_DISCONNECTED_C)
+            setFailure(F("Temperature sensor disconnected"));
+        else if (tMeasured == 85)
+            WiFiSM.logEvent(F("Invalid temperature sensor reading"));
+        else
+        {
+            temperature == tMeasured + PersistentData.tempSensorOffset;
+            if (temperature >= TEMP_TOO_HIGH)
+                setFailure(F("Temperature too high"));
+        }
+        
+        TempSensors.requestTemperatures();
+
+        digitalWrite(LED_BUILTIN, LED_OFF);
+    }
 }
 
 
@@ -469,7 +541,7 @@ void test(String message)
     {
         RGBLED.setStatus(EVSEState::Ready); // Color = Breathing Green
     }
-    else if (message.startsWith("testR"))
+    else if (message.startsWith("testL"))
     {
         for (int i = 0; i < 5; i++)
         {
@@ -480,7 +552,46 @@ void test(String message)
             }
         }
     }
+    else if (message.startsWith("testR"))
+    {
+        for (int i = 0; i < 10; i++)
+        {
+            setRelay(i % 2 == 0);
+            delay(5000);
+        }
+    }
+    else if (message.startsWith("testV"))
+    {
+        if (OutputVoltageSensor.detectSignal(100))
+        {
+            TRACE(F("Output voltage detected.\n"));
+        }
+    }
+    else if (message.startsWith("testC"))
+    {
+        TRACE(F("CP Off Voltage: %0.2f V\n"), ControlPilot.getVoltage());
 
+        ControlPilot.setReady();
+        delay(10);
+        TRACE(F("CP Idle Voltage: %0.2f V\n"), ControlPilot.getVoltage());
+        delay(1000);
+
+        for (int i = 20; i >= 5; i--)
+        {
+            ControlPilot.setCurrentLimit(i);
+            delay(500);
+            TRACE(F("CP Voltage @ %d A: %0.2f V\n"), i, ControlPilot.getVoltage());
+            delay(1500);
+        }
+
+        ControlPilot.setReady();
+        setState(EVSEState::Ready);
+    }
+    else if (message.startsWith("s"))
+    {
+        int number = message.substring(1).toInt();
+        setState(static_cast<EVSEState>(number));
+    }
 }
 
 
@@ -571,12 +682,17 @@ void handleHttpRootRequest()
         Html.writeRowEnd();
     }
 
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("Temperature"));
+    Html.writeCell(temperature, F("%0.1f °C"));
+    Html.writeRowEnd();
+
     Html.writeTableEnd();
 
     if (WiFiSM.shouldPerformAction(F("authorize")))
         isWebAuthorized = true;
     else if (state == EVSEState::VehicleDetected && !isWebAuthorized)
-        HttpResponse.printf(F("<p><a href=\"?authorize=%u\">Start charging</a></p>\r\n"), currentTime);
+        Html.writeActionLink(F("authorize"), F("Start charging"), currentTime);
 
     if (state == EVSEState::Ready || state == EVSEState::Failure)
     {
@@ -586,7 +702,7 @@ void handleHttpRootRequest()
             setState(EVSEState::SelfTest);
         }
         else
-            HttpResponse.printf(F("<p><a href=\"?selftest=%u\">Perform self-test</a></p>\r\n"), currentTime);
+            Html.writeActionLink(F("selftest"), F("Perform self-test"), currentTime);
     }
 
     Html.writeFooter();
@@ -615,7 +731,7 @@ void handleHttpBluetoothRequest()
             Html.writeParagraph(F("Scanning for devices failed."));
     }
     else if (btState == BluetoothState::Initialized || btState == BluetoothState::DiscoveryComplete)
-        HttpResponse.printf(F("<p><a href=\"?startDiscovery=%u\">Scan for devices</a></p>\r\n"), currentTime);
+        Html.writeActionLink(F("startDiscovery"), F("Scan for devices"), currentTime);
 
     HttpResponse.printf(F("<p>State: %s</p>\r\n"), Bluetooth.getStateName());
     if (Bluetooth.isDeviceDetected())
@@ -765,7 +881,7 @@ void handleHttpEventLogRequest()
         event = EventLog.getNextEntry();
     }
 
-    HttpResponse.printf(F("<p><a href=\"?clear=%u\">Clear event log</a></p>\r\n"), currentTime);
+    Html.writeActionLink(F("clear"), F("Clear event log"), currentTime);
 
     Html.writeFooter();
 
@@ -773,22 +889,66 @@ void handleHttpEventLogRequest()
 }
 
 
+void handleHttpCurrentRequest()
+{
+    Tracer tracer(F(__func__));
+
+    bool raw = WebServer.hasArg("raw");
+
+    if (state != EVSEState::Charging)
+        OutputCurrentSensor.measure(10);
+
+    HttpResponse.clear();
+    OutputCurrentSensor.writeSampleCsv(HttpResponse, raw);
+
+    WebServer.send(200, ContentTypeText, HttpResponse);
+}
+
+
 void handleHttpCalibrateRequest()
 {
     Tracer tracer(F(__func__));
 
-    OutputCurrentSensor.measure(10); // Measure 10 periods (200 ms) for accuracy
+    bool savePersistentData = false;
+
+    if (WiFiSM.shouldPerformAction(CAL_CONTROL_PILOT))
+        ControlPilot.calibrate();
+
+    if (WiFiSM.shouldPerformAction(CAL_CURRENT_ZERO))
+    {
+        PersistentData.currentZero = OutputCurrentSensor.calibrateZero();
+        savePersistentData = true;
+    }
+
+    if (WebServer.hasArg(CAL_CURRENT))
+    {
+        float actualCurrentRMS = WebServer.arg(CAL_CURRENT).toFloat();
+        PersistentData.currentScale = OutputCurrentSensor.calibrateScale(actualCurrentRMS);
+        savePersistentData = true;
+    }
+
+    if (WebServer.hasArg(CAL_TEMP_OFFSET))
+    {
+        PersistentData.tempSensorOffset = WebServer.arg(CAL_TEMP_OFFSET).toFloat();
+        savePersistentData = true;
+    }
+
+    if (savePersistentData)
+        PersistentData.writeToEEPROM();
+
+    if (state != EVSEState::Charging)
+        OutputCurrentSensor.measure(50); // Measure 50 periods (1 s) for accuracy
+
     float outputCurrentRMS = OutputCurrentSensor.getRMS();
     float outputCurrentPeak = OutputCurrentSensor.getPeak();
     float outputCurrentDC = OutputCurrentSensor.getDC();
     float cpVoltage = ControlPilot.getVoltage();
+    float cpDutyCycle = ControlPilot.getDutyCycle();
 
     Html.writeHeader(F("Calibration"), true, true);
 
-
-    Html.writeFormStart(F("/calibrate"));
-
     Html.writeHeading(F("Output current"), 2);
+    Html.writeFormStart(F("/calibrate"));
     Html.writeTableStart();
 
     Html.writeRowStart();
@@ -806,36 +966,55 @@ void handleHttpCalibrateRequest()
     Html.writeTextBox(CAL_CURRENT, F("Actual (RMS)"), String(outputCurrentRMS), 6);
     Html.writeTableEnd();
 
+    Html.writeSubmitButton();
+    Html.writeFormEnd();
+
+    if (std::abs(outputCurrentDC) > 0.01)
+        Html.writeActionLink(CAL_CURRENT_ZERO, F("Calibrate DC"), currentTime);
+
     Html.writeHeading(F("Control Pilot"), 2);
     Html.writeTableStart();
     Html.writeRowStart();
     Html.writeHeaderCell(F("Measured"));
     Html.writeCell(cpVoltage, F("%0.2f V"));
     Html.writeRowEnd();
+    Html.writeHeaderCell(F("Duty Cycle"));
+    Html.writeCell(cpDutyCycle * 100, F("%0.0f %%"));
+    Html.writeRowEnd();
     Html.writeTableEnd();
 
-    Html.writeSubmitButton();
-    Html.writeFormEnd();
+    Html.writeActionLink(CAL_CONTROL_PILOT, F("Calibrate Control Pilot Idle"), currentTime);
+
+    Html.writeHeading(F("Temperature sensor"), 2);
+    if (TempSensors.isConnected(PersistentData.tempSensorAddress))
+    {
+        float tMeasured = TempSensors.getTempC(PersistentData.tempSensorAddress);
+
+        Html.writeFormStart(F("/calibrate"));
+        Html.writeTableStart();
+
+        Html.writeRowStart();
+        Html.writeHeaderCell(F("Measured"));
+        Html.writeCell(tMeasured, F("%0.2f °C"));
+        Html.writeRowEnd();
+
+        Html.writeTextBox(CAL_TEMP_OFFSET, F("Offset"), String(PersistentData.tempSensorOffset), 5);
+
+        Html.writeRowStart();
+        Html.writeHeaderCell(F("Effective"));
+        Html.writeCell(tMeasured + PersistentData.tempSensorOffset, F("%0.2f °C"));
+        Html.writeRowEnd();
+
+        Html.writeTableEnd();
+        Html.writeSubmitButton();
+        Html.writeFormEnd();
+    }
+    else
+        Html.writeParagraph(F("Not connected"));
 
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
-}
-
-
-void handleHttpCalibrateFormPost()
-{
-    Tracer tracer(F(__func__));
-
-    float actualCurrentRMS = WebServer.arg(CAL_CURRENT).toFloat();
-
-    PersistentData.currentZero = OutputCurrentSensor.calibrateZero();
-    PersistentData.currentScale = OutputCurrentSensor.calibrateScale(actualCurrentRMS);
-    PersistentData.writeToEEPROM();
-
-    ControlPilot.calibrate();
-
-    handleHttpCalibrateRequest();
 }
 
 
@@ -861,7 +1040,7 @@ void handleHttpConfigFormRequest()
     if (WiFiSM.shouldPerformAction(F("reset")))
         WiFiSM.reset();
     else
-        HttpResponse.printf(F("<p><a href=\"?reset=%u\">Reset ESP</a></p>\r\n"), currentTime);
+        Html.writeActionLink(F("reset"), F("Reset ESP"), currentTime);
 
     Html.writeFooter();
 

@@ -1,10 +1,12 @@
+#include <driver/adc.h>
 #include <Tracer.h>
 #include "CurrentSensor.h"
 
 #define SAMPLE_INTERVAL_MS 1
+#define OVERSAMPLING 5
 #define PERIOD_MS 20
 
-CurrentSensor::CurrentSensor(int8_t pin)
+CurrentSensor::CurrentSensor(uint8_t pin)
 {
     _pin = pin;
 }
@@ -13,6 +15,19 @@ CurrentSensor::CurrentSensor(int8_t pin)
 bool CurrentSensor::begin(uint16_t zero, float scale)
 {
     Tracer tracer(F("CurrentSensor::begin"));
+
+    int8_t adcChannel = digitalPinToAnalogChannel(_pin);
+    if (adcChannel < 0 || adcChannel >= ADC1_CHANNEL_MAX)
+    {
+        TRACE(F("Pin %d has no associated ADC1 channel.\n"));
+        return false;
+    }
+    else
+        TRACE(F("Pin %d => ADC1 channel %d\n"), _pin, adcChannel);
+    _adcChannel = static_cast<adc1_channel_t>(adcChannel);
+
+    adc1_config_width(ADC_WIDTH_BIT_12);
+    adc1_config_channel_atten(_adcChannel, ADC_ATTEN_DB_11);
 
     pinMode(_pin, ANALOG);
 
@@ -73,7 +88,7 @@ float CurrentSensor::calibrateScale(float actualRMS)
     float measuredRMS = getRMS();
     _scale *= actualRMS / measuredRMS;
 
-    TRACE(F("Measured %0.3f A, Actual %0.3f A => scale = %0.3f"), measuredRMS, actualRMS, _scale);
+    TRACE(F("Measured %0.3f A, Actual %0.3f A => scale = %0.3f\n"), measuredRMS, actualRMS, _scale);
 
     return _scale;
 }
@@ -118,8 +133,31 @@ float CurrentSensor::getDC()
 }
 
 
+void  CurrentSensor::writeSampleCsv(Print& writeTo, bool raw)
+{
+    String csvHeader = raw ? F("DC, AC") : F("I (A)");
+    writeTo.println(csvHeader);
+
+    if (_sampleBufferPtr != nullptr)
+    {
+        for (uint16_t i = 0; i < _sampleIndex; i++)
+        {
+            if (raw)
+                writeTo.printf("%d, %d\n", _sampleBufferPtr[i], (int)_sampleBufferPtr[i] - _zero);
+            else
+                writeTo.printf("%0.3f\n", getSample(i));
+        }
+    }
+}
+
+
 void CurrentSensor::sample(CurrentSensor* instancePtr)
 {
+    int sample = 0;
+    for (int i = 0; i < OVERSAMPLING; i++)
+        sample += adc1_get_raw(instancePtr->_adcChannel);
+    sample /= OVERSAMPLING;
+
     uint16_t sampleIndex = instancePtr->_sampleIndex++;
-    instancePtr->_sampleBufferPtr[sampleIndex] = analogRead(instancePtr->_pin);
+    instancePtr->_sampleBufferPtr[sampleIndex] = std::max(sample, 0);
 }

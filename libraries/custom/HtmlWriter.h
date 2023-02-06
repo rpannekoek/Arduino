@@ -49,6 +49,8 @@ class HtmlWriter
 
         void writeParagraph(const String& innerHtml);
 
+        void writeActionLink(const String& action, const String& label, time_t currentTime, bool useParagraph = true);
+
     private:
         StringBuilder& _output;
         const char* _icon;

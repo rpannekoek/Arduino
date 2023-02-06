@@ -1,16 +1,18 @@
 #include <Tracer.h>
 #include "IEC61851ControlPilot.h"
 
+#define PWM_FREQ 1000
 #define STATUS_POLL_INTERVAL 1.0F
-
+#define OVERSAMPLING 5
+#define ADC_OFFSET 0.7F
 
 const char* _statusNames[] =
 {
     "Standby",
-    "Vehicle Detected",
+    "Vehicle detected",
     "Charging",
-    "Charging (Ventilated)",
-    "No Power"
+    "Charging (ventilated)",
+    "No power"
 };
 
 
@@ -37,6 +39,19 @@ bool IEC61851ControlPilot::begin(float scale)
     _dutyCycle = 0;
     _scale = scale; 
 
+    int8_t adcChannel = digitalPinToAnalogChannel(_inputPin);
+    if (adcChannel < 0 || adcChannel >= ADC1_CHANNEL_MAX)
+    {
+        TRACE(F("Pin %d has no associated ADC1 channel.\n"));
+        return false;
+    }
+    else
+        TRACE(F("Pin %d => ADC1 channel %d\n"), _inputPin, adcChannel);
+    _adcChannel = static_cast<adc1_channel_t>(adcChannel);
+
+    adc1_config_width(ADC_WIDTH_BIT_12);
+    adc1_config_channel_atten(_adcChannel, ADC_ATTEN_DB_11);
+
     pinMode(_inputPin, ANALOG);
     pinMode(_outputPin, OUTPUT);
     pinMode(_feedbackPin, INPUT);
@@ -45,8 +60,8 @@ bool IEC61851ControlPilot::begin(float scale)
 
     _statusTicker.attach(1.0F, determineStatus, this);
 
-    uint32_t freq = ledcSetup(_pwmChannel, 1000, 8); // 1 kHz, 8 bits
-    return freq != 0;
+    uint32_t freq = ledcSetup(_pwmChannel, PWM_FREQ, 8); // 1 kHz, 8 bits
+    return freq == PWM_FREQ;
 }
 
 
@@ -54,11 +69,27 @@ float IEC61851ControlPilot::calibrate()
 {
     Tracer tracer(F("IEC61851ControlPilot::calibrate"));
 
-    // Assuming CP voltage is 12 V (Standby)
-    uint16_t standbyLevel = analogRead(_inputPin);
-    _scale = 12.0F / standbyLevel;
+    if (_dutyCycle == 0)
+    {
+        digitalWrite(_outputPin, 1); // 12 V
+        delay(10);
+    }
 
-    TRACE(F("Standby level: %d => scale = %0.4f\n"), standbyLevel, _scale);
+    int standbyLevel = 0;
+    for (int i = 0; i < OVERSAMPLING; i++)
+        standbyLevel += adc1_get_raw(_adcChannel);
+    standbyLevel /= OVERSAMPLING;
+
+    if (_dutyCycle == 0)
+        digitalWrite(_outputPin, 0); // 0 V
+
+    if (standbyLevel > 2500)
+    {
+        _scale = (12.0F - ADC_OFFSET) / standbyLevel;
+        TRACE(F("Standby level: %d => scale = %0.4f\n"), standbyLevel, _scale);
+    }
+    else
+        TRACE(F("Invalid standby level: %d\n"), standbyLevel);
 
     return _scale;
 }
@@ -82,7 +113,7 @@ void IEC61851ControlPilot::setReady()
     ledcDetachPin(_outputPin);
     digitalWrite(_outputPin, 1); // 12 V
 
-    _dutyCycle = 0;
+    _dutyCycle = 1;
 }
 
 
@@ -94,11 +125,11 @@ float IEC61851ControlPilot::setCurrentLimit(float ampere)
     _dutyCycle =  ampere / 60.0F;
     uint32_t duty = static_cast<uint32_t>(std::round(_dutyCycle * 256));
 
-    ledcWrite(_pwmChannel, duty);
     ledcAttachPin(_outputPin, _pwmChannel);
+    ledcWrite(_pwmChannel, duty);
 
     TRACE(
-        F("Set current limit %0.1f. Duty cycle %0.0f %% (%d)"),
+        F("Set current limit %0.1f A. Duty cycle %0.0f %% (%d)\n"),
         ampere,
         _dutyCycle * 100,
         duty);
@@ -109,10 +140,19 @@ float IEC61851ControlPilot::setCurrentLimit(float ampere)
 
 float IEC61851ControlPilot::getVoltage()
 {
-    if (_dutyCycle > 0)
+    if (_dutyCycle > 0 && _dutyCycle < 1)
     {
-        // Wait till CP output is high
+        // Wait for CP output low -> high transition
         int i = 0;
+        while (digitalRead(_feedbackPin) == 1)
+        {
+            if (i++ == 100)
+            {
+                TRACE(F("Timeout waiting for CP low\n"));
+                return -1;
+            }
+            delayMicroseconds(10);
+        }
         while (digitalRead(_feedbackPin) == 0)
         {
             if (i++ == 200)
@@ -122,14 +162,13 @@ float IEC61851ControlPilot::getVoltage()
             }
             delayMicroseconds(10);
         }
-        if (i > 0)
-            delayMicroseconds(50); // Just switched to high; give signal some time to settle
+        delayMicroseconds(10); // Just switched to high; give signal some time to settle
     }
 
-    uint16_t analogInput = analogRead(_inputPin);
-    float voltage = _scale * analogInput;
+    int sample = adc1_get_raw(_adcChannel);
+    float voltage = (sample < 5) ? 0.0F : _scale * sample + ADC_OFFSET;
 
-    //TRACE(F("Control Pilot %0.1f V (%d * %0.4f)\n"), voltage, analogInput, _scale);
+    //TRACE(F("Control Pilot %0.1f V (%d * %0.4f)\n"), voltage, sample, _scale);
 
     return voltage;
 }
