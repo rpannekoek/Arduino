@@ -193,7 +193,7 @@ void IEC61851ControlPilot::determineStatus()
         voltage = getVoltage();
         if (voltage == 0.0F && _dutyCycle > 0 && _dutyCycle < 1 && retries > 0)
         {
-            TRACE(F("Measured 0 V with duty cycle %0.0f. Retrying...\n"), _dutyCycle);
+            TRACE(F("Measured 0 V with duty cycle %0.0f. Retrying...\n"), _dutyCycle * 100);
             voltage = -1;
         }
     }

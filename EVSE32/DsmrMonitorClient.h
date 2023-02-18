@@ -5,18 +5,30 @@
 
 struct PhaseData
 {
-    const char* Phase;
+    String Name;
     float U;
     float I;
     float Pdelivered;
     float Preturned;
+
+    PhaseData()
+    {
+    }
+
+    PhaseData(const PhaseData& other)
+    {
+        Name = other.Name;
+        U = other.U;
+        I = other.I;
+        Pdelivered = other.Pdelivered;
+        Preturned = other.Preturned;
+    }
 };
 
 class DsmrMonitorClient
 {
     public:
         bool isInitialized;
-        PhaseData phases[4];
 
         // Constructor
         DsmrMonitorClient(uint16_t timeout);
@@ -24,15 +36,21 @@ class DsmrMonitorClient
         bool begin(const char* host);
         int requestData();
 
-        inline String getLastError()
+        String inline getLastError()
         {
             return _lastError;
+        }
+
+        std::vector<PhaseData> inline getElectricity()
+        {
+            return _electricity;
         }
 
     private:
         WiFiClient _wifiClient;
         HTTPClient _httpClient;
         String _lastError;
+        std::vector<PhaseData> _electricity;
 
         bool parseJson(String json);
 };

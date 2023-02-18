@@ -140,6 +140,7 @@ void setup()
     WebServer.on("/bt", HTTP_GET, handleHttpBluetoothRequest);
     WebServer.on("/bt", HTTP_POST, handleHttpBluetoothFormPost);
     WebServer.on("/bt/json", handleHttpBluetoothJsonRequest);
+    WebServer.on("/dsmr", handleHttpSmartMeterRequest);
     WebServer.on("/current", handleHttpCurrentRequest);
     WebServer.on("/chargelog", handleHttpChargeLogRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
@@ -417,15 +418,28 @@ bool isChargingAuthorized()
 
 bool stopCharging(const char* cause)
 {
+    Tracer tracer(F(__func__), cause);
+
+    WiFiSM.logEvent(F("Charging stopped by %s."), cause);
+
     chargingFinishedTime = currentTime;
+
+    const int timeout = 2;
     ControlPilot.setReady();
-    delay(500);
+    if (!ControlPilot.awaitStatus(ControlPilotStatus::VehicleDetected, timeout * 1000))
+    {
+        WiFiSM.logEvent("Control Pilot after %d s: %s", timeout, ControlPilot.getStatusName());
+        ControlPilot.setOff();
+        delay(1000);
+    }
+
     if (!setRelay(false))
     {
         setFailure(F("Relay deactivation failed"));
         return false;
     }
-    WiFiSM.logEvent(F("Charging stopped by %s."), cause);
+
+    ControlPilot.setReady();
     setState(EVSEState::ChargeCompleted);
     return true;
 }
@@ -445,7 +459,7 @@ float determineCurrentLimit()
         return 0;
     }
 
-    float phaseCurrent = SmartMeter.phases[PersistentData.dsmrPhase].Pdelivered / CHARGE_VOLTAGE; 
+    float phaseCurrent = SmartMeter.getElectricity()[PersistentData.dsmrPhase].Pdelivered / CHARGE_VOLTAGE; 
     if (state == EVSEState::Charging)
         phaseCurrent -= OutputCurrentSensor.getRMS();
 
@@ -704,6 +718,10 @@ void handleHttpRootRequest()
         Bluetooth.getDiscoveredDevices().size(),
         PersistentData.registeredBeaconCount);
 
+    HttpResponse.printf(
+        F("<tr><th><a href=\"/dsmr\">Smart Meter</a></th><td>%s</td>\r\n"),
+        SmartMeter.isInitialized ? "Enabled" : "Disabled");
+
     Html.writeRowStart();
     Html.writeHeaderCell(F("EVSE State"));
     Html.writeCell(EVSEStateNames[state]);
@@ -793,7 +811,10 @@ void handleHttpRootRequest()
 
         case EVSEState::Authorize:
             if (WiFiSM.shouldPerformAction(F("authorize")))
+            {
+                Html.writeParagraph(F("Charging authorized."));
                 isWebAuthorized = true;
+            }
             else if (!isWebAuthorized)
                 Html.writeActionLink(F("authorize"), F("Start charging"), currentTime);
             break;
@@ -1019,6 +1040,70 @@ void handleHttpEventLogRequest()
     }
 
     Html.writeActionLink(F("clear"), F("Clear event log"), currentTime);
+
+    Html.writeFooter();
+
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
+}
+
+
+void handleHttpSmartMeterRequest()
+{
+    Tracer tracer(F(__func__));
+
+    Html.writeHeader(F("Smart Meter"), true, true);
+
+    if (SmartMeter.isInitialized)
+    {
+        int dsmrResult = SmartMeter.requestData();
+        if (dsmrResult == HTTP_CODE_OK)
+        {
+            std::vector<PhaseData> electricity = SmartMeter.getElectricity();
+
+            Html.writeTableStart();
+            Html.writeRowStart();
+            Html.writeHeaderCell(F("Phase"));
+            Html.writeHeaderCell(F("Voltage"));
+            Html.writeHeaderCell(F("Current"));
+            Html.writeHeaderCell(F("P<sub>delivered</sub>"));
+            Html.writeHeaderCell(F("P<sub>returned</sub>"));
+            Html.writeRowEnd();
+            for (PhaseData& phaseData : electricity)
+            {
+                Html.writeRowStart();
+                Html.writeCell(phaseData.Name);
+                Html.writeCell(phaseData.U, F("%0.1f V"));
+                Html.writeCell(phaseData.I, F("%0.0f A"));
+                Html.writeCell(phaseData.Pdelivered, F("%0.0f W"));
+                Html.writeCell(phaseData.Preturned, F("%0.0f W"));
+                Html.writeRowEnd();
+            }
+            Html.writeTableEnd();
+
+            TRACE(F("DSMR phase: %d\n"), PersistentData.dsmrPhase);
+
+            PhaseData& monitoredPhaseData = electricity[PersistentData.dsmrPhase];
+            HttpResponse.printf(
+                F("<p>Phase '%s' current: %0.1f A</p>\r\n"),
+                monitoredPhaseData.Name.c_str(),
+                monitoredPhaseData.Pdelivered / CHARGE_VOLTAGE);
+        }
+        else
+            HttpResponse.printf(
+                F("<p>%s returned %d: %s</p>\r\n"),
+                PersistentData.dsmrMonitor,
+                dsmrResult,
+                SmartMeter.getLastError().c_str());
+    }
+    else
+        Html.writeParagraph(F("Smart Meter is not enabled."));
+
+    HttpResponse.printf(
+        F("<p>Configured current limit: %d A</p>\r\n"),
+        static_cast<int>(PersistentData.currentLimit));
+
+    float cl = determineCurrentLimit();
+    HttpResponse.printf(F("<p>Effective current limit: %0.1f A</p>\r\n"), cl);
 
     Html.writeFooter();
 

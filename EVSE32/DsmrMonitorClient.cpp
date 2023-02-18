@@ -71,6 +71,7 @@ int DsmrMonitorClient::requestData()
 bool DsmrMonitorClient::parseJson(String json)
 {
     TRACE(F("JSON: '%s'\n"), json.c_str());
+    TRACE(F("\n"));
 
     DeserializationError parseError = deserializeJson(_response, json);
     if (parseError != DeserializationError::Ok)
@@ -81,16 +82,20 @@ bool DsmrMonitorClient::parseJson(String json)
         return false;     
     }
 
-    /* TODO
-    tIn = _response["Tin"];
-    tOut = _response["Tout"];
-    tBuffer = _response["Tbuffer"];
-    flowRate = _response["Flow"];
-    pIn = _response["Pin"];
-    valve = _response["Valve"];
+    _electricity.clear();
+    JsonArray e = _response["Electricity"].as<JsonArray>();
+    for (JsonVariant p : e)
+    {
+        PhaseData phaseData;
+        phaseData.Name = p["Phase"].as<const char*>();
+        phaseData.U = p["U"];
+        phaseData.I = p["I"];
+        phaseData.Pdelivered = p["Pdelivered"];
+        phaseData.Preturned = p["Preturned"];
+        _electricity.push_back(phaseData);
+    }
 
-    TRACE(F("tIn: %0.1f, tOut: %0.1f, tBuffer: %0.1f\n"), tIn, tOut, tBuffer);
-    */
+    TRACE(F("Deserialized %d electricity phases.\n"), _electricity.size());
 
     return true;
 }
