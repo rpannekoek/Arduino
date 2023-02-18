@@ -7,7 +7,7 @@ enum EVSEState
     SelfTest = 1,
     Failure = 2,
     Ready = 3,
-    VehicleDetected = 4,
+    Authorize = 4,
     AwaitCharging = 5,
     Charging = 6,
     ChargeCompleted = 7

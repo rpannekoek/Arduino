@@ -29,6 +29,8 @@ class IEC61851ControlPilot
 
         float getVoltage();
 
+        bool awaitStatus(ControlPilotStatus status, int timeoutMs = 100);
+
         ControlPilotStatus inline getStatus()
         {
             return _status;
@@ -50,8 +52,9 @@ class IEC61851ControlPilot
         float _dutyCycle;
         float _scale;
         float _maxCurrent;
-        ControlPilotStatus _status;
+        ControlPilotStatus volatile _status;
         Ticker _statusTicker;
 
+        void determineStatus(); 
         static void determineStatus(IEC61851ControlPilot* instancePtr); 
 };

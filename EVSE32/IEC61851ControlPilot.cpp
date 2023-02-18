@@ -58,7 +58,7 @@ bool IEC61851ControlPilot::begin(float scale)
 
     digitalWrite(_outputPin, 0); // 0 V
 
-    _statusTicker.attach(1.0F, determineStatus, this);
+    _statusTicker.attach(STATUS_POLL_INTERVAL, determineStatus, this);
 
     uint32_t freq = ledcSetup(_pwmChannel, PWM_FREQ, 8); // 1 kHz, 8 bits
     return freq == PWM_FREQ;
@@ -146,7 +146,7 @@ float IEC61851ControlPilot::getVoltage()
         int i = 0;
         while (digitalRead(_feedbackPin) == 1)
         {
-            if (i++ == 100)
+            if (i++ == 150)
             {
                 TRACE(F("Timeout waiting for CP low\n"));
                 return -1;
@@ -155,40 +155,64 @@ float IEC61851ControlPilot::getVoltage()
         }
         while (digitalRead(_feedbackPin) == 0)
         {
-            if (i++ == 200)
+            if (i++ == 300)
             {
                 TRACE(F("Timeout waiting for CP high\n"));
                 return -1;
             }
             delayMicroseconds(10);
         }
-        delayMicroseconds(10); // Just switched to high; give signal some time to settle
+        delayMicroseconds(5); // Just switched to high; give signal some time to settle
     }
 
     int sample = adc1_get_raw(_adcChannel);
     float voltage = (sample < 5) ? 0.0F : _scale * sample + ADC_OFFSET;
 
-    //TRACE(F("Control Pilot %0.1f V (%d * %0.4f)\n"), voltage, sample, _scale);
-
     return voltage;
 }
 
 
-void IEC61851ControlPilot::determineStatus(IEC61851ControlPilot* instancePtr) 
+bool IEC61851ControlPilot::awaitStatus(ControlPilotStatus status, int timeoutMs)
 {
-    float voltage = instancePtr->getVoltage();
+    while (_status != status && timeoutMs > 0)
+    {
+        delay(10);
+        timeoutMs -= 10;
+        determineStatus();
+    }
+    return _status == status;
+}
 
-    ControlPilotStatus status;
+
+void IEC61851ControlPilot::determineStatus() 
+{
+    float voltage;
+    int retries = 3;
+    do
+    {
+        voltage = getVoltage();
+        if (voltage == 0.0F && _dutyCycle > 0 && _dutyCycle < 1 && retries > 0)
+        {
+            TRACE(F("Measured 0 V with duty cycle %0.0f. Retrying...\n"), _dutyCycle);
+            voltage = -1;
+        }
+    }
+    while (voltage < 0 && retries-- > 0);
+
     if (voltage > 10.5)
-        status =  ControlPilotStatus::Standby;
+        _status =  ControlPilotStatus::Standby;
     else if (voltage > 7.5)
-        status = ControlPilotStatus::VehicleDetected;
+        _status = ControlPilotStatus::VehicleDetected;
     else if (voltage > 4.5)
-        status = ControlPilotStatus::Charging;
+        _status = ControlPilotStatus::Charging;
     else if (voltage > 1.5)
-        status = ControlPilotStatus::ChargingVentilated;
+        _status = ControlPilotStatus::ChargingVentilated;
     else
-        status = ControlPilotStatus::NoPower;
+        _status = ControlPilotStatus::NoPower;
+}
 
-    instancePtr->_status = status;
+
+void IEC61851ControlPilot::determineStatus(IEC61851ControlPilot* instancePtr)
+{
+    instancePtr->determineStatus();
 }

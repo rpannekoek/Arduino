@@ -11,7 +11,12 @@ class CurrentSensor
         uint16_t calibrateZero();
         float calibrateScale(float actualRMS);
 
-        uint16_t measure(uint16_t periods = 5);
+        void measure(uint16_t periods = 5);
+
+        uint16_t inline getSampleCount()
+        {
+            return _sampleIndex;
+        }
 
         float inline getSample(uint16_t index)
         {

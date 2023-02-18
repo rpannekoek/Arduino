@@ -38,7 +38,7 @@ bool CurrentSensor::begin(uint16_t zero, float scale)
 }
 
 
-uint16_t CurrentSensor::measure(uint16_t periods)
+void CurrentSensor::measure(uint16_t periods)
 {
     Tracer tracer(F("CurrentSensor::measure"));
 
@@ -54,8 +54,6 @@ uint16_t CurrentSensor::measure(uint16_t periods)
     _ticker.detach();
 
     TRACE(F("Sampled %d periods => %d samples.\n"), periods, _sampleIndex);
-
-    return _sampleIndex;
 }
 
 

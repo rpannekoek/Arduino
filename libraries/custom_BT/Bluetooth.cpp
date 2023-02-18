@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <Bluetooth.h>
+#include <Tracer.h>
 #include <map>
 
 const char* Bluetooth::_stateNames[] =
@@ -82,10 +83,49 @@ bool Bluetooth::startDiscovery(uint32_t duration)
 }
 
 
+BluetoothDeviceInfo::BluetoothDeviceInfo(const BluetoothDeviceInfo& other)
+{
+    memcpy(address, other.address, sizeof(address));
+    memcpy(name, other.name, sizeof(name));
+    rssi = other.rssi;
+    manufacturerId = other.manufacturerId;
+    cod = other.cod;
+    codMajorDevice = other.codMajorDevice;
+    codServices = other.codServices;
+    uuid = (other.uuid == nullptr) ? nullptr : new UUID128(other.uuid->data);
+    isRegistered = other.isRegistered;
+
+    /*
+    TRACE(F("Copy BluetoothDeviceInfo @%p -> %p\n"), &other, this);
+    if (uuid != nullptr)
+    {
+        TRACE(
+            F("'%s' @%p -> '%s' @%p\n"),
+            other.uuid->toString().c_str(),
+            other.uuid,
+            uuid->toString().c_str(),
+            uuid);
+    }
+    */
+}
+
+
 BluetoothDeviceInfo::BluetoothDeviceInfo(esp_bd_addr_t bda)
 {
     memcpy(address, bda, sizeof(esp_bd_addr_t));
     name[0] = 0;
+    uuid = nullptr;
+    isRegistered = false;
+}
+
+
+BluetoothDeviceInfo::~BluetoothDeviceInfo()
+{
+    if (uuid != nullptr) 
+    {
+        delete uuid;
+        uuid = nullptr;
+    }
 }
 
 

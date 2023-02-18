@@ -18,6 +18,11 @@ class StringBuilder : public Print
     virtual size_t write(uint8_t);
     virtual size_t write(const uint8_t *buffer, size_t size);
 
+    const char* c_str() const
+    {
+        return _buffer;
+    }
+
     operator const char*() const
     {
         return _buffer;

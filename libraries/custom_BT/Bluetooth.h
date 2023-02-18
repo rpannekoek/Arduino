@@ -3,6 +3,7 @@
 
 #include <esp_bt_defs.h>
 #include <vector>
+#include "UUID.h"
 
 #if !defined(CONFIG_BT_ENABLED)
     #error Bluetooth is not enabled!
@@ -28,8 +29,12 @@ struct BluetoothDeviceInfo
     uint32_t cod;
     uint32_t codMajorDevice;
     uint32_t codServices;
+    UUID128* uuid;
+    bool isRegistered;
 
+    BluetoothDeviceInfo(const BluetoothDeviceInfo& other);
     BluetoothDeviceInfo(esp_bd_addr_t bda);
+    ~BluetoothDeviceInfo();
 
     const char* getManufacturerName() const;
     const char* getAddress() const;

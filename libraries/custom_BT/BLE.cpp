@@ -3,6 +3,13 @@
 #include "BLE.h"
 
 
+void BLE::registerBeacons(int count, const uuid128_t* uuids)
+{
+    _registeredBeaconCount = count;
+    _registeredBeacons = uuids;
+}
+
+
 bool BLE::begin(const char* deviceName, int rssiLimit)
 {
     Tracer tracer(F("BLE::begin"), deviceName);
@@ -39,52 +46,65 @@ void BLE::_scanComplete(BLEScanResults scanResults)
 
 void BLE::scanComplete(BLEScanResults& scanResults)
 {
-    TRACE(F("BLE scan complete. Found %d devices:\n"), scanResults.getCount());
+    TRACE(F("BLE scan complete. Found %d devices.\n"), _discoveredDevices.size());
 
-    _discoveredDevices.clear();
-    for (int i = 0; i < scanResults.getCount(); i++)
-    {
-        BLEAdvertisedDevice bleDevice = scanResults.getDevice(i);
-        TRACE(F("\t%s (RSSI=%d)\n"), bleDevice.toString().c_str(), bleDevice.getRSSI());
-
-        if (bleDevice.getRSSI() >= _rssiLimit)
-        {
-            BluetoothDeviceInfo btDevice(*bleDevice.getAddress().getNative());
-            if (bleDevice.getName().length() != 0)
-                btDevice.setName((void*)bleDevice.getName().c_str(), bleDevice.getName().length());
-            btDevice.rssi = bleDevice.getRSSI();
-
-            if (bleDevice.haveManufacturerData())
-            {
-                uint8_t* manufacturerData = (uint8_t*)bleDevice.getManufacturerData().data();
-                btDevice.manufacturerId = manufacturerData[0] | (manufacturerData[1] << 8);;
-                TRACE(F("\tManufacturer: %s\n"), btDevice.getManufacturerName());   
-            }
-
-            TRACE(F("\tAddress type: %d\n\n"), bleDevice.getAddressType());
-
-            _discoveredDevices.push_back(btDevice);
-        }
-    }
-
-    std::sort(_discoveredDevices.begin(), _discoveredDevices.end());
+    // TODO: This does weird stuff with BluetoothDeviceInfo copy constructors
+    //std::sort(_discoveredDevices.begin(), _discoveredDevices.end());
 
     _state = BluetoothState::DiscoveryComplete; 
 }
 
 
-void BLE::onResult(BLEAdvertisedDevice advertisedDevice)
+void BLE::onResult(BLEAdvertisedDevice bleDevice)
 {
-    int rssi = advertisedDevice.getRSSI();
-    if (rssi < _rssiLimit) return;
+    TRACE(F("Advertised Device: %s\n"), bleDevice.toString().c_str());
 
-    esp_bd_addr_t* bdaPtr = advertisedDevice.getAddress().getNative();
+    if (bleDevice.getRSSI() < _rssiLimit) return;
+
+    BluetoothDeviceInfo btDevice(*bleDevice.getAddress().getNative());
+    btDevice.rssi = bleDevice.getRSSI();
+
+    if (bleDevice.haveName())
+        btDevice.setName((void*)bleDevice.getName().c_str(), bleDevice.getName().length());
+
+    if (bleDevice.haveManufacturerData())
+    {
+        std::string manufacturerData = bleDevice.getManufacturerData();
+        btDevice.manufacturerId = manufacturerData[0] | (manufacturerData[1] << 8);;
+        TRACE(F("\tManufacturer: %s\n"), btDevice.getManufacturerName());
+
+        if ((btDevice.manufacturerId == 0x4C) && (manufacturerData[2] == 0x02))
+        {
+            _bleBeacon.setData(manufacturerData);
+
+            strcpy(btDevice.name, "iBeacon");
+            btDevice.uuid = new UUID128(_bleBeacon.getProximityUUID().getNative()->uuid.uuid128);
+            TRACE(F("\tiBeacon: %s\n"), btDevice.uuid->toString().c_str());
+
+            for (int i = 0; i < _registeredBeaconCount; i++)
+            {
+                if (btDevice.uuid->equals(_registeredBeacons[i]))
+                {
+                    TRACE(F("Registered beacon detected.\n"));
+                    btDevice.isRegistered = true;
+                    _isDeviceDetected = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    esp_bd_addr_t* bdaPtr = bleDevice.getAddress().getNative();
     for (int i = 0; i < _registeredDeviceCount; i++)
     {
         if (memcmp(bdaPtr, _registeredDevices[i], sizeof(esp_bd_addr_t)) == 0)
         {
             TRACE(F("Registered device detected.\n"));
+            btDevice.isRegistered = true;
             _isDeviceDetected = true;
+            break;
         }
     }
+
+    _discoveredDevices.push_back(btDevice);
 }

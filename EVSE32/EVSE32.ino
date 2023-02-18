@@ -15,8 +15,6 @@
 #include <HtmlWriter.h>
 #include <Log.h>
 #include <BLE.h>
-#include <BLEDevice.h>
-#include <BLEScan.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 #include "PersistentData.h"
@@ -25,6 +23,8 @@
 #include "IEC61851ControlPilot.h"
 #include "Status.h"
 #include "DsmrMonitorClient.h"
+#include "DayStatistics.h"
+#include "ChargeLogEntry.h"
 
 
 #define ICON "/apple-touch-icon.png"
@@ -33,8 +33,10 @@
 #define SECONDS_PER_DAY (24 * 3600)
 #define WIFI_TIMEOUT_MS 2000
 #define HTTP_POLL_INTERVAL 60
-#define TEMP_POLL_INTERVAL 6
-#define CHARGE_MEASURE_INTERVAL 1.0F
+#define TEMP_POLL_INTERVAL 10
+#define CHARGE_CONTROL_INTERVAL 10
+#define CHARGE_LOG_SIZE 250
+#define CHARGE_LOG_PAGE_SIZE 250
 #define EVENT_LOG_LENGTH 50
 #define FTP_RETRY_INTERVAL (30 * 60)
 
@@ -48,7 +50,7 @@
 #define CP_FEEDBACK_PIN 16
 #define TEMP_SENSOR_PIN 14
 
-#define TEMP_TOO_HIGH 60
+#define TEMP_LIMIT 60
 #define ZERO_CURRENT_THRESHOLD 0.25F
 #define CHARGE_VOLTAGE 230
 
@@ -90,7 +92,8 @@ IEC61851ControlPilot ControlPilot(CP_OUTPUT_PIN, CP_INPUT_PIN, CP_FEEDBACK_PIN);
 StatusLED RGBLED(RGB_LED_PIN);
 OneWire OneWireBus(TEMP_SENSOR_PIN);
 DallasTemperature TempSensors(&OneWireBus);
-Ticker ChargeControlTicker;
+StaticLog<ChargeLogEntry> ChargeLog(CHARGE_LOG_SIZE);
+DayStatistics DayStats;
 
 EVSEState state = EVSEState::Booting;
 float temperature = 0;
@@ -99,12 +102,16 @@ float outputCurrent = 0;
 float currentLimit = 0;
 bool isRelayActivated = false;
 bool isWebAuthorized = false;
+bool isMeasuringTemp = false;
 
 time_t currentTime = 0;
 time_t tempPollTime = 0;
+time_t chargeControlTime = 0;
 time_t chargingStartedTime = 0;
 time_t chargingFinishedTime = 0;
 
+ChargeLogEntry newChargeLogEntry;
+ChargeLogEntry* lastChargeLogEntryPtr = nullptr;
 
 // Boot code
 void setup()
@@ -132,8 +139,9 @@ void setup()
     WebServer.on("/", handleHttpRootRequest);
     WebServer.on("/bt", HTTP_GET, handleHttpBluetoothRequest);
     WebServer.on("/bt", HTTP_POST, handleHttpBluetoothFormPost);
-    WebServer.on("/blejson", handleHttpBLEJsonRequest);
+    WebServer.on("/bt/json", handleHttpBluetoothJsonRequest);
     WebServer.on("/current", handleHttpCurrentRequest);
+    WebServer.on("/chargelog", handleHttpChargeLogRequest);
     WebServer.on("/events", handleHttpEventLogRequest);
     WebServer.on("/calibrate", handleHttpCalibrateRequest);
     WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
@@ -144,6 +152,7 @@ void setup()
     
     WiFiSM.on(WiFiInitState::TimeServerSynced, onWiFiTimeSynced);
     WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
+    WiFiSM.scanAccessPoints();
     WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
 
     if (!RGBLED.begin())
@@ -166,7 +175,7 @@ void setup()
         setFailure(F("Failed initializing Control Pilot"));
 
     if (Bluetooth.begin(PersistentData.hostName))
-        Bluetooth.registerDevices(PersistentData.registeredDeviceCount, PersistentData.registeredDevices);
+        Bluetooth.registerBeacons(PersistentData.registeredBeaconCount, PersistentData.registeredBeacons);
     else
         setFailure(F("Failed initializing Bluetooth"));
 
@@ -211,6 +220,7 @@ void setFailure(const String& reason)
 
 void setUnexpectedControlPilotStatus()
 {
+    WiFiSM.logEvent(F("Control Pilot: %0.1f V"), ControlPilot.getVoltage());
     String message = F("Unexpected Control Pilot status: ");
     message += ControlPilot.getStatusName();
     setFailure(message); 
@@ -250,8 +260,6 @@ bool initTempSensor()
         F("Temperature sensor address: %02X:%02X:%02X:%02X:%02X:%02X:%02X:%02X. Offset: %0.2f"),
         addr[0], addr[1], addr[2], addr[3], addr[4], addr[5], addr[6], addr[7],
         PersistentData.tempSensorOffset);
-
-    TempSensors.requestTemperatures();
 
     return true;
 }
@@ -313,7 +321,6 @@ void runEVSEStateMachine()
             {
                 WiFiSM.logEvent(F("Self-test passed"));
                 setState(EVSEState::Ready);
-                ControlPilot.setReady();
             }
             else
                 setFailure(F("Self-test failed"));
@@ -324,7 +331,7 @@ void runEVSEStateMachine()
             {
                 isWebAuthorized = false;
                 if (Bluetooth.startDiscovery())
-                    setState(EVSEState::VehicleDetected);
+                    setState(EVSEState::Authorize);
                 else
                     setFailure(F("Bluetooth discovery failed"));
             }
@@ -332,7 +339,7 @@ void runEVSEStateMachine()
                 setUnexpectedControlPilotStatus();
             break;
 
-        case EVSEState::VehicleDetected: // Await authorization
+        case EVSEState::Authorize: // Await authorization
             if (isChargingAuthorized())
             {
                 if (setRelay(true))
@@ -340,6 +347,7 @@ void runEVSEStateMachine()
                     chargingStartedTime = 0;
                     chargingFinishedTime = 0;
                     energyCharged = 0;
+                    ChargeLog.clear();
                     currentLimit = ControlPilot.setCurrentLimit(determineCurrentLimit());
                     setState(EVSEState::AwaitCharging);
                 }
@@ -356,7 +364,7 @@ void runEVSEStateMachine()
             if (cpStatus == ControlPilotStatus::Charging || cpStatus == ControlPilotStatus::ChargingVentilated)
             {
                 chargingStartedTime = currentTime;
-                ChargeControlTicker.attach(CHARGE_MEASURE_INTERVAL, chargeControl);
+                chargeControlTime = currentTime + CHARGE_CONTROL_INTERVAL;
                 setState(EVSEState::Charging);
             }
             else if (cpStatus != ControlPilotStatus::VehicleDetected)
@@ -365,16 +373,14 @@ void runEVSEStateMachine()
 
         case EVSEState::Charging:
             if (cpStatus == ControlPilotStatus::VehicleDetected || cpStatus == ControlPilotStatus::Standby)
-            {
-                chargingFinishedTime = currentTime;
-                ChargeControlTicker.detach();
-                if (setRelay(false))
-                    setState(EVSEState::ChargeCompleted);
-                else
-                    setFailure(F("Relay deactivation failed"));
-            }
+                stopCharging("vehicle");
             else if (cpStatus != ControlPilotStatus::Charging && cpStatus != ControlPilotStatus::ChargingVentilated)
                 setUnexpectedControlPilotStatus();
+            else if (currentTime >= chargeControlTime)
+            {
+                chargeControlTime += CHARGE_CONTROL_INTERVAL;
+                chargeControl();
+            }
             break;
 
         case EVSEState::ChargeCompleted:
@@ -389,12 +395,39 @@ void runEVSEStateMachine()
 
 bool isChargingAuthorized()
 {
-    if (isWebAuthorized || Bluetooth.isDeviceDetected()) return true;
+    if (isWebAuthorized)
+    {
+        WiFiSM.logEvent(F("Charging authorized through web"));
+        return true;
+    }
 
+    if (Bluetooth.isDeviceDetected())
+    {
+        WiFiSM.logEvent(F("Charging authorized through Bluetooth"));
+        return true;
+    } 
+
+    // If discovery complete, start new one.
     if (Bluetooth.getState() == BluetoothState::DiscoveryComplete)
         Bluetooth.startDiscovery();
 
     return false;
+}
+
+
+bool stopCharging(const char* cause)
+{
+    chargingFinishedTime = currentTime;
+    ControlPilot.setReady();
+    delay(500);
+    if (!setRelay(false))
+    {
+        setFailure(F("Relay deactivation failed"));
+        return false;
+    }
+    WiFiSM.logEvent(F("Charging stopped by %s."), cause);
+    setState(EVSEState::ChargeCompleted);
+    return true;
 }
 
 
@@ -428,17 +461,36 @@ void chargeControl()
 {
     Tracer tracer(F(__func__));
 
-    if (SmartMeter.isInitialized)
+    if (!OutputVoltageSensor.detectSignal())
     {
-        float cl = determineCurrentLimit();
-        if (cl > 0)
-            currentLimit = ControlPilot.setCurrentLimit(cl);
+        setFailure(F("Output voltage lost"));
+        return;        
     }
 
-    OutputCurrentSensor.measure();
-    outputCurrent = OutputCurrentSensor.getRMS();
+    OutputCurrentSensor.measure(); 
+    if (OutputCurrentSensor.getSampleCount() > 50)
+    {
+        outputCurrent = OutputCurrentSensor.getRMS();
 
-    energyCharged += outputCurrent * CHARGE_VOLTAGE * CHARGE_MEASURE_INTERVAL; // Ws (J)
+        if (SmartMeter.isInitialized)
+        {
+            float cl = determineCurrentLimit();
+            if (cl > 0) currentLimit = ControlPilot.setCurrentLimit(cl);
+        }
+    }
+    else
+        WiFiSM.logEvent(F("Insufficient current samples: %d"), OutputCurrentSensor.getSampleCount());
+
+    energyCharged += outputCurrent * CHARGE_VOLTAGE * CHARGE_CONTROL_INTERVAL; // Ws (J)
+
+    newChargeLogEntry.currentLimit = currentLimit;
+    newChargeLogEntry.outputCurrent = outputCurrent;
+    newChargeLogEntry.temperature = temperature;
+    if (lastChargeLogEntryPtr == nullptr || !newChargeLogEntry.equals(lastChargeLogEntryPtr))
+    {
+        newChargeLogEntry.time = currentTime;
+        lastChargeLogEntryPtr = ChargeLog.add(&newChargeLogEntry);
+    }
 }
 
 
@@ -490,6 +542,20 @@ bool selfTest()
         return false;
     }
 
+    ControlPilot.setOff();
+    if (!ControlPilot.awaitStatus(ControlPilotStatus::NoPower))
+    {
+        WiFiSM.logEvent(F("Control Pilot off: %0.1f V\n"), ControlPilot.getVoltage());
+        return false;
+    }
+
+    ControlPilot.setReady();
+    if (!ControlPilot.awaitStatus(ControlPilotStatus::Standby))
+    {
+        WiFiSM.logEvent(F("Control Pilot standby: %0.1f V\n"), ControlPilot.getVoltage());
+        return false;
+    }
+
     return true;
 }
 
@@ -506,28 +572,31 @@ void onWiFiInitialized()
 {
     if (currentTime >= tempPollTime && TempSensors.getDS18Count() > 0)
     {
+        digitalWrite(LED_BUILTIN, LED_ON);
+        isMeasuringTemp = true;
         tempPollTime = currentTime + TEMP_POLL_INTERVAL;
         TempSensors.requestTemperatures();
     }
 
-    if (TempSensors.isConversionComplete() && state != EVSEState::Failure)
+    if (isMeasuringTemp && TempSensors.isConversionComplete())
     {
-        digitalWrite(LED_BUILTIN, LED_ON);
-
         float tMeasured = TempSensors.getTempC(PersistentData.tempSensorAddress);
         if (tMeasured == DEVICE_DISCONNECTED_C)
-            setFailure(F("Temperature sensor disconnected"));
+        {
+            if (state != EVSEState::Failure)
+                setFailure(F("Temperature sensor disconnected"));
+        }
         else if (tMeasured == 85)
             WiFiSM.logEvent(F("Invalid temperature sensor reading"));
         else
         {
-            temperature == tMeasured + PersistentData.tempSensorOffset;
-            if (temperature >= TEMP_TOO_HIGH)
+            temperature = tMeasured + PersistentData.tempSensorOffset;
+            DayStats.update(currentTime, temperature);
+            if (temperature >= TEMP_LIMIT && state != EVSEState::Failure)
                 setFailure(F("Temperature too high"));
         }
         
-        TempSensors.requestTemperatures();
-
+        isMeasuringTemp = false;
         digitalWrite(LED_BUILTIN, LED_OFF);
     }
 }
@@ -623,13 +692,17 @@ void handleHttpRootRequest()
         float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
 
     HttpResponse.printf(
+        F("<tr><th><a href=\"/chargelog\">Charge log</a></th><td>%d</td>\r\n"),
+        ChargeLog.count());
+
+    HttpResponse.printf(
         F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td>\r\n"),
         EventLog.count());
 
     HttpResponse.printf(
         F("<tr><th><a href=\"/bt\">Bluetooth</a></th><td>%d / %d</td>\r\n"),
         Bluetooth.getDiscoveredDevices().size(),
-        PersistentData.registeredDeviceCount);
+        PersistentData.registeredBeaconCount);
 
     Html.writeRowStart();
     Html.writeHeaderCell(F("EVSE State"));
@@ -637,17 +710,17 @@ void handleHttpRootRequest()
     Html.writeRowEnd();
 
     Html.writeRowStart();
-    Html.writeHeaderCell(F("CP Status"));
+    Html.writeHeaderCell(F("Control Pilot"));
     Html.writeCell(ControlPilot.getStatusName());
-    Html.writeRowEnd();
-
-    Html.writeRowStart();
-    Html.writeHeaderCell(F("Current limit"));
-    Html.writeCell(currentLimit, F("%0.1f A"));
     Html.writeRowEnd();
 
     if (state == EVSEState::Charging)
     {
+        Html.writeRowStart();
+        Html.writeHeaderCell(F("Current limit"));
+        Html.writeCell(currentLimit, F("%0.1f A"));
+        Html.writeRowEnd();
+
         Html.writeRowStart();
         Html.writeHeaderCell(F("Output current"));
         Html.writeCell(outputCurrent, F("%0.1f A"));
@@ -687,27 +760,61 @@ void handleHttpRootRequest()
     Html.writeCell(temperature, F("%0.1f °C"));
     Html.writeRowEnd();
 
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("T<sub>max</sub>"));
+    HttpResponse.printf(
+        F("<td>%0.1f °C @ %s</td>"),
+        DayStats.tMax,
+        formatTime("%H:%M", DayStats.tMaxTime));
+    Html.writeRowEnd();
+
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("T<sub>min</sub>"));
+    HttpResponse.printf(
+        F("<td>%0.1f °C @ %s</td>"),
+        DayStats.tMin,
+        formatTime("%H:%M", DayStats.tMinTime));
+    Html.writeRowEnd();
+
     Html.writeTableEnd();
 
-    if (WiFiSM.shouldPerformAction(F("authorize")))
-        isWebAuthorized = true;
-    else if (state == EVSEState::VehicleDetected && !isWebAuthorized)
-        Html.writeActionLink(F("authorize"), F("Start charging"), currentTime);
-
-    if (state == EVSEState::Ready || state == EVSEState::Failure)
+    switch (state)
     {
-        if (WiFiSM.shouldPerformAction(F("selftest")))
-        {
-            Html.writeParagraph(F("Performing self-test..."));
-            setState(EVSEState::SelfTest);
-        }
-        else
-            Html.writeActionLink(F("selftest"), F("Perform self-test"), currentTime);
+        case EVSEState::Ready:
+        case EVSEState::Failure:
+            if (WiFiSM.shouldPerformAction(F("selftest")))
+            {
+                Html.writeParagraph(F("Performing self-test..."));
+                setState(EVSEState::SelfTest);
+            }
+            else
+                Html.writeActionLink(F("selftest"), F("Perform self-test"), currentTime);
+            break;
+
+        case EVSEState::Authorize:
+            if (WiFiSM.shouldPerformAction(F("authorize")))
+                isWebAuthorized = true;
+            else if (!isWebAuthorized)
+                Html.writeActionLink(F("authorize"), F("Start charging"), currentTime);
+            break;
+
+        case EVSEState::AwaitCharging:
+        case EVSEState::Charging:
+            if (WiFiSM.shouldPerformAction(F("stop")))
+            {
+                if (stopCharging("EVSE"))
+                    Html.writeParagraph(F("Charging stopped."));
+                else
+                    Html.writeParagraph(F("Stop charging failed."));
+            }
+            else
+                Html.writeActionLink(F("stop"), F("Stop charging"), currentTime);
+            break;
     }
 
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -737,35 +844,36 @@ void handleHttpBluetoothRequest()
     if (Bluetooth.isDeviceDetected())
         Html.writeParagraph(F("Registered device detected"));
 
-    Html.writeHeading(F("Registered devices"), 2);
-    for (int i = 0; i < PersistentData.registeredDeviceCount; i++)
+    Html.writeHeading(F("Registered beacons"), 2);
+    for (int i = 0; i < PersistentData.registeredBeaconCount; i++)
     {
-        Html.writeParagraph(Bluetooth.formatDeviceAddress(PersistentData.registeredDevices[i]));
+        UUID128 uuid = UUID128(PersistentData.registeredBeacons[i]);
+        Html.writeParagraph(uuid.toString());
     }
 
     if (btState == BluetoothState::DiscoveryComplete)
     {
-        Html.writeHeading(F("Discovered devices"), 2);
+        Html.writeHeading(F("Discovered beacons"), 2);
         Html.writeFormStart(F("/bt"));
         Html.writeTableStart();
         Html.writeRowStart();
         Html.writeHeaderCell(F(""));
         Html.writeHeaderCell(F("Address"));
-        Html.writeHeaderCell(F("Manufacturer"));
-        Html.writeHeaderCell(F("Name"));
+        Html.writeHeaderCell(F("UUID"));
         Html.writeHeaderCell(F("RSSI"));
         Html.writeRowEnd();
         for (BluetoothDeviceInfo& btDeviceInfo : Bluetooth.getDiscoveredDevices())
         {
-            const char* deviceAddress = btDeviceInfo.getAddress();
+            if (btDeviceInfo.uuid == nullptr) continue;
+            const char* uuid = btDeviceInfo.uuid->toString().c_str();
+
             Html.writeRowStart();
             HttpResponse.printf(
-                F("<td><input type=\"checkbox\" name=\"bda\" value=\"%s\" %s></td>"), 
-                deviceAddress,
-                PersistentData.isDeviceRegistered(btDeviceInfo.address) ? "checked" : "");
-            Html.writeCell(deviceAddress);
-            Html.writeCell(btDeviceInfo.getManufacturerName());
-            Html.writeCell(btDeviceInfo.name);
+                F("<td><input type=\"checkbox\" name=\"uuid\" value=\"%s\" %s></td>"), 
+                uuid,
+                btDeviceInfo.isRegistered ? "checked" : "");
+            Html.writeCell(btDeviceInfo.getAddress());
+            Html.writeCell(uuid);
             Html.writeCell(btDeviceInfo.rssi);
             Html.writeRowEnd();
         }
@@ -778,7 +886,7 @@ void handleHttpBluetoothRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -789,76 +897,105 @@ void handleHttpBluetoothFormPost()
     int n = 0;
     for (int i = 0; i < WebServer.args(); i++)
     {
-        if (WebServer.argName(i) == "bda")
+        if (WebServer.argName(i) == "uuid")
         {
             if (n == MAX_BT_DEVICES) continue;
-            String deviceAddress = WebServer.arg(i);
-            TRACE(F("%s\n"), deviceAddress.c_str());
-            int bda0, bda1, bda2, bda3, bda4, bda5;
-            if (sscanf(deviceAddress.c_str(), "%02X:%02X:%02X:%02X:%02X:%02X", &bda0, &bda1, &bda2, &bda3, &bda4, &bda5) == 6)
-            {
-                esp_bd_addr_t& bda = PersistentData.registeredDevices[n++];
-                bda[0] = bda0;
-                bda[1] = bda1;
-                bda[2] = bda2;
-                bda[3] = bda3;
-                bda[4] = bda4;
-                bda[5] = bda5;
-            }
-            else
-                WiFiSM.logEvent(F("Invalid BT address: '%s'\n"), deviceAddress.c_str());
+
+            String uuidStr = WebServer.arg(i);
+            TRACE(F("UUID: '%s'\n"), uuidStr.c_str());
+
+            UUID128 uuid = UUID128(uuidStr);
+            memcpy(PersistentData.registeredBeacons[n++], uuid.data, sizeof(uuid128_t));
         }
     }
     
-    PersistentData.registeredDeviceCount = n;
+    PersistentData.registeredBeaconCount = n;
     PersistentData.writeToEEPROM();
 
-    Bluetooth.registerDevices(PersistentData.registeredDeviceCount, PersistentData.registeredDevices);
+    Bluetooth.registerBeacons(PersistentData.registeredBeaconCount, PersistentData.registeredBeacons);
 
     handleHttpBluetoothRequest();
 }
 
 
-void handleHttpBLEJsonRequest()
+void handleHttpBluetoothJsonRequest()
 {
     Tracer tracer(F(__func__));
 
-    BLEScan* bleScanPtr = BLEDevice::getScan();
-    bleScanPtr->setActiveScan(true); //active scan uses more power, but get results faster
-    bleScanPtr->setInterval(333);
-    bleScanPtr->setWindow(333);
-
-    BLEScanResults bleScanResult = bleScanPtr->start(1);
+    if (state != EVSEState::Authorize)
+    {
+        Bluetooth.startDiscovery(2);
+        while (Bluetooth.getState() == BluetoothState::Discovering)
+        {
+            delay(100);
+        }
+    }
 
     HttpResponse.clear();
-    HttpResponse.println(F("["));
-    for (int i = 0; i < bleScanResult.getCount(); i++)
+    HttpResponse.print(F("[ "));
+    bool first = true;
+    for (BluetoothDeviceInfo& btDevice : Bluetooth.getDiscoveredDevices())
     {
-        BLEAdvertisedDevice bleDevice = bleScanResult.getDevice(i);
-        HttpResponse.printf(
-            F("{ \"bda\": \"%s\", \"addrType\": %d, \"name\": \"%s\", \"rssi\": %d, \"manufacturer\": ["),
-            bleDevice.getAddress().toString().c_str(),
-            bleDevice.getAddressType(),
-            bleDevice.getName().c_str(),
-            bleDevice.getRSSI()
-            );
-
-        const char* manufacturerData = bleDevice.getManufacturerData().data();
-        for (int j = 0; j < bleDevice.getManufacturerData().size(); j++)
-        {
-            if (j > 0) HttpResponse.print(F(", "));
-            HttpResponse.printf(F("%d"), (uint8_t)manufacturerData[j]);
-        }
-
-        HttpResponse.println(F("] }"));
-        if (i < (bleScanResult.getCount() - 1))
-            HttpResponse.println(F(","));
+        if (first)
+            first = false;
         else
-            HttpResponse.println();
-    }
-    HttpResponse.println(F("]"));
+            HttpResponse.print(F(", "));
 
-    WebServer.send(200, ContentTypeJson, HttpResponse);
+        HttpResponse.printf(
+            F("{ \"rssi\": %d, \"bda\": \"%s\", \"name\": \"%s\", \"uuid\": \"%s\", \"manufacturer\": \"%s\", \"isRegistered\": %s }"),
+            btDevice.rssi,
+            btDevice.getAddress(),
+            btDevice.name,
+            (btDevice.uuid == nullptr) ? "(N/A)" : btDevice.uuid->toString().c_str(),
+            btDevice.getManufacturerName(),
+            btDevice.isRegistered ? "true" : "false"
+            );
+    }
+    HttpResponse.println(F(" ]"));
+
+    WebServer.send(200, ContentTypeJson, HttpResponse.c_str());
+}
+
+
+void handleHttpChargeLogRequest()
+{
+    Tracer tracer(F(__func__));
+
+    int currentPage = WebServer.hasArg("page") ? WebServer.arg("page").toInt() : 0;
+    int totalPages = ((ChargeLog.count() - 1) / CHARGE_LOG_PAGE_SIZE) + 1;
+
+    Html.writeHeader(F("Charge log"), true, true);
+    Html.writePager(totalPages, currentPage);
+    Html.writeTableStart();
+
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("Time"));
+    Html.writeHeaderCell(F("I<sub>limit</sub> (A)"));
+    Html.writeHeaderCell(F("I<sub>output</sub> (A)"));
+    Html.writeHeaderCell(F("T (°C)"));
+    Html.writeRowEnd();
+
+    ChargeLogEntry* logEntryPtr = ChargeLog.getFirstEntry();
+    for (int i = 0; i < (currentPage * CHARGE_LOG_PAGE_SIZE) && logEntryPtr != nullptr; i++)
+    {
+        logEntryPtr = ChargeLog.getNextEntry();
+    }
+    for (int i = 0; i < CHARGE_LOG_PAGE_SIZE && logEntryPtr != nullptr; i++)
+    {
+        Html.writeRowStart();
+        Html.writeCell(formatTime("%H:%M:%S", logEntryPtr->time));
+        Html.writeCell(logEntryPtr->currentLimit);
+        Html.writeCell(logEntryPtr->outputCurrent);
+        Html.writeCell(logEntryPtr->temperature);
+        Html.writeRowEnd();
+
+        logEntryPtr = ChargeLog.getNextEntry();
+    }
+
+    Html.writeTableEnd();
+    Html.writeFooter();
+
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -885,7 +1022,7 @@ void handleHttpEventLogRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -901,7 +1038,7 @@ void handleHttpCurrentRequest()
     HttpResponse.clear();
     OutputCurrentSensor.writeSampleCsv(HttpResponse, raw);
 
-    WebServer.send(200, ContentTypeText, HttpResponse);
+    WebServer.send(200, ContentTypeText, HttpResponse.c_str());
 }
 
 
@@ -934,7 +1071,10 @@ void handleHttpCalibrateRequest()
     }
 
     if (savePersistentData)
+    {
+        PersistentData.validate();
         PersistentData.writeToEEPROM();
+    }
 
     if (state != EVSEState::Charging)
         OutputCurrentSensor.measure(50); // Measure 50 periods (1 s) for accuracy
@@ -951,6 +1091,10 @@ void handleHttpCalibrateRequest()
     Html.writeFormStart(F("/calibrate"));
     Html.writeTableStart();
 
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("Samples"));
+    Html.writeCell(OutputCurrentSensor.getSampleCount());
+    Html.writeRowEnd();
     Html.writeRowStart();
     Html.writeHeaderCell(F("Measured (RMS)"));
     Html.writeCell(outputCurrentRMS, F("%0.2f A"));
@@ -1014,7 +1158,7 @@ void handleHttpCalibrateRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -1044,7 +1188,7 @@ void handleHttpConfigFormRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 

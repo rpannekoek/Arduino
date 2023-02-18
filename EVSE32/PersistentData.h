@@ -13,11 +13,12 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
     uint8_t dsmrPhase;
     uint8_t currentLimit;
     uint16_t currentZero;
-    uint16_t registeredDeviceCount;
-    esp_bd_addr_t registeredDevices[MAX_BT_DEVICES];
+    uint16_t registeredBeaconCount;
+    esp_bd_addr_t registeredDevices[MAX_BT_DEVICES]; // Not used
     float currentScale;
     DeviceAddress tempSensorAddress;
     float tempSensorOffset;
+    uuid128_t registeredBeacons[MAX_BT_DEVICES];
 
 
     PersistentDataStruct() : PersistentDataBase(
@@ -29,22 +30,13 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         sizeof(dsmrPhase) +
         sizeof(currentLimit) +
         sizeof(currentZero) +
-        sizeof(registeredDeviceCount) +
+        sizeof(registeredBeaconCount) +
         sizeof(registeredDevices) +
         sizeof(currentScale) +
         sizeof(tempSensorAddress) +
-        sizeof(tempSensorOffset)
+        sizeof(tempSensorOffset) +
+        sizeof(registeredBeacons)
         ) {}
-
-    bool isDeviceRegistered(const esp_bd_addr_t& bda)
-    {
-        for (int i = 0; i < registeredDeviceCount; i++)
-        {
-            if (memcmp(bda, registeredDevices[i], sizeof(esp_bd_addr_t)) == 0)
-                return true;
-        }
-        return false;
-    }
 
     virtual void initialize()
     {
@@ -57,8 +49,8 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         currentLimit = 10;
         currentZero = 2048;
         currentScale = 0.016;
-        registeredDeviceCount = 0;
-        memset(registeredDevices, 0, sizeof(registeredDevices));
+        registeredBeaconCount = 0;
+        memset(registeredBeacons, 0, sizeof(registeredBeacons));
         memset(tempSensorAddress, 0, sizeof(DeviceAddress));
         tempSensorOffset = 0;
     }
@@ -74,7 +66,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
 
         dsmrPhase = std::min(dsmrPhase, (uint8_t)2);
         currentLimit = std::min(std::max(currentLimit, (uint8_t)6), (uint8_t)25);
-        registeredDeviceCount = std::min(registeredDeviceCount, (uint16_t)MAX_BT_DEVICES);
+        registeredBeaconCount = std::min(registeredBeaconCount, (uint16_t)MAX_BT_DEVICES);
         tempSensorOffset == std::min(std::max(tempSensorOffset, 5.0F), -5.0F);
     }
 };
