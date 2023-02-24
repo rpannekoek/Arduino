@@ -9,6 +9,6 @@ struct ChargeLogEntry
     {
         return std::abs(currentLimit - otherPtr->currentLimit) < 0.1
             && std::abs(outputCurrent - otherPtr->outputCurrent) < 0.1
-            && std::abs(temperature - otherPtr->temperature) < 0.1;
+            && std::abs(temperature - otherPtr->temperature) < 0.2;
     }
 };

@@ -1,4 +1,4 @@
-#define DEBUG_ESP_PORT Serial
+//#define DEBUG_ESP_PORT Serial
 
 #include <Arduino.h>
 #include <math.h>
@@ -35,10 +35,9 @@
 #define HTTP_POLL_INTERVAL 60
 #define TEMP_POLL_INTERVAL 10
 #define CHARGE_CONTROL_INTERVAL 10
-#define CHARGE_LOG_SIZE 250
-#define CHARGE_LOG_PAGE_SIZE 250
+#define CHARGE_LOG_SIZE 150
+#define CHARGE_LOG_PAGE_SIZE 50
 #define EVENT_LOG_LENGTH 50
-#define FTP_RETRY_INTERVAL (30 * 60)
 
 #define RELAY_START_PIN 12
 #define RELAY_ON_PIN 13
@@ -51,7 +50,8 @@
 #define TEMP_SENSOR_PIN 14
 
 #define TEMP_LIMIT 60
-#define ZERO_CURRENT_THRESHOLD 0.25F
+#define ZERO_CURRENT_THRESHOLD 0.2F
+#define LOW_CURRENT_THRESHOLD 0.75F
 #define CHARGE_VOLTAGE 230
 
 #define LED_ON 0
@@ -82,7 +82,7 @@ WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
 DsmrMonitorClient SmartMeter(WIFI_TIMEOUT_MS);
 BLE Bluetooth;
-StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
+StringBuilder HttpResponse(8192); // 8KB HTTP response buffer
 HtmlWriter Html(HttpResponse, ICON, CSS, 60);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
@@ -167,8 +167,7 @@ void setup()
 
     pinMode(RELAY_START_PIN, OUTPUT);
     pinMode(RELAY_ON_PIN, OUTPUT);
-    if (!setRelay(false))
-        setFailure(F("Failed deactivating relay"));
+    setRelay(false);
 
     if (ControlPilot.begin())
         ControlPilot.calibrate();
@@ -215,6 +214,8 @@ void setFailure(const String& reason)
             setRelay(false);
         } 
     }
+    if (state == EVSEState::Charging)
+        chargingFinishedTime = currentTime;
     setState(EVSEState::Failure);
 }
 
@@ -272,7 +273,6 @@ bool setRelay(bool on)
     Tracer tracer(F(__func__), relayState);
 
     isRelayActivated = on;
-    WiFiSM.logEvent(F("Relay set %s"), relayState);
 
     if (on)
     {
@@ -288,7 +288,19 @@ bool setRelay(bool on)
         delay(100);
     }
 
-    return (OutputVoltageSensor.detectSignal() == on);
+    if (OutputVoltageSensor.detectSignal() != isRelayActivated)
+    {
+        if (state != EVSEState::Failure)
+        {
+            String message = F("Failed setting relay ");
+            message += relayState; 
+            setFailure(message);
+        }
+        return false;
+    }
+
+    WiFiSM.logEvent(F("Relay set %s"), relayState);
+    return true;
 }
 
 
@@ -352,8 +364,6 @@ void runEVSEStateMachine()
                     currentLimit = ControlPilot.setCurrentLimit(determineCurrentLimit());
                     setState(EVSEState::AwaitCharging);
                 }
-                else
-                    setFailure(F("Relay activation failed"));
             }
             else if (cpStatus == ControlPilotStatus::Standby)
                 setState(EVSEState::Ready);
@@ -367,6 +377,14 @@ void runEVSEStateMachine()
                 chargingStartedTime = currentTime;
                 chargeControlTime = currentTime + CHARGE_CONTROL_INTERVAL;
                 setState(EVSEState::Charging);
+            }
+            else if (cpStatus == ControlPilotStatus::Standby)
+            {
+                if (setRelay(false))
+                {
+                    ControlPilot.setReady();
+                    setState(EVSEState::Ready);
+                }
             }
             else if (cpStatus != ControlPilotStatus::VehicleDetected)
                 setUnexpectedControlPilotStatus();
@@ -382,6 +400,13 @@ void runEVSEStateMachine()
                 chargeControlTime += CHARGE_CONTROL_INTERVAL;
                 chargeControl();
             }
+            break;
+
+        case EVSEState::StopCharging:
+            if (cpStatus == ControlPilotStatus::VehicleDetected)
+                setState(EVSEState::ChargeCompleted);
+            else if (cpStatus != ControlPilotStatus::Charging && cpStatus != ControlPilotStatus::ChargingVentilated)
+                setUnexpectedControlPilotStatus();
             break;
 
         case EVSEState::ChargeCompleted:
@@ -424,23 +449,23 @@ bool stopCharging(const char* cause)
 
     chargingFinishedTime = currentTime;
 
-    const int timeout = 2;
-    ControlPilot.setReady();
-    if (!ControlPilot.awaitStatus(ControlPilotStatus::VehicleDetected, timeout * 1000))
+    ControlPilot.setOff();
+    int timeout = 20;
+    do
     {
-        WiFiSM.logEvent("Control Pilot after %d s: %s", timeout, ControlPilot.getStatusName());
-        ControlPilot.setOff();
-        delay(1000);
+        OutputCurrentSensor.measure();
+        outputCurrent = OutputCurrentSensor.getRMS();
     }
+    while (outputCurrent > LOW_CURRENT_THRESHOLD && --timeout > 0);
+    if (timeout == 0)
+        WiFiSM.logEvent(F("Vehicle keeps drawing current: %0.1f A"), outputCurrent);
 
-    if (!setRelay(false))
-    {
-        setFailure(F("Relay deactivation failed"));
-        return false;
-    }
+    if (!setRelay(false)) return false;    
 
     ControlPilot.setReady();
-    setState(EVSEState::ChargeCompleted);
+    ControlPilot.awaitStatus(ControlPilotStatus::VehicleDetected);
+
+    setState(EVSEState::StopCharging);
     return true;
 }
 
@@ -460,8 +485,7 @@ float determineCurrentLimit()
     }
 
     float phaseCurrent = SmartMeter.getElectricity()[PersistentData.dsmrPhase].Pdelivered / CHARGE_VOLTAGE; 
-    if (state == EVSEState::Charging)
-        phaseCurrent -= OutputCurrentSensor.getRMS();
+    if (state == EVSEState::Charging) phaseCurrent -= outputCurrent;
 
     float result = PersistentData.currentLimit - phaseCurrent;
 
@@ -485,12 +509,13 @@ void chargeControl()
     if (OutputCurrentSensor.getSampleCount() > 50)
     {
         outputCurrent = OutputCurrentSensor.getRMS();
-
-        if (SmartMeter.isInitialized)
+        if (outputCurrent > currentLimit * 1.25)
         {
-            float cl = determineCurrentLimit();
-            if (cl > 0) currentLimit = ControlPilot.setCurrentLimit(cl);
+            setFailure(F("Output current too high"));
+            return;
         }
+        float cl = determineCurrentLimit();
+        if (cl > 0) currentLimit = ControlPilot.setCurrentLimit(cl);
     }
     else
         WiFiSM.logEvent(F("Insufficient current samples: %d"), OutputCurrentSensor.getSampleCount());
@@ -512,6 +537,13 @@ bool selfTest()
 {
     Tracer tracer(F(__func__));
 
+    ControlPilot.setOff();
+    if (!ControlPilot.awaitStatus(ControlPilotStatus::NoPower))
+    {
+        WiFiSM.logEvent(F("Control Pilot off: %0.1f V\n"), ControlPilot.getVoltage());
+        return false;
+    }
+
     if (OutputVoltageSensor.detectSignal())
     {
         WiFiSM.logEvent(F("Output voltage present before relay activation"));
@@ -526,12 +558,7 @@ bool selfTest()
         return false;
     }
 
-    if (!setRelay(true))
-    {
-        WiFiSM.logEvent(F("No output voltage after relay activation"));
-        setRelay(false);
-        return false;
-    }
+    if (!setRelay(true)) return false;
 
     OutputCurrentSensor.measure();
     outputCurrent = OutputCurrentSensor.getRMS(); 
@@ -542,24 +569,13 @@ bool selfTest()
         return false;
     }
 
-    if (!setRelay(false))
-    {
-        WiFiSM.logEvent(F("Output voltage present after relay deactivation"));
-        return false;
-    }
+    if (!setRelay(false)) return false;
 
     OutputCurrentSensor.measure();
     outputCurrent = OutputCurrentSensor.getRMS(); 
     if (outputCurrent > ZERO_CURRENT_THRESHOLD)
     {
         WiFiSM.logEvent(F("Output current after relay deactivation: %0.2f A"), outputCurrent);
-        return false;
-    }
-
-    ControlPilot.setOff();
-    if (!ControlPilot.awaitStatus(ControlPilotStatus::NoPower))
-    {
-        WiFiSM.logEvent(F("Control Pilot off: %0.1f V\n"), ControlPilot.getVoltage());
         return false;
     }
 
@@ -620,7 +636,21 @@ void test(String message)
 {
     Tracer tracer(F(__func__), message.c_str());
 
-    if (message.startsWith("testB"))
+    if (message.startsWith("testF"))
+    {
+        for (int i = 0; i < EVENT_LOG_LENGTH; i++)
+            WiFiSM.logEvent(F("Test entry to fill up the event log."));
+
+        for (int i = 0; i < CHARGE_LOG_SIZE; i++)
+        {
+            newChargeLogEntry.time = currentTime + i * 60;
+            newChargeLogEntry.currentLimit = i % 16;
+            newChargeLogEntry.outputCurrent = i % 16;
+            newChargeLogEntry.temperature = i % 20 + 10;
+            lastChargeLogEntryPtr = ChargeLog.add(&newChargeLogEntry);
+        }
+    }
+    else if (message.startsWith("testB"))
     {
         RGBLED.setStatus(EVSEState::Ready); // Color = Breathing Green
     }

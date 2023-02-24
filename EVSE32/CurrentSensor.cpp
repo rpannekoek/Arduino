@@ -6,9 +6,11 @@
 #define OVERSAMPLING 5
 #define PERIOD_MS 20
 
-CurrentSensor::CurrentSensor(uint8_t pin)
+CurrentSensor::CurrentSensor(uint8_t pin, size_t bufferSize)
 {
     _pin = pin;
+    _sampleBufferSize = bufferSize;
+    _sampleBufferPtr = new uint16_t[bufferSize];
 }
 
 
@@ -42,18 +44,15 @@ void CurrentSensor::measure(uint16_t periods)
 {
     Tracer tracer(F("CurrentSensor::measure"));
 
-    if (_sampleBufferPtr != nullptr)
-        delete[] _sampleBufferPtr;
+    uint16_t maxPeriods = _sampleBufferSize * SAMPLE_INTERVAL_MS / PERIOD_MS;
+    periods = std::min(periods, maxPeriods);
+    TRACE(F("Measuring %d periods...\n"), periods);
 
-    _sampleBufferSize = periods * PERIOD_MS / SAMPLE_INTERVAL_MS;
-    _sampleBufferPtr = new uint16_t[_sampleBufferSize]; 
     _sampleIndex = 0;
 
     _ticker.attach_ms(SAMPLE_INTERVAL_MS, sample, this);
     delay(periods * PERIOD_MS);
     _ticker.detach();
-
-    TRACE(F("Sampled %d periods => %d samples.\n"), periods, _sampleIndex);
 }
 
 
@@ -136,15 +135,12 @@ void  CurrentSensor::writeSampleCsv(Print& writeTo, bool raw)
     String csvHeader = raw ? F("DC, AC") : F("I (A)");
     writeTo.println(csvHeader);
 
-    if (_sampleBufferPtr != nullptr)
+    for (uint16_t i = 0; i < _sampleIndex; i++)
     {
-        for (uint16_t i = 0; i < _sampleIndex; i++)
-        {
-            if (raw)
-                writeTo.printf("%d, %d\n", _sampleBufferPtr[i], (int)_sampleBufferPtr[i] - _zero);
-            else
-                writeTo.printf("%0.3f\n", getSample(i));
-        }
+        if (raw)
+            writeTo.printf("%d, %d\n", _sampleBufferPtr[i], (int)_sampleBufferPtr[i] - _zero);
+        else
+            writeTo.printf("%0.3f\n", getSample(i));
     }
 }
 
@@ -157,5 +153,6 @@ void CurrentSensor::sample(CurrentSensor* instancePtr)
     sample /= OVERSAMPLING;
 
     uint16_t sampleIndex = instancePtr->_sampleIndex++;
-    instancePtr->_sampleBufferPtr[sampleIndex] = std::max(sample, 0);
+    if (sampleIndex < instancePtr->_sampleBufferSize)
+        instancePtr->_sampleBufferPtr[sampleIndex] = std::max(sample, 0);
 }

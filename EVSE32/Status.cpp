@@ -9,7 +9,9 @@
 #define RED pixelFromRGB(255, 0, 0)
 #define MAGENTA pixelFromRGB(255, 0, 255)
 #define YELLOW pixelFromRGB(255, 255, 0)
-#define YELLOW_BREATHE pixelFromRGBW(255, 255, 0, 1)
+#define YELLOW_BREATHE pixelFromRGBW(255, 255, 0, 2)
+#define ORANGE pixelFromRGB(255, 165, 0)
+#define ORANGE_BREATHE pixelFromRGBW(255, 165, 0, 2)
 #define WHITE pixelFromRGB(255, 255, 255)
 
 #define BREATHE_INTERVAL 0.1F
@@ -25,6 +27,7 @@ const char* EVSEStateNames[] =
     [EVSEState::Authorize] = "Authorize",
     [EVSEState::AwaitCharging] = "Await charging",
     [EVSEState::Charging] = "Charging",
+    [EVSEState::StopCharging] = "Stop charging",
     [EVSEState::ChargeCompleted] = "Charge completed"
 };
 
@@ -36,7 +39,8 @@ pixelColor_t StatusLED::_statusColors[] =
     [EVSEState::Ready] = GREEN_BREATHE,
     [EVSEState::Authorize] = WHITE,
     [EVSEState::AwaitCharging] = CYAN,
-    [EVSEState::Charging] = YELLOW_BREATHE,
+    [EVSEState::Charging] = ORANGE_BREATHE,
+    [EVSEState::StopCharging] = YELLOW,
     [EVSEState::ChargeCompleted] = BLACK
 };
 
@@ -135,7 +139,7 @@ bool StatusLED::setStatus(EVSEState status)
     if (_statusColor.w != 0)
     {
         _breatheIndex = 0;
-        _breatheTicker.attach(BREATHE_INTERVAL, breathe, this);
+        _breatheTicker.attach(BREATHE_INTERVAL / _statusColor.w, breathe, this);
     }
     else
         _breatheTicker.detach();

@@ -140,8 +140,13 @@ float IEC61851ControlPilot::setCurrentLimit(float ampere)
 
 float IEC61851ControlPilot::getVoltage()
 {
+    uint32_t originalDuty = 0;
     if (_dutyCycle > 0 && _dutyCycle < 1)
     {
+        // Can't measure voltage is duty cycle is very low   
+        originalDuty = ledcRead(_pwmChannel);
+        if (originalDuty < 32) ledcWrite(_pwmChannel, 32);
+
         // Wait for CP output low -> high transition
         int i = 0;
         while (digitalRead(_feedbackPin) == 1)
@@ -167,6 +172,9 @@ float IEC61851ControlPilot::getVoltage()
 
     int sample = adc1_get_raw(_adcChannel);
     float voltage = (sample < 5) ? 0.0F : _scale * sample + ADC_OFFSET;
+
+    if ((_dutyCycle > 0) && (_dutyCycle < 0.125))
+        ledcWrite(_pwmChannel, originalDuty);
 
     return voltage;
 }

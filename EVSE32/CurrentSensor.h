@@ -4,7 +4,7 @@
 class CurrentSensor
 {
     public:
-        CurrentSensor(uint8_t pin);
+        CurrentSensor(uint8_t pin, size_t bufferSize = 1024);
 
         bool begin(uint16_t zero = 2048, float scale = 0.016F); // Defaults are approximates
 
