@@ -50,3 +50,15 @@ td.graph
     background-color: lightgrey;
     color: lightgrey;
 }
+
+.button
+{
+    font-size: 18pt;
+    font-weight: bold;
+    text-decoration: none;
+    color: white;
+    background-color: green;
+    padding: 10px;
+    border: none;
+    border-radius: 10px;
+}

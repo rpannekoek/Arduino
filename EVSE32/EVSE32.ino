@@ -77,6 +77,9 @@ const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeJson = "application/json";
 const char* ContentTypeText = "text/plain";
 
+const char* ButtonMarginTop = "2em";
+const char* ButtonClass = "button";
+
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
@@ -836,7 +839,7 @@ void handleHttpRootRequest()
                 setState(EVSEState::SelfTest);
             }
             else
-                Html.writeActionLink(F("selftest"), F("Perform self-test"), currentTime);
+                Html.writeActionLink(F("selftest"), F("Perform self-test"), currentTime, ButtonMarginTop, ButtonClass);
             break;
 
         case EVSEState::Authorize:
@@ -846,7 +849,7 @@ void handleHttpRootRequest()
                 isWebAuthorized = true;
             }
             else if (!isWebAuthorized)
-                Html.writeActionLink(F("authorize"), F("Start charging"), currentTime);
+                Html.writeActionLink(F("authorize"), F("Start charging"), currentTime, ButtonMarginTop, ButtonClass);
             break;
 
         case EVSEState::AwaitCharging:
@@ -859,7 +862,7 @@ void handleHttpRootRequest()
                     Html.writeParagraph(F("Stop charging failed."));
             }
             else
-                Html.writeActionLink(F("stop"), F("Stop charging"), currentTime);
+                Html.writeActionLink(F("stop"), F("Stop charging"), currentTime, ButtonMarginTop, ButtonClass);
             break;
     }
 

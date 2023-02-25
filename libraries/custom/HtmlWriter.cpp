@@ -359,13 +359,14 @@ void HtmlWriter::writeParagraph(const String& innerHtml)
 }
 
 
-void HtmlWriter::writeActionLink(const String& action, const String& label, time_t currentTime, bool useParagraph)
+void HtmlWriter::writeActionLink(const String& action, const String& label, time_t currentTime, const String& marginTop, const String& cssClass)
 {
-    if (useParagraph) _output.print(F("<p>"));
+    if (marginTop.length() > 0) _output.printf(F("<div style=\"margin-top: %s\">"), marginTop.c_str());
     _output.printf(
-        F("<a href=\"?%s=%u\">%s</a>"),
+        F("<a class=\"%s\" href=\"?%s=%u\">%s</a>"),
+        cssClass.c_str(),
         action.c_str(),
         currentTime,
         label.c_str());
-    if (useParagraph) _output.println(F("</p>"));
+    if (marginTop.length() > 0) _output.println(F("</div>"));
 }

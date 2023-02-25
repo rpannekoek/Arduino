@@ -49,7 +49,7 @@ class HtmlWriter
 
         void writeParagraph(const String& innerHtml);
 
-        void writeActionLink(const String& action, const String& label, time_t currentTime, bool useParagraph = true);
+        void writeActionLink(const String& action, const String& label, time_t currentTime, const String& marginTop = String(), const String& cssClass= String("actionLink"));
 
     private:
         StringBuilder& _output;
