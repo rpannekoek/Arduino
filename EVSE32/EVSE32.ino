@@ -396,8 +396,6 @@ void runEVSEStateMachine()
         case EVSEState::Charging:
             if (cpStatus == ControlPilotStatus::VehicleDetected || cpStatus == ControlPilotStatus::Standby)
                 stopCharging("vehicle");
-            else if (cpStatus != ControlPilotStatus::Charging && cpStatus != ControlPilotStatus::ChargingVentilated)
-                setUnexpectedControlPilotStatus();
             else if (currentTime >= chargeControlTime)
             {
                 chargeControlTime += CHARGE_CONTROL_INTERVAL;
