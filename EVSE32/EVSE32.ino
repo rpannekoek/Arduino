@@ -485,8 +485,10 @@ float determineCurrentLimit()
         return 0;
     }
 
-    float phaseCurrent = SmartMeter.getElectricity()[PersistentData.dsmrPhase].Pdelivered / CHARGE_VOLTAGE; 
-    if (state == EVSEState::Charging) phaseCurrent -= outputCurrent;
+    PhaseData& phase = SmartMeter.getElectricity()[PersistentData.dsmrPhase]; 
+    float phaseCurrent = phase.Pdelivered / phase.U; 
+    if (state == EVSEState::Charging)
+        phaseCurrent = std::max(phaseCurrent - outputCurrent, 0.0F);
 
     float result = PersistentData.currentLimit - phaseCurrent;
 
