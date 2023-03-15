@@ -1,14 +1,11 @@
-#define NUMBER_OF_MONITORED_TOPICS 8
+#define NUMBER_OF_MONITORED_TOPICS 5
 
 enum TopicId
 {
     Temperature,
     Pressure,
     Humidity,
-    IAQ,
-    CO2Equivalent,
-    BVOCEquivalent,
-    Accuracy,
+    CO2,
     Fan
 };
 
@@ -57,8 +54,12 @@ struct TopicLogEntry
     {
         for (int i = 0; i < NUMBER_OF_MONITORED_TOPICS; i++)
         {
-            float otherAvg = std::max(otherPtr->getAverage(i), 0.01F);
-            if (std::abs(getAverage(i) - otherAvg) / otherAvg >= 0.01) // +/- 1%
+            float otherAvg = otherPtr->getAverage(i);
+            if (otherAvg == 0.0F)
+            {
+                if (getAverage(i) != 0.0F) return false;
+            }
+            else if (std::abs(getAverage(i) - otherAvg) / otherAvg >= 0.01) // +/- 1%
                 return false;
         }
         return true;
@@ -86,9 +87,6 @@ MonitoredTopic MonitoredTopics[] =
     { TopicId::Temperature, "Temperature", "Temperature", "°C", "temperature", 1, 0, 30 },
     { TopicId::Pressure, "Pressure", "Pressure", "hPa", "pressure", 0, 900, 1100 },
     { TopicId::Humidity, "Humidity", "Humidity", "%", "humidity", 0, 0, 100 },
-    { TopicId::IAQ, "IAQ", "IAQ", "", "iaq", 0, 0, 300 },
-    { TopicId::CO2Equivalent, "CO2", "CO<sub>2</sub>", "ppm", "ppm", 0, 400, 1600 },
-    { TopicId::BVOCEquivalent, "BVOC", "BVOC", "ppm", "ppm", 1, 0, 6 },
-    { TopicId::Accuracy, "Accuracy", "Accuracy", "", "accuracy", 0, 0, 3 },
+    { TopicId::CO2, "CO2", "CO<sub>2</sub>", "ppm", "iaq", 0, 400, 1600 },
     { TopicId::Fan, "Fan", "Fan", "", "fan", 0, 0, 1 }
 };

@@ -1,4 +1,4 @@
-#define DEBUG_ESP_PORT Serial
+//#define DEBUG_ESP_PORT Serial
 
 #include <Arduino.h>
 #include <Adafruit_SSD1306.h>
@@ -17,6 +17,7 @@
 #include <Log.h>
 #include <Wire.h>
 #include <bsec.h>
+#include <s8_uart.h>
 #include "PersistentData.h"
 #include "MonitoredTopics.h"
 
@@ -33,9 +34,11 @@
 #define HOUR_LOG_INTERVAL (30 * 60)
 #define IAQ_LOG_SIZE 250
 #define IAQ_LOG_PAGE_SIZE 50
-#define IAQ_SENSOR_COUNT 6
+#define BME_SENSOR_COUNT 3
 
 #define FAN_PIN 14
+#define CO2SENSOR_TXD_PIN 15
+#define CO2SENSOR_RXD_PIN 13
 
 #define LED_ON 0
 #define LED_OFF 1
@@ -69,6 +72,8 @@ StaticLog<TopicLogEntry> HourStats(24 * 2); // 24 hrs
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 Adafruit_SSD1306 Display(128, 64, &Wire);
 Ticker DisplayTicker;
+Ticker MeasureTicker;
+S8_UART CO2Sensor(Serial1);
 
 time_t currentTime = 0;
 time_t syncFTPTime = 0;
@@ -90,16 +95,14 @@ const uint8_t iaqSensorConfig[] =
 {
     0,8,4,1,61,0,0,0,0,0,0,0,174,1,0,0,48,0,1,0,0,192,168,71,64,49,119,76,0,0,225,68,137,65,0,191,205,204,204,190,0,0,64,191,225,122,148,190,0,0,0,0,216,85,0,100,0,0,0,0,0,0,0,0,28,0,2,0,0,244,1,225,0,25,0,0,128,64,0,0,32,65,144,1,0,0,112,65,0,0,0,63,16,0,3,0,10,215,163,60,10,215,35,59,10,215,35,59,9,0,5,0,0,0,0,0,1,88,0,9,0,229,208,34,62,0,0,0,0,0,0,0,0,218,27,156,62,225,11,67,64,0,0,160,64,0,0,0,0,0,0,0,0,94,75,72,189,93,254,159,64,66,62,160,191,0,0,0,0,0,0,0,0,33,31,180,190,138,176,97,64,65,241,99,190,0,0,0,0,0,0,0,0,167,121,71,61,165,189,41,192,184,30,189,64,12,0,10,0,0,0,0,0,0,0,0,0,229,0,254,0,2,1,5,48,117,100,0,44,1,112,23,151,7,132,3,197,0,92,4,144,1,64,1,64,1,144,1,48,117,48,117,48,117,48,117,100,0,100,0,100,0,48,117,48,117,48,117,100,0,100,0,48,117,48,117,100,0,100,0,100,0,100,0,48,117,48,117,48,117,100,0,100,0,100,0,48,117,48,117,100,0,100,0,44,1,44,1,44,1,44,1,44,1,44,1,44,1,44,1,44,1,44,1,44,1,44,1,44,1,44,1,8,7,8,7,8,7,8,7,8,7,8,7,8,7,8,7,8,7,8,7,8,7,8,7,8,7,8,7,112,23,112,23,112,23,112,23,112,23,112,23,112,23,112,23,112,23,112,23,112,23,112,23,112,23,112,23,255,255,255,255,255,255,255,255,220,5,220,5,220,5,255,255,255,255,255,255,220,5,220,5,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,255,44,1,0,0,0,0,237,52,0,0
 };
-bsec_virtual_sensor_t iaqSensorIds[IAQ_SENSOR_COUNT] =
+bsec_virtual_sensor_t iaqSensorIds[BME_SENSOR_COUNT] =
 {
     BSEC_OUTPUT_RAW_PRESSURE,
-    BSEC_OUTPUT_STATIC_IAQ,
-    BSEC_OUTPUT_CO2_EQUIVALENT,
-    BSEC_OUTPUT_BREATH_VOC_EQUIVALENT,
     BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_TEMPERATURE,
     BSEC_OUTPUT_SENSOR_HEAT_COMPENSATED_HUMIDITY
 };
 int8_t lastBme680Status = BME680_OK;
+int16_t lastS8Status = 0;
 
 
 // Boot code
@@ -155,6 +158,8 @@ void setup()
     }
     else
         WiFiSM.logEvent(F("Failed initializing I2C"));
+
+    initializeCO2Sensor();
 
     Tracer::traceFreeHeap();
 
@@ -212,7 +217,7 @@ void displayTopic()
 
     Display.display();
 
-    showTopic = (showTopic + 1) % (NUMBER_OF_MONITORED_TOPICS - 2);
+    showTopic = (showTopic + 1) % (NUMBER_OF_MONITORED_TOPICS - 1);
 }
 
 
@@ -232,19 +237,6 @@ bool initializeIAQSensor()
     }
 
     IAQSensor.setTemperatureOffset(PersistentData.tOffset);
-
-    if (PersistentData.bsecStateTime != 0)
-    {
-        IAQSensor.setState(PersistentData.bsecState);
-        if (IAQSensor.status == BSEC_OK)
-            WiFiSM.logEvent(F("Restored BSEC state from %s"), formatTime("%F %H:%M", PersistentData.bsecStateTime));
-        else
-        {
-            PersistentData.bsecStateTime = 0;
-            WiFiSM.logEvent(F("Failed restoring BSEC state: %d"), IAQSensor.status);
-            return false;
-        }
-    }
 
     return true;
 }
@@ -271,29 +263,64 @@ bool checkIAQStatus()
 }
 
 
+bool initializeCO2Sensor()
+{
+    Serial1.begin(S8_BAUDRATE, SERIAL_8N1, CO2SENSOR_RXD_PIN, CO2SENSOR_TXD_PIN);
+    Serial1.setTimeout(500);
+
+    char firmwareVersion[16];
+    CO2Sensor.get_firmware_version(firmwareVersion);
+    if (strlen(firmwareVersion) == 0)
+    {
+        WiFiSM.logEvent(F("CO2 sensor not found."));
+        return false;
+    }
+    
+    WiFiSM.logEvent(F("CO2 sensor version %s"), firmwareVersion);
+    return true;
+}
+
+
+bool checkCO2SensorStatus()
+{
+    int16_t status = CO2Sensor.get_meter_status();
+
+    if ((status != 0) && (status != lastS8Status))
+        WiFiSM.logEvent(F("CO2 sensor error: 0x%02x"), status);
+
+    lastS8Status = status;
+    return (status == 0);
+}
+
+
 void setNightMode(bool on)
 {
     Tracer tracer(F(__func__), on ? "on" : "off");
 
     isNightMode = on;
 
-    float sampleRate;
+    int measureInterval;
+    float bsecSampleRate;
     if (isNightMode)
     {
-        sampleRate = BSEC_SAMPLE_RATE_ULP;
+        measureInterval = 300;
+        bsecSampleRate = BSEC_SAMPLE_RATE_ULP;
         DisplayTicker.detach();
         Display.clearDisplay();
         Display.display();
     }
     else
     {
-        sampleRate = BSEC_SAMPLE_RATE_LP;
+        measureInterval = 6;
+        bsecSampleRate = BSEC_SAMPLE_RATE_LP;
         DisplayTicker.attach(DISPLAY_INTERVAL, displayTopic);
     }
 
-    IAQSensor.updateSubscription(iaqSensorIds, IAQ_SENSOR_COUNT, sampleRate);
+    IAQSensor.updateSubscription(iaqSensorIds, BME_SENSOR_COUNT, bsecSampleRate);
     if (IAQSensor.status != BSEC_OK)
         WiFiSM.logEvent(F("Failed BSEC subscription: %d"), IAQSensor.status);
+
+    MeasureTicker.attach(measureInterval, updateIAQ);
 }
 
 
@@ -339,11 +366,6 @@ void onWiFiTimeSynced()
 
 void onWiFiInitialized()
 {
-    if (IAQSensor.run())
-        updateIAQ();
-    else        
-        checkIAQStatus();
-
     if (WiFiSM.isConnected())
     {
         if (isNightMode) setNightMode(false);
@@ -377,26 +399,37 @@ void updateIAQ()
 {
     Tracer tracer(F(__func__));
 
-    currentTopicValues[TopicId::Temperature] = IAQSensor.temperature;
-    currentTopicValues[TopicId::Pressure] = IAQSensor.pressure / 100; // hPa
-    currentTopicValues[TopicId::Humidity] = IAQSensor.humidity;
-    currentTopicValues[TopicId::Accuracy] = IAQSensor.staticIaqAccuracy;
-    currentTopicValues[TopicId::IAQ] = IAQSensor.staticIaq;
-    currentTopicValues[TopicId::CO2Equivalent] = IAQSensor.co2Equivalent;
-    currentTopicValues[TopicId::BVOCEquivalent] = IAQSensor.breathVocEquivalent;
+    if (checkIAQStatus() && IAQSensor.run())
+    {
+        currentTopicValues[TopicId::Temperature] = IAQSensor.temperature;
+        currentTopicValues[TopicId::Pressure] = IAQSensor.pressure / 100; // hPa
+        currentTopicValues[TopicId::Humidity] = IAQSensor.humidity;
+    }
+
+    if (checkCO2SensorStatus())
+        currentTopicValues[TopicId::CO2] = CO2Sensor.get_co2();
 
     if (currentTime >= newLogEntry.time + AGGREGATION_INTERVAL)
     {
-        float avgIAQ = newLogEntry.getAverage(TopicId::IAQ);
-        if (fanIsOn)
+        time_t startOfDay = getStartOfDay(currentTime);
+        if (currentTime < startOfDay + PersistentData.fanOffToMinutes * 60
+            || currentTime > startOfDay + PersistentData.fanOffFromMinutes * 60)
         {
-            if (avgIAQ < (PersistentData.fanIAQThreshold - PersistentData.fanIAQHysteresis)
-                || currentTime >= getStartOfDay(currentTime) + PersistentData.fanOffFromMinutes * 60)
-                setFanState(false);
+            // Fan off time
+            if (fanIsOn) setFanState(false);
         }
-        else if (avgIAQ >= PersistentData.fanIAQThreshold
-            && currentTime >= getStartOfDay(currentTime) + PersistentData.fanOffToMinutes * 60)
-            setFanState(true);
+        else
+        {
+            // Switch fan on/off based on CO2 levels
+            float avgCO2 = newLogEntry.getAverage(TopicId::CO2);
+            if (fanIsOn)
+            {
+                if (avgCO2 < (PersistentData.fanCO2Threshold - PersistentData.fanCO2Hysteresis))
+                    setFanState(false);
+            }
+            else if (avgCO2 >= PersistentData.fanCO2Threshold)
+                setFanState(true);
+        }
 
         if (lastLogEntryPtr == nullptr || !newLogEntry.equals(lastLogEntryPtr))
         {
@@ -420,20 +453,6 @@ void updateIAQ()
         lastStatsEntryPtr = HourStats.add(&statsEntry);
     }
     lastStatsEntryPtr->aggregate(currentTopicValues);
-
-    if ((currentTopicValues[TopicId::Accuracy] == 3) && (currentTime >= PersistentData.bsecStateTime + BSEC_STATE_SAVE_INTERVAL))
-    {
-        IAQSensor.getState(PersistentData.bsecState);
-        if (IAQSensor.status == BSEC_OK)
-        {
-            PersistentData.bsecStateTime = currentTime;
-            PersistentData.writeToEEPROM();
-
-            WiFiSM.logEvent(F("Saved BSEC state"));
-        }
-        else
-            WiFiSM.logEvent(F("Failed retrieving BSEC state: %d"), IAQSensor.status);
-    }
 }
 
 
@@ -521,10 +540,7 @@ void test(String message)
             currentTopicValues[TopicId::Temperature] = i % 30;
             currentTopicValues[TopicId::Pressure] = i + 900;
             currentTopicValues[TopicId::Humidity] = i % 100;
-            currentTopicValues[TopicId::Accuracy] = i % 4;
-            currentTopicValues[TopicId::IAQ] = (i * 5) % 500;
-            currentTopicValues[TopicId::CO2Equivalent] = i * 10;
-            currentTopicValues[TopicId::BVOCEquivalent] = i * 5;
+            currentTopicValues[TopicId::CO2] = i * 10;
             currentTopicValues[TopicId::Fan] = (i % 2 == 0) ? 0.0F : 1.0F;
 
             TopicLogEntry testLogEntry;
@@ -542,7 +558,7 @@ void test(String message)
             statsEntry.time = currentTime + i * 1800;
             statsEntry.count = 1;
             statsEntry.topicValues[TopicId::Temperature] = i % 30;
-            statsEntry.topicValues[TopicId::IAQ] = i * 5;
+            statsEntry.topicValues[TopicId::CO2] = 400 + i * 10;
             statsEntry.topicValues[TopicId::Fan] = float(i) / 48;
             lastStatsEntryPtr = HourStats.add(&statsEntry);
         }
@@ -555,12 +571,12 @@ void test(String message)
 }
 
 
-const char* getIAQLevel(float iaq)
+const char* getIAQLevel(float co2)
 {
-    if (iaq <= 50) return "Excellent";
-    if (iaq <= 100) return "Good";
-    if (iaq <= 150) return "LightlyPolluted";
-    if (iaq <= 200) return "ModeratelyPolluted";
+    if (co2 <= 750) return "Excellent";
+    if (co2 <= 1000) return "Good";
+    if (co2 <= 1250) return "LightlyPolluted";
+    if (co2 <= 1500) return "ModeratelyPolluted";
     return "HeavilyPolluted";
 }
 
@@ -612,13 +628,13 @@ void handleHttpRootRequest()
         F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td>\r\n"),
         EventLog.count());
     HttpResponse.printf(
-        F("<tr><th>Fan on</th><td><div>%s</div><div>%d IAQ</div></td></tr>\r\n"),
+        F("<tr><th>Fan on</th><td><div>%s</div><div>%d CO<sub>2</sub></div></td></tr>\r\n"),
         formatTime("%H:%M", getStartOfDay(currentTime) + PersistentData.fanOffToMinutes * 60),
-        PersistentData.fanIAQThreshold);
+        PersistentData.fanCO2Threshold);
     HttpResponse.printf(
-        F("<tr><th>Fan off</th><td><div>%s</div><div>%d IAQ</div></td></tr>\r\n"),
+        F("<tr><th>Fan off</th><td><div>%s</div><div>%d CO<sub>2</sub></div></td></tr>\r\n"),
         formatTime("%H:%M", getStartOfDay(currentTime) + PersistentData.fanOffFromMinutes * 60),
-        PersistentData.fanIAQThreshold - PersistentData.fanIAQHysteresis);
+        PersistentData.fanCO2Threshold - PersistentData.fanCO2Hysteresis);
     Html.writeTableEnd();
 
     writeCurrentValues();
@@ -626,7 +642,7 @@ void handleHttpRootRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -642,7 +658,7 @@ void writeCurrentValues()
         float barValue = (topicValue - topic.minValue) / (topic.maxValue - topic.minValue);
 
         String barCssClass = topic.style;
-        if (i == TopicId::IAQ) barCssClass += getIAQLevel(topicValue);
+        if (i == TopicId::CO2) barCssClass += getIAQLevel(topicValue);
         barCssClass += "Bar";
 
         Html.writeRowStart();
@@ -667,32 +683,32 @@ void writeHourStats()
     Html.writeHeaderCell(F("Time"));
     Html.writeHeaderCell(F("T (°C)"));
     Html.writeHeaderCell(F("Fan (%)"));
-    Html.writeHeaderCell(F("IAQ"));
+    Html.writeHeaderCell(F("CO<sub>2</sub> (ppm)"));
     Html.writeRowEnd();
 
-    float minIAQ, maxIAQ;
-    getIAQRange(minIAQ, maxIAQ);
+    float minCO2, maxCO2;
+    getCO2Range(minCO2, maxCO2);
 
-    HttpResponse.printf(F("<p>Min IAQ: %0.0f, Max IAQ: %0.0f</p>"), minIAQ, maxIAQ);
+    HttpResponse.printf(F("<p>Min CO<sub>2</sub>: %0.0f, Max CO<sub>2</sub>: %0.0f</p>"), minCO2, maxCO2);
 
     TopicLogEntry* statsEntryPtr = HourStats.getFirstEntry();
     while (statsEntryPtr != nullptr)
     {
         float t = statsEntryPtr->getAverage(TopicId::Temperature);
         float fan = statsEntryPtr->getAverage(TopicId::Fan) * 100;
-        float iaq = statsEntryPtr->getAverage(TopicId::IAQ);
+        float co2 = statsEntryPtr->getAverage(TopicId::CO2);
 
-        float barValue = (iaq - minIAQ) / (maxIAQ - minIAQ);
+        float barValue = (co2 - minCO2) / (maxCO2 - minCO2);
 
         String barClass = F("iaq");
-        barClass += getIAQLevel(iaq);
+        barClass += getIAQLevel(co2);
         barClass += F("Bar");
 
         Html.writeRowStart();
         Html.writeCell(formatTime("%H:%M", statsEntryPtr->time));
         Html.writeCell(t);
         Html.writeCell(fan, F("%0.0f"));
-        Html.writeCell(iaq, F("%0.0f"));
+        Html.writeCell(co2, F("%0.0f"));
         Html.writeCellStart(F("graph"));
         Html.writeBar(barValue, barClass, false);
         Html.writeCellEnd();
@@ -705,17 +721,17 @@ void writeHourStats()
 }
 
 
-void getIAQRange(float& min, float& max)
+void getCO2Range(float& min, float& max)
 {
-    min = 666;
+    min = 6666;
     max = 0;
 
     TopicLogEntry* statsEntryPtr = HourStats.getFirstEntry();
     while (statsEntryPtr != nullptr)
     {
-        float iaq = statsEntryPtr->getAverage(TopicId::IAQ);
-        min = std::min(min, iaq);
-        max = std::max(max, iaq);
+        float co2 = statsEntryPtr->getAverage(TopicId::CO2);
+        min = std::min(min, co2);
+        max = std::max(max, co2);
         statsEntryPtr = HourStats.getNextEntry();
     }
 
@@ -744,7 +760,7 @@ void handleHttpJsonRequest()
 
     HttpResponse.println(F(" }"));
 
-    WebServer.send(200, ContentTypeJson, HttpResponse);
+    WebServer.send(200, ContentTypeJson, HttpResponse.c_str());
 }
 
 
@@ -788,7 +804,7 @@ void handleHttpIAQLogRequest()
     Html.writeTableEnd();
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -821,7 +837,7 @@ void handleHttpFtpSyncRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -848,7 +864,7 @@ void handleHttpEventLogRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -868,8 +884,8 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
     Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
     Html.writeTextBox(CFG_FTP_ENTRIES, F("FTP sync entries"), String(PersistentData.ftpSyncEntries), 3);
-    Html.writeTextBox(CFG_FAN_THRESHOLD, F("Fan threshold"), String(PersistentData.fanIAQThreshold), 3);
-    Html.writeTextBox(CFG_FAN_HYSTERESIS, F("Fan hysteresis"), String(PersistentData.fanIAQHysteresis), 3);
+    Html.writeTextBox(CFG_FAN_THRESHOLD, F("Fan threshold"), String(PersistentData.fanCO2Threshold), 4);
+    Html.writeTextBox(CFG_FAN_HYSTERESIS, F("Fan hysteresis"), String(PersistentData.fanCO2Hysteresis), 3);
     Html.writeTextBox(CFG_FAN_OFF_FROM, F("Fan off from"), formatTime("%H:%M", getStartOfDay(currentTime) + PersistentData.fanOffFromMinutes * 60), 5);
     Html.writeTextBox(CFG_FAN_OFF_TO, F("Fan off to"), formatTime("%H:%M", getStartOfDay(currentTime) + PersistentData.fanOffToMinutes * 60), 5);
     Html.writeTextBox(CFG_TEMP_OFFSET, F("Temp offset"), String(PersistentData.tOffset, 1), 4);
@@ -884,7 +900,7 @@ void handleHttpConfigFormRequest()
 
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -919,8 +935,8 @@ void handleHttpConfigFormPost()
     copyString(WebServer.arg(CFG_FTP_PASSWORD), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword)); 
 
     PersistentData.ftpSyncEntries = WebServer.arg(CFG_FTP_ENTRIES).toInt();
-    PersistentData.fanIAQThreshold = WebServer.arg(CFG_FAN_THRESHOLD).toInt();
-    PersistentData.fanIAQHysteresis = WebServer.arg(CFG_FAN_HYSTERESIS).toInt();
+    PersistentData.fanCO2Threshold = WebServer.arg(CFG_FAN_THRESHOLD).toInt();
+    PersistentData.fanCO2Hysteresis = WebServer.arg(CFG_FAN_HYSTERESIS).toInt();
     PersistentData.tOffset = WebServer.arg(CFG_TEMP_OFFSET).toFloat();
 
     PersistentData.fanOffFromMinutes = parseMinutes(WebServer.arg(CFG_FAN_OFF_FROM));

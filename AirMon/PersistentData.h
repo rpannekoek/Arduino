@@ -10,11 +10,11 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
     char ftpUser[32];
     char ftpPassword[32];
     uint16_t ftpSyncEntries;
-    uint16_t fanIAQThreshold;
-    uint16_t fanIAQHysteresis;
+    uint16_t fanCO2Threshold;
+    uint16_t fanCO2Hysteresis;
     float tOffset;
-    time_t bsecStateTime;
-    uint8_t bsecState[BSEC_MAX_STATE_BLOB_SIZE];
+    //time_t bsecStateTime;
+    //uint8_t bsecState[BSEC_MAX_STATE_BLOB_SIZE];
     uint16_t fanOffFromMinutes;
     uint16_t fanOffToMinutes;
 
@@ -27,11 +27,11 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         sizeof(ftpUser) + 
         sizeof(ftpPassword) + 
         sizeof(ftpSyncEntries) +
-        sizeof(fanIAQThreshold) +
-        sizeof(fanIAQHysteresis) +
+        sizeof(fanCO2Threshold) +
+        sizeof(fanCO2Hysteresis) +
         sizeof(tOffset) +
-        sizeof(bsecStateTime) +
-        sizeof(bsecState) +
+        //sizeof(bsecStateTime) +
+        //sizeof(bsecState) +
         sizeof(fanOffFromMinutes) +
         sizeof(fanOffToMinutes)
         ) {}
@@ -52,10 +52,10 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         ftpPassword[0] = 0;
         ftpSyncEntries = 0;
 
-        fanIAQThreshold = 100;
-        fanIAQHysteresis = 10;
+        fanCO2Threshold = 1000;
+        fanCO2Hysteresis = 100;
         tOffset = 0;
-        bsecStateTime = 0;
+        //bsecStateTime = 0;
         fanOffFromMinutes = 0;
         fanOffToMinutes = 0;
     }
@@ -71,8 +71,8 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         ftpUser[sizeof(ftpUser) - 1] = 0;
         ftpPassword[sizeof(ftpPassword) - 1] = 0;
 
-        fanIAQThreshold = std::min(fanIAQThreshold, (uint16_t)500);
-        fanIAQHysteresis = std::min(fanIAQHysteresis, fanIAQThreshold);
+        fanCO2Threshold = std::min(fanCO2Threshold, (uint16_t)2000);
+        fanCO2Hysteresis = std::min(fanCO2Hysteresis, fanCO2Threshold);
         tOffset = std::min(std::max(tOffset, -5.0F), 5.0F);
 
         const uint16_t minutesPerDay = 24 * 60;
