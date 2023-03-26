@@ -8,6 +8,7 @@ html
 header 
 {
     font-size: 2em;
+    font-weight: bold;
     background-color: blue;
     color: white;
     padding: 0.25em;
@@ -28,8 +29,9 @@ header .logo
     float: right;
 }
 
-.nav
+nav
 {
+    font-size: 1.5em;
     height: 100%;
     width: 0; /* Start hidden; changed by JavaScript */
     position: fixed;
@@ -42,14 +44,14 @@ header .logo
     transition: 0.5s;
 }
   
-.nav .closebtn
+nav .closebtn
 {
     position: absolute;
     top: 0;
     right: 0.5em;
 }
 
-.nav a
+nav a
 {
     padding: 0.5em;
     text-decoration: none;
@@ -57,9 +59,30 @@ header .logo
     display: block;
 }
   
-.nav a:hover
+nav a:hover
 {
     color: white;
+}
+
+.icon 
+{
+    width: 1em;
+    padding-right: 0.25em;
+    float: left;
+}
+
+.button
+{
+    display: inline-block;
+    font-size: 2em;
+    font-weight: bold;
+    text-decoration: none;
+    color: white;
+    background-color: green;
+    padding: 0.5em;
+    border: none;
+    border-radius: 0.5em;
+    margin-top: 0.5em;
 }
 
 table
@@ -77,25 +100,4 @@ td,th
 td
 {
     text-align: right;
-}
-
-.button
-{
-    display: inline-block;
-    font-size: 2em;
-    font-weight: bold;
-    text-decoration: none;
-    color: white;
-    background-color: green;
-    padding: 0.5em;
-    border: none;
-    border-radius: 0.5em;
-    margin-top: 0.5em;
-}
-
-.icon 
-{
-    width: 1em;
-    padding-right: 0.25em;
-    float: left;
 }

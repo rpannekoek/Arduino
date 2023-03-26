@@ -27,7 +27,8 @@ void HtmlWriter::setTitlePrefix(const char* prefix)
 void HtmlWriter::writeHeader(const String& title, bool includeHomePageLink, bool includeHeading, uint16_t refreshInterval)
 {
     _output.clear();
-    _output.println(F("<html lang=\"en\">"));
+    _output.println(F("<!DOCTYPE html>"));
+    _output.println(F("<html lang=\"en-US\">"));
     
     _output.println(F("<head>"));
     _output.printf(F("<title>%s - %s</title>\r\n"), _titlePrefix, title.c_str());
@@ -59,12 +60,13 @@ void HtmlWriter::writeHeader(const String& title, const Navigation& navigation, 
     const char* heading = (title == F("Home")) ? _titlePrefix : title.c_str();
 
     _output.printf(
-        F("<div><a href=\"javascript:setNavWidth('%s')\" class=\"openbtn\">&#9776;</a>%s<a href=\"/\" class=\"logo\"></a></div>\r\n"),
+        F("<a href=\"javascript:setNavWidth('%s')\" class=\"openbtn\">&#9776;</a>%s<a href=\"/\" class=\"logo\"></a>\r\n"),
         navigation.width.c_str(),
         heading
         );
 
-    _output.println(F("<div id=\"nav\" class=\"nav\">"));
+    _output.println(F("</header>"));
+    _output.println(F("<nav id=\"nav\">"));
     _output.println(F("<a href=\"javascript:setNavWidth('0')\" class=\"closebtn\">&times;</a>"));
     for (const MenuItem& menuItem : navigation.menuItems)
     {
@@ -76,8 +78,7 @@ void HtmlWriter::writeHeader(const String& title, const Navigation& navigation, 
         _output.print(menuItem.label);
         _output.println(F("</a>"));
     }
-    _output.println(F("</div>"));
-    _output.println(F("</header>"));
+    _output.println(F("</nav>"));
 }
 
 

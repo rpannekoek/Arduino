@@ -133,7 +133,7 @@ Navigation Nav =
         {
             .icon = F("Meter.svg"),
             .label = F("Smart Meter"),
-            .urlPath = F("dsmt"),
+            .urlPath = F("dsmr"),
             .handler = handleHttpSmartMeterRequest
         },
         MenuItem
