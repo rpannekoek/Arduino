@@ -6,9 +6,9 @@
 
 struct MenuItem
 {
-    String icon;
-    String label;
-    String urlPath;
+    PGM_P icon;
+    PGM_P label;
+    PGM_P urlPath;
     std::function<void(void)> handler;
     std::function<void(void)> postHandler;
 };
@@ -16,7 +16,7 @@ struct MenuItem
 struct Navigation
 {
     String width;
-    std::vector<const char*> files;
+    std::vector<PGM_P> files;
     std::vector<MenuItem> menuItems;
 
     void registerHttpHandlers(ESPWebServer& webServer);

@@ -5,10 +5,10 @@
 void Navigation::registerHttpHandlers(ESPWebServer& webServer)
 {
     // Static files
-    for (const char* fileName : files)
+    for (PGM_P fileName : files)
     {
         String path = F("/");
-        path += fileName;
+        path += FPSTR(fileName);
         webServer.serveStatic(path.c_str(), SPIFFS, path.c_str(), "max-age=86400, public");
     }
 
@@ -16,7 +16,8 @@ void Navigation::registerHttpHandlers(ESPWebServer& webServer)
     for (MenuItem& menuItem : menuItems)
     {
         String urlPath = F("/");
-        urlPath += menuItem.urlPath;
+        if (menuItem.urlPath != nullptr)
+            urlPath += FPSTR(menuItem.urlPath);
         if (menuItem.postHandler == nullptr)
             webServer.on(urlPath, menuItem.handler);
         else

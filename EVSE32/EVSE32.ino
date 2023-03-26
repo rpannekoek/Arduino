@@ -86,68 +86,67 @@ Navigation Nav =
     .width = F("8em"),
     .files =
     {
-        "Logo.png",
-        "styles.css",
-        "Bluetooth.svg",
-        "Calibrate.svg",
-        "Cancel.svg",
-        "Confirm.svg",
-        "Flash.svg",
-        "Home.svg",
-        "LogFile.svg",
-        "Meter.svg",
-        "Settings.svg"
+        PSTR("Logo.png"),
+        PSTR("styles.css"),
+        PSTR("Bluetooth.svg"),
+        PSTR("Calibrate.svg"),
+        PSTR("Cancel.svg"),
+        PSTR("Confirm.svg"),
+        PSTR("Flash.svg"),
+        PSTR("Home.svg"),
+        PSTR("LogFile.svg"),
+        PSTR("Meter.svg"),
+        PSTR("Settings.svg")
     },
     .menuItems = 
     {
         MenuItem
         {
-            .icon = F("Home.svg"),
-            .label = F("Home"),
-            .urlPath = F(""),
+            .icon = PSTR("Home.svg"),
+            .label = PSTR("Home"),
             .handler = handleHttpRootRequest
         },
         MenuItem
         {
-            .icon = F("LogFile.svg"),
-            .label = F("Event log"),
-            .urlPath = F("events"),
+            .icon = PSTR("LogFile.svg"),
+            .label = PSTR("Event log"),
+            .urlPath = PSTR("events"),
             .handler = handleHttpEventLogRequest
         },
         MenuItem
         {
-            .icon = F("Flash.svg"),
-            .label = F("Charge log"),
-            .urlPath = F("chargelog"),
+            .icon = PSTR("Flash.svg"),
+            .label = PSTR("Charge log"),
+            .urlPath = PSTR("chargelog"),
             .handler = handleHttpChargeLogRequest
         },
         MenuItem
         {
-            .icon = F("Bluetooth.svg"),
-            .label = F("Bluetooth"),
-            .urlPath = F("bt"),
+            .icon = PSTR("Bluetooth.svg"),
+            .label = PSTR("Bluetooth"),
+            .urlPath = PSTR("bt"),
             .handler = handleHttpBluetoothRequest,
             .postHandler = handleHttpBluetoothFormPost
         },
         MenuItem
         {
-            .icon = F("Meter.svg"),
-            .label = F("Smart Meter"),
-            .urlPath = F("dsmr"),
+            .icon = PSTR("Meter.svg"),
+            .label = PSTR("Smart Meter"),
+            .urlPath = PSTR("dsmr"),
             .handler = handleHttpSmartMeterRequest
         },
         MenuItem
         {
-            .icon = F("Calibrate.svg"),
-            .label = F("Calibrate"),
-            .urlPath = F("calibrate"),
+            .icon = PSTR("Calibrate.svg"),
+            .label = PSTR("Calibrate"),
+            .urlPath = PSTR("calibrate"),
             .handler = handleHttpCalibrateRequest
         },
         MenuItem
         {
-            .icon = F("Settings.svg"),
-            .label = F("Settings"),
-            .urlPath = F("config"),
+            .icon = PSTR("Settings.svg"),
+            .label = PSTR("Settings"),
+            .urlPath = PSTR("config"),
             .handler = handleHttpConfigFormRequest,
             .postHandler = handleHttpConfigFormPost
         },

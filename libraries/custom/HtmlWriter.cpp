@@ -3,10 +3,10 @@
 #include <math.h>
 
 // Constructor
-HtmlWriter::HtmlWriter(StringBuilder& output, const char* icon, const char* css, size_t maxBarLength)
-    : _output(output), _icon(icon), _css(css), _maxBarLength(maxBarLength)
+HtmlWriter::HtmlWriter(StringBuilder& output, PGM_P icon, PGM_P css, size_t maxBarLength)
+    : _output(output), _icon(FPSTR(icon)), _css(FPSTR(css)), _maxBarLength(maxBarLength)
 {
-    _titlePrefix = "ESP";
+    _titlePrefix = F("ESP");
     _bar = new char[maxBarLength + 1]; 
 }
 
@@ -18,7 +18,7 @@ HtmlWriter::~HtmlWriter()
 }
 
 
-void HtmlWriter::setTitlePrefix(const char* prefix)
+void HtmlWriter::setTitlePrefix(const String& prefix)
 {
     _titlePrefix = prefix;
 }
@@ -31,9 +31,10 @@ void HtmlWriter::writeHeader(const String& title, bool includeHomePageLink, bool
     _output.println(F("<html lang=\"en-US\">"));
     
     _output.println(F("<head>"));
-    _output.printf(F("<title>%s - %s</title>\r\n"), _titlePrefix, title.c_str());
-    _output.printf(F("<link rel=\"stylesheet\" type=\"text/css\" href=\"%s\">\r\n"), _css);
-    _output.printf(F("<link rel=\"icon\" sizes=\"128x128\" href=\"%s\">\r\n<link rel=\"apple-touch-icon-precomposed\" sizes=\"128x128\" href=\"%s\">\r\n"), _icon, _icon);
+    _output.printf(F("<title>%s - %s</title>\r\n"), _titlePrefix.c_str(), title.c_str());
+    _output.printf(F("<link rel=\"stylesheet\" type=\"text/css\" href=\"%s\">\r\n"), _css.c_str());
+    _output.printf(F("<link rel=\"icon\" sizes=\"128x128\" href=\"%s\">\r\n"), _icon.c_str());
+    _output.printf(F("<link rel=\"apple-touch-icon-precomposed\" sizes=\"128x128\" href=\"%s\">\r\n"), _icon.c_str());
     _output.println(F("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"));
     if (refreshInterval > 0)
         _output.printf(F("<meta http-equiv=\"refresh\" content=\"%d\">\r\n") , refreshInterval);
@@ -41,7 +42,7 @@ void HtmlWriter::writeHeader(const String& title, bool includeHomePageLink, bool
     
     _output.println(F("<body>"));
     if (includeHomePageLink)
-        _output.printf(F("<a href=\"/\"><img src=\"%s\"></a>"), _icon);
+        _output.printf(F("<a href=\"/\"><img src=\"%s\"></a>"), _icon.c_str());
     if (includeHeading)
         _output.printf(F("<h1>%s</h1>\r\n"), title.c_str());
 }
@@ -57,7 +58,7 @@ void HtmlWriter::writeHeader(const String& title, const Navigation& navigation, 
 
     _output.println(F("<header>"));
 
-    const char* heading = (title == F("Home")) ? _titlePrefix : title.c_str();
+    const char* heading = (title == F("Home")) ? _titlePrefix.c_str() : title.c_str();
 
     _output.printf(
         F("<a href=\"javascript:setNavWidth('%s')\" class=\"openbtn\">&#9776;</a>%s<a href=\"/\" class=\"logo\"></a>\r\n"),
@@ -71,11 +72,16 @@ void HtmlWriter::writeHeader(const String& title, const Navigation& navigation, 
     for (const MenuItem& menuItem : navigation.menuItems)
     {
         String urlPath = F("/");
-        urlPath += menuItem.urlPath;
+        if (menuItem.urlPath != nullptr)
+            urlPath += FPSTR(menuItem.urlPath);
         _output.printf(F("<a href=\"%s\">"), urlPath.c_str());
-        if (menuItem.icon.length() > 0)
-            _output.printf(F("<img class=\"icon\" src=\"%s\">"), menuItem.icon.c_str());
-        _output.print(menuItem.label);
+        if (menuItem.icon != nullptr)
+        {
+            char icon[32];
+            strncpy_P(icon, menuItem.icon, sizeof(icon));
+            _output.printf(F("<img class=\"icon\" src=\"%s\">"), icon);
+        }
+        _output.print(FPSTR(menuItem.label));
         _output.println(F("</a>"));
     }
     _output.println(F("</nav>"));

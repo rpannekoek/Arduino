@@ -8,12 +8,12 @@ class HtmlWriter
 {
     public:
         // Constructor
-        HtmlWriter(StringBuilder& output, const char* icon, const char* css, size_t maxBarLength);
+        HtmlWriter(StringBuilder& output, PGM_P icon, PGM_P css, size_t maxBarLength);
 
         // Destructor
         ~HtmlWriter();
 
-        void setTitlePrefix(const char* prefix);
+        void setTitlePrefix(const String& prefix);
 
         void writeHeader(const String& title, bool includeHomePageLink, bool includeHeading, uint16_t refreshInterval = 0);
         void writeHeader(const String& title, const Navigation& navigation, uint16_t refreshInterval = 0);
@@ -60,9 +60,9 @@ class HtmlWriter
 
     private:
         StringBuilder& _output;
-        const char* _icon;
-        const char* _css;
-        const char* _titlePrefix;
+        String _icon;
+        String _css;
+        String _titlePrefix;
         char* _bar;
         size_t _maxBarLength;
 };
