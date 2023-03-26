@@ -399,6 +399,8 @@ void handleHttpRootRequest()
         ? "Not yet"
         : formatTime("%H:%M:%S", lastPacketReceivedTime);
 
+    String aquareaError = HeatPump.getTopic(TopicId::Error).getValue();
+
     Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
 
     Html.writeHeading(F("AquaMon status"));
@@ -406,6 +408,7 @@ void handleHttpRootRequest()
     HttpResponse.printf(F("<tr><th>RSSI</th><td>%d dBm</td></tr>\r\n"), static_cast<int>(WiFi.RSSI()));
     HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
     HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
+    HttpResponse.printf(F("<tr><th>Aquarea</th><td>%s</td></tr>\r\n"), aquareaError.c_str());
     HttpResponse.printf(F("<tr><th><a href=\"/topics\">Last packet</a></th><td>%s</td></tr>\r\n"), lastPacket);
     HttpResponse.printf(F("<tr><th><a href=\"/hexdump\">Packet errors</a></th><td>%0.1f %%</td></tr>\r\n"), HeatPump.getPacketErrorRatio() * 100);
     HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync.c_str());
