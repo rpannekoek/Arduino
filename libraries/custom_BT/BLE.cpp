@@ -78,8 +78,9 @@ void BLE::onResult(BLEAdvertisedDevice bleDevice)
             _bleBeacon.setData(manufacturerData);
 
             strcpy(btDevice.name, "iBeacon");
-            btDevice.uuid = new UUID128(_bleBeacon.getProximityUUID().getNative()->uuid.uuid128);
-            TRACE(F("\tiBeacon: %s\n"), btDevice.uuid->toString().c_str());
+            std::string uuid = _bleBeacon.getProximityUUID().toString();
+            btDevice.uuid = new UUID128(uuid.c_str());
+            TRACE(F("\tiBeacon: %s\n"), uuid.c_str());
 
             for (int i = 0; i < _registeredBeaconCount; i++)
             {

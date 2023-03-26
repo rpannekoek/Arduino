@@ -3,17 +3,63 @@ html
     color: black;
     background-color: lightgrey;
     font-family: sans-serif;
-    font-size: 12pt;
 }
 
-h1
+header 
 {
-	font-size: 18pt;
+    font-size: 2em;
+    background-color: blue;
+    color: white;
+    padding: 0.25em;
+    margin-bottom: 0.5em;
 }
 
-h2
+header .openbtn
 {
-	font-size: 14pt;
+    color: darkgray;
+    text-decoration: none;
+    padding-right: 0.5em;
+}
+
+header .logo
+{
+    content: url(Logo.png);
+    height: 1.25em;
+    float: right;
+}
+
+.nav
+{
+    height: 100%;
+    width: 0; /* Start hidden; changed by JavaScript */
+    position: fixed;
+    z-index: 1;
+    top: 0;
+    left: 0;
+    background-color: black;
+    overflow-x: hidden;
+    padding-top: 2em;
+    transition: 0.5s;
+}
+  
+.nav .closebtn
+{
+    position: absolute;
+    top: 0;
+    right: 0.5em;
+}
+
+.nav a
+{
+    padding: 0.5em;
+    text-decoration: none;
+    color: gray;
+    display: block;
+}
+  
+.nav a:hover
+{
+    color: white;
 }
 
 table
@@ -33,32 +79,23 @@ td
     text-align: right;
 }
 
-td.graph
-{
-    border: none;
-    text-align: left;
-}
-
-.barFill
-{
-	background-color: gray;
-    color: gray;
-}
-
-.emptyBar
-{
-    background-color: lightgrey;
-    color: lightgrey;
-}
-
 .button
 {
-    font-size: 18pt;
+    display: inline-block;
+    font-size: 2em;
     font-weight: bold;
     text-decoration: none;
     color: white;
     background-color: green;
-    padding: 10px;
+    padding: 0.5em;
     border: none;
-    border-radius: 10px;
+    border-radius: 0.5em;
+    margin-top: 0.5em;
+}
+
+.icon 
+{
+    width: 1em;
+    padding-right: 0.25em;
+    float: left;
 }

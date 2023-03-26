@@ -12,6 +12,7 @@
 #include <TimeUtils.h>
 #include <Tracer.h>
 #include <StringBuilder.h>
+#include <Navigation.h>
 #include <HtmlWriter.h>
 #include <Log.h>
 #include <BLE.h>
@@ -26,9 +27,6 @@
 #include "DayStatistics.h"
 #include "ChargeLogEntry.h"
 
-
-#define ICON "/apple-touch-icon.png"
-#define CSS "/styles.css"
 
 #define SECONDS_PER_DAY (24 * 3600)
 #define WIFI_TIMEOUT_MS 2000
@@ -73,12 +71,94 @@
 #define CAL_CONTROL_PILOT F("ControlPilot")
 #define CAL_TEMP_OFFSET F("TempOffset")
 
+void handleHttpRootRequest();
+void handleHttpEventLogRequest();
+void handleHttpChargeLogRequest();
+void handleHttpBluetoothRequest();
+void handleHttpBluetoothFormPost();
+void handleHttpSmartMeterRequest();
+void handleHttpCalibrateRequest();
+void handleHttpConfigFormRequest();
+void handleHttpConfigFormPost();
+
+Navigation Nav =
+{
+    .width = F("8em"),
+    .files =
+    {
+        "Logo.png",
+        "styles.css",
+        "Bluetooth.svg",
+        "Calibrate.svg",
+        "Cancel.svg",
+        "Confirm.svg",
+        "Flash.svg",
+        "Home.svg",
+        "LogFile.svg",
+        "Meter.svg",
+        "Settings.svg"
+    },
+    .menuItems = 
+    {
+        MenuItem
+        {
+            .icon = F("Home.svg"),
+            .label = F("Home"),
+            .urlPath = F(""),
+            .handler = handleHttpRootRequest
+        },
+        MenuItem
+        {
+            .icon = F("LogFile.svg"),
+            .label = F("Event log"),
+            .urlPath = F("events"),
+            .handler = handleHttpEventLogRequest
+        },
+        MenuItem
+        {
+            .icon = F("Flash.svg"),
+            .label = F("Charge log"),
+            .urlPath = F("chargelog"),
+            .handler = handleHttpChargeLogRequest
+        },
+        MenuItem
+        {
+            .icon = F("Bluetooth.svg"),
+            .label = F("Bluetooth"),
+            .urlPath = F("bt"),
+            .handler = handleHttpBluetoothRequest,
+            .postHandler = handleHttpBluetoothFormPost
+        },
+        MenuItem
+        {
+            .icon = F("Meter.svg"),
+            .label = F("Smart Meter"),
+            .urlPath = F("dsmt"),
+            .handler = handleHttpSmartMeterRequest
+        },
+        MenuItem
+        {
+            .icon = F("Calibrate.svg"),
+            .label = F("Calibrate"),
+            .urlPath = F("calibrate"),
+            .handler = handleHttpCalibrateRequest
+        },
+        MenuItem
+        {
+            .icon = F("Settings.svg"),
+            .label = F("Settings"),
+            .urlPath = F("config"),
+            .handler = handleHttpConfigFormRequest,
+            .postHandler = handleHttpConfigFormPost
+        },
+    }
+};
+
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeJson = "application/json";
 const char* ContentTypeText = "text/plain";
 
-const char* ButtonMarginTop = "2em";
-const char* ButtonClass = "button";
+const char* Button = "button";
 
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
@@ -86,7 +166,7 @@ WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
 DsmrMonitorClient SmartMeter(WIFI_TIMEOUT_MS);
 BLE Bluetooth;
 StringBuilder HttpResponse(8192); // 8KB HTTP response buffer
-HtmlWriter Html(HttpResponse, ICON, CSS, 60);
+HtmlWriter Html(HttpResponse, Nav.files[0], Nav.files[1], 60);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 CurrentSensor OutputCurrentSensor(CURRENT_SENSE_PIN);
@@ -136,22 +216,12 @@ void setup()
     TimeServer.NTPServer = PersistentData.ntpServer;
     Html.setTitlePrefix(PersistentData.hostName);
 
-    SPIFFS.begin();
+    if (!SPIFFS.begin())
+        WiFiSM.logEvent(F("Starting SPIFFS failed"));
 
-    const char* cacheControl = "max-age=86400, public";
-    WebServer.on("/", handleHttpRootRequest);
-    WebServer.on("/bt", HTTP_GET, handleHttpBluetoothRequest);
-    WebServer.on("/bt", HTTP_POST, handleHttpBluetoothFormPost);
+    Nav.registerHttpHandlers(WebServer);
     WebServer.on("/bt/json", handleHttpBluetoothJsonRequest);
-    WebServer.on("/dsmr", handleHttpSmartMeterRequest);
     WebServer.on("/current", handleHttpCurrentRequest);
-    WebServer.on("/chargelog", handleHttpChargeLogRequest);
-    WebServer.on("/events", handleHttpEventLogRequest);
-    WebServer.on("/calibrate", handleHttpCalibrateRequest);
-    WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
-    WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
-    WebServer.serveStatic(ICON, SPIFFS, ICON, cacheControl);
-    WebServer.serveStatic(CSS, SPIFFS, CSS, cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
     
     WiFiSM.on(WiFiInitState::TimeServerSynced, onWiFiTimeSynced);
@@ -481,7 +551,7 @@ float determineCurrentLimit()
 
     if (SmartMeter.requestData() != HTTP_CODE_OK)
     {
-        WiFiSM.logEvent(F("Smart Meter: %s"), SmartMeter.getLastError());
+        WiFiSM.logEvent(F("Smart Meter: %s"), SmartMeter.getLastError().c_str());
         return 0;
     }
 
@@ -721,14 +791,16 @@ void handleHttpRootRequest()
         return;
     }
 
-    Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
-
-    Html.writeHeading(F("EVSE status"));
+    Html.writeHeader(F("Home"), Nav, HTTP_POLL_INTERVAL);
 
     Html.writeTableStart();
     HttpResponse.printf(
-        F("<tr><th>RSSI</th><td>%d dBm</td></tr>\r\n"),
+        F("<tr><th>WiFi RSSI</th><td>%d dBm</td></tr>\r\n"),
         static_cast<int>(WiFi.RSSI()));
+
+    HttpResponse.printf(
+        F("<tr><th>WiFi AP</th><td>%s</td></tr>\r\n"),
+        WiFi.BSSIDstr().c_str());
 
     HttpResponse.printf(
         F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"),
@@ -737,23 +809,6 @@ void handleHttpRootRequest()
     HttpResponse.printf(
         F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"),
         float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
-
-    HttpResponse.printf(
-        F("<tr><th><a href=\"/chargelog\">Charge log</a></th><td>%d</td>\r\n"),
-        ChargeLog.count());
-
-    HttpResponse.printf(
-        F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td>\r\n"),
-        EventLog.count());
-
-    HttpResponse.printf(
-        F("<tr><th><a href=\"/bt\">Bluetooth</a></th><td>%d / %d</td>\r\n"),
-        Bluetooth.getDiscoveredDevices().size(),
-        PersistentData.registeredBeaconCount);
-
-    HttpResponse.printf(
-        F("<tr><th><a href=\"/dsmr\">Smart Meter</a></th><td>%s</td>\r\n"),
-        SmartMeter.isInitialized ? "Enabled" : "Disabled");
 
     Html.writeRowStart();
     Html.writeHeaderCell(F("EVSE State"));
@@ -839,7 +894,7 @@ void handleHttpRootRequest()
                 setState(EVSEState::SelfTest);
             }
             else
-                Html.writeActionLink(F("selftest"), F("Perform self-test"), currentTime, ButtonMarginTop, ButtonClass);
+                Html.writeActionLink(F("selftest"), F("Perform self-test"), currentTime, Button, F("Calibrate.svg"));
             break;
 
         case EVSEState::Authorize:
@@ -849,7 +904,7 @@ void handleHttpRootRequest()
                 isWebAuthorized = true;
             }
             else if (!isWebAuthorized)
-                Html.writeActionLink(F("authorize"), F("Start charging"), currentTime, ButtonMarginTop, ButtonClass);
+                Html.writeActionLink(F("authorize"), F("Start charging"), currentTime, Button, F("Flash.svg"));
             break;
 
         case EVSEState::AwaitCharging:
@@ -862,7 +917,7 @@ void handleHttpRootRequest()
                     Html.writeParagraph(F("Stop charging failed."));
             }
             else
-                Html.writeActionLink(F("stop"), F("Stop charging"), currentTime, ButtonMarginTop, ButtonClass);
+                Html.writeActionLink(F("stop"), F("Stop charging"), currentTime, Button, F("Cancel.svg"));
             break;
     }
 
@@ -879,7 +934,7 @@ void handleHttpBluetoothRequest()
     BluetoothState btState = Bluetooth.getState();
     uint16_t refreshInterval = (btState == BluetoothState::Discovering) ? 5 : 0;
 
-    Html.writeHeader(F("Bluetooth"), true, true, refreshInterval);
+    Html.writeHeader(F("Bluetooth"), Nav, refreshInterval);
 
     if (WiFiSM.shouldPerformAction(F("startDiscovery")))
     {
@@ -892,23 +947,27 @@ void handleHttpBluetoothRequest()
             Html.writeParagraph(F("Scanning for devices failed."));
     }
     else if (btState == BluetoothState::Initialized || btState == BluetoothState::DiscoveryComplete)
-        Html.writeActionLink(F("startDiscovery"), F("Scan for devices"), currentTime);
+        Html.writeActionLink(F("startDiscovery"), F("Scan for devices"), currentTime, Button);
 
-    HttpResponse.printf(F("<p>State: %s</p>\r\n"), Bluetooth.getStateName());
     if (Bluetooth.isDeviceDetected())
         Html.writeParagraph(F("Registered device detected"));
+
+    Html.writeFormStart(F("/bt"));
 
     Html.writeHeading(F("Registered beacons"), 2);
     for (int i = 0; i < PersistentData.registeredBeaconCount; i++)
     {
         UUID128 uuid = UUID128(PersistentData.registeredBeacons[i]);
-        Html.writeParagraph(uuid.toString());
+        String uuidStr = uuid.toString();
+        HttpResponse.printf(
+            F("<div><input type=\"checkbox\" name=\"uuid\" value=\"%s\" checked>%s</div>\r\n"), 
+            uuidStr.c_str(),
+            uuidStr.c_str());
     }
 
     if (btState == BluetoothState::DiscoveryComplete)
     {
         Html.writeHeading(F("Discovered beacons"), 2);
-        Html.writeFormStart(F("/bt"));
         Html.writeTableStart();
         Html.writeRowStart();
         Html.writeHeaderCell(F(""));
@@ -932,12 +991,12 @@ void handleHttpBluetoothRequest()
             Html.writeRowEnd();
         }
         Html.writeTableEnd();
-        Html.writeSubmitButton();
-        Html.writeFormEnd();
     }
     else if (btState == BluetoothState::Discovering)
         HttpResponse.println(F("<p>Discovery in progress...</p>"));
 
+    Html.writeSubmitButton();
+    Html.writeFormEnd();
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
@@ -1018,7 +1077,7 @@ void handleHttpChargeLogRequest()
     int currentPage = WebServer.hasArg("page") ? WebServer.arg("page").toInt() : 0;
     int totalPages = ((ChargeLog.count() - 1) / CHARGE_LOG_PAGE_SIZE) + 1;
 
-    Html.writeHeader(F("Charge log"), true, true);
+    Html.writeHeader(F("Charge log"), Nav);
     Html.writePager(totalPages, currentPage);
     Html.writeTableStart();
 
@@ -1063,7 +1122,7 @@ void handleHttpEventLogRequest()
         WiFiSM.logEvent(F("Event log cleared."));
     }
 
-    Html.writeHeader(F("Event log"), true, true);
+    Html.writeHeader(F("Event log"), Nav);
 
     const char* event = EventLog.getFirstEntry();
     while (event != nullptr)
@@ -1072,7 +1131,7 @@ void handleHttpEventLogRequest()
         event = EventLog.getNextEntry();
     }
 
-    Html.writeActionLink(F("clear"), F("Clear event log"), currentTime);
+    Html.writeActionLink(F("clear"), F("Clear event log"), currentTime, Button);
 
     Html.writeFooter();
 
@@ -1084,7 +1143,7 @@ void handleHttpSmartMeterRequest()
 {
     Tracer tracer(F(__func__));
 
-    Html.writeHeader(F("Smart Meter"), true, true);
+    Html.writeHeader(F("Smart Meter"), Nav);
 
     if (SmartMeter.isInitialized)
     {
@@ -1203,7 +1262,7 @@ void handleHttpCalibrateRequest()
     float cpVoltage = ControlPilot.getVoltage();
     float cpDutyCycle = ControlPilot.getDutyCycle();
 
-    Html.writeHeader(F("Calibration"), true, true);
+    Html.writeHeader(F("Calibrate"), Nav);
 
     Html.writeHeading(F("Output current"), 2);
     Html.writeFormStart(F("/calibrate"));
@@ -1284,17 +1343,46 @@ void handleHttpConfigFormRequest()
 {
     Tracer tracer(F(__func__));
 
-    Html.writeHeader(F("Configuration"), true, true);
+    Html.writeHeader(F("Settings"), Nav);
 
     Html.writeFormStart(F("/config"));
     Html.writeTableStart();
-    Html.writeTextBox(CFG_WIFI_SSID, F("WiFi SSID"), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID) - 1);
-    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1);
-    Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
-    Html.writeTextBox(CFG_NTP_SERVER, F("NTP server"), PersistentData.ntpServer, sizeof(PersistentData.ntpServer) - 1);
-    Html.writeTextBox(CFG_DSMR_MONITOR, F("DSMR monitor"), PersistentData.dsmrMonitor, sizeof(PersistentData.dsmrMonitor) - 1);
-    Html.writeTextBox(CFG_DSMR_PHASE, F("DSMR phase"), String((int)PersistentData.dsmrPhase + 1), 1);
-    Html.writeTextBox(CFG_CURRENT_LIMIT, F("Current limit (A)"), String((int)PersistentData.currentLimit), 2);
+    Html.writeTextBox(
+        CFG_WIFI_SSID,
+        F("WiFi SSID"),
+        PersistentData.wifiSSID,
+        sizeof(PersistentData.wifiSSID) - 1);
+    Html.writeTextBox(
+        CFG_WIFI_KEY, F("WiFi Key"),
+        PersistentData.wifiKey,
+        sizeof(PersistentData.wifiKey) - 1,
+        F("password"));
+    Html.writeTextBox(
+        CFG_HOST_NAME,
+        F("Host name"),
+        PersistentData.hostName,
+        sizeof(PersistentData.hostName) - 1);
+    Html.writeTextBox(
+        CFG_NTP_SERVER,
+        F("NTP server"),
+        PersistentData.ntpServer,
+        sizeof(PersistentData.ntpServer) - 1);
+    Html.writeTextBox(
+        CFG_DSMR_MONITOR,
+        F("DSMR monitor"),
+        PersistentData.dsmrMonitor,
+        sizeof(PersistentData.dsmrMonitor) - 1);
+    Html.writeTextBox(
+        CFG_DSMR_PHASE,
+        F("DSMR phase"),
+        String((int)PersistentData.dsmrPhase + 1),
+        1,
+        F("number"));
+    Html.writeTextBox(
+        CFG_CURRENT_LIMIT, F("Current limit (A)"),
+        String((int)PersistentData.currentLimit),
+        2,
+        F("number"));
     Html.writeTableEnd();
     Html.writeSubmitButton();
     Html.writeFormEnd();
@@ -1302,7 +1390,7 @@ void handleHttpConfigFormRequest()
     if (WiFiSM.shouldPerformAction(F("reset")))
         WiFiSM.reset();
     else
-        Html.writeActionLink(F("reset"), F("Reset ESP"), currentTime);
+        Html.writeActionLink(F("reset"), F("Reset ESP"), currentTime, Button);
 
     Html.writeFooter();
 

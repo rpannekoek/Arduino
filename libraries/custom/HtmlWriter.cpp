@@ -27,12 +27,13 @@ void HtmlWriter::setTitlePrefix(const char* prefix)
 void HtmlWriter::writeHeader(const String& title, bool includeHomePageLink, bool includeHeading, uint16_t refreshInterval)
 {
     _output.clear();
-    _output.println(F("<html>"));
+    _output.println(F("<html lang=\"en\">"));
     
     _output.println(F("<head>"));
     _output.printf(F("<title>%s - %s</title>\r\n"), _titlePrefix, title.c_str());
     _output.printf(F("<link rel=\"stylesheet\" type=\"text/css\" href=\"%s\">\r\n"), _css);
     _output.printf(F("<link rel=\"icon\" sizes=\"128x128\" href=\"%s\">\r\n<link rel=\"apple-touch-icon-precomposed\" sizes=\"128x128\" href=\"%s\">\r\n"), _icon, _icon);
+    _output.println(F("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"));
     if (refreshInterval > 0)
         _output.printf(F("<meta http-equiv=\"refresh\" content=\"%d\">\r\n") , refreshInterval);
     _output.println(F("</head>"));
@@ -42,6 +43,41 @@ void HtmlWriter::writeHeader(const String& title, bool includeHomePageLink, bool
         _output.printf(F("<a href=\"/\"><img src=\"%s\"></a>"), _icon);
     if (includeHeading)
         _output.printf(F("<h1>%s</h1>\r\n"), title.c_str());
+}
+
+
+void HtmlWriter::writeHeader(const String& title, const Navigation& navigation, uint16_t refreshInterval)
+{
+    writeHeader(title, false, false, refreshInterval);
+
+    _output.println(F("<script>"));
+    _output.println(F("function setNavWidth(w) { document.getElementById(\"nav\").style.width = w; }"));
+    _output.println(F("</script>"));
+
+    _output.println(F("<header>"));
+
+    const char* heading = (title == F("Home")) ? _titlePrefix : title.c_str();
+
+    _output.printf(
+        F("<div><a href=\"javascript:setNavWidth('%s')\" class=\"openbtn\">&#9776;</a>%s<a href=\"/\" class=\"logo\"></a></div>\r\n"),
+        navigation.width.c_str(),
+        heading
+        );
+
+    _output.println(F("<div id=\"nav\" class=\"nav\">"));
+    _output.println(F("<a href=\"javascript:setNavWidth('0')\" class=\"closebtn\">&times;</a>"));
+    for (const MenuItem& menuItem : navigation.menuItems)
+    {
+        String urlPath = F("/");
+        urlPath += menuItem.urlPath;
+        _output.printf(F("<a href=\"%s\">"), urlPath.c_str());
+        if (menuItem.icon.length() > 0)
+            _output.printf(F("<img class=\"icon\" src=\"%s\">"), menuItem.icon.c_str());
+        _output.print(menuItem.label);
+        _output.println(F("</a>"));
+    }
+    _output.println(F("</div>"));
+    _output.println(F("</header>"));
 }
 
 
@@ -167,12 +203,13 @@ void HtmlWriter::writeSubmitButton()
 }
 
 
-void HtmlWriter::writeTextBox(const String& name, const String& label, const String& value,  uint16_t maxLength)
+void HtmlWriter::writeTextBox(const String& name, const String& label, const String& value,  uint16_t maxLength, const String& type)
 {
     _output.printf(
-        F("<tr><td><label for=\"%s\">%s</label></td><td><input type=\"text\" name=\"%s\" value=\"%s\" maxlength=\"%d\"></td></tr>\r\n"), 
+        F("<tr><td><label for=\"%s\">%s</label></td><td><input type=\"%s\" name=\"%s\" value=\"%s\" maxlength=\"%d\"></td></tr>\r\n"), 
         name.c_str(),
         label.c_str(),
+        type.c_str(),
         name.c_str(),
         value.c_str(),
         maxLength
@@ -359,14 +396,20 @@ void HtmlWriter::writeParagraph(const String& innerHtml)
 }
 
 
-void HtmlWriter::writeActionLink(const String& action, const String& label, time_t currentTime, const String& marginTop, const String& cssClass)
+void HtmlWriter::writeActionLink(
+    const String& action,
+    const String& label,
+    time_t currentTime,
+    const String& cssClass,
+    const String& icon)
 {
-    if (marginTop.length() > 0) _output.printf(F("<div style=\"margin-top: %s\">"), marginTop.c_str());
     _output.printf(
-        F("<a class=\"%s\" href=\"?%s=%u\">%s</a>"),
+        F("<a class=\"%s\" href=\"?%s=%u\">"),
         cssClass.c_str(),
         action.c_str(),
-        currentTime,
-        label.c_str());
-    if (marginTop.length() > 0) _output.println(F("</div>"));
+        currentTime);
+    if (icon.length() != 0)
+        _output.printf(F("<img class=\"icon\" src=\"%s\">"), icon.c_str());
+    _output.print(label);
+    _output.print(F("</a>"));
 }

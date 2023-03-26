@@ -33,7 +33,7 @@ UUID128::UUID128(const String& uuid)
     {
         String hexByte = uuid.substring(k, k + 2);
         data[i] = static_cast<uint8_t>(strtol(hexByte.c_str(), nullptr, 16));
-        TRACE(F("%d = '%s' -> %02x\n"), k, hexByte.c_str(), data[i]);
+        //TRACE(F("%d = '%s' -> %02x\n"), k, hexByte.c_str(), data[i]);
         k += 2;
         if (i == 3 || i == 5 || i == 7 || i == 9) k++;
     }

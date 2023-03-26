@@ -2,6 +2,7 @@
 #define HTMLWRITER_H
 
 #include <StringBuilder.h>
+#include <Navigation.h>
 
 class HtmlWriter
 {
@@ -15,6 +16,7 @@ class HtmlWriter
         void setTitlePrefix(const char* prefix);
 
         void writeHeader(const String& title, bool includeHomePageLink, bool includeHeading, uint16_t refreshInterval = 0);
+        void writeHeader(const String& title, const Navigation& navigation, uint16_t refreshInterval = 0);
         void writeFooter();
 
         void writeBar(float value, const String& cssClass, bool fill, bool useDiv = true, size_t maxBarLength = 0);
@@ -25,7 +27,7 @@ class HtmlWriter
         void writeFormStart(const String& action);
         void writeFormEnd();
         void writeSubmitButton();
-        void writeTextBox(const String& name, const String& label, const String& value, uint16_t maxLength);
+        void writeTextBox(const String& name, const String& label, const String& value, uint16_t maxLength, const String& type = String("text"));
         void writeCheckbox(const String& name, const String& label, bool value);
         void writeRadioButtons(const String& name, const String& label, const char** values, int numValues, int index);
         void writeSlider(const String& name, const String& label, const String& unitOfMeasure, int value, int minValue, int maxValue, int denominator = 1);
@@ -49,7 +51,12 @@ class HtmlWriter
 
         void writeParagraph(const String& innerHtml);
 
-        void writeActionLink(const String& action, const String& label, time_t currentTime, const String& marginTop = String(), const String& cssClass= String("actionLink"));
+        void writeActionLink(
+            const String& action,
+            const String& label,
+            time_t currentTime,
+            const String& cssClass= String("actionLink"),
+            const String& icon= String());
 
     private:
         StringBuilder& _output;

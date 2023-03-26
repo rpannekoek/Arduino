@@ -35,6 +35,7 @@ int DsmrMonitorClient::requestData()
     Tracer tracer(F("DsmrMonitorClient::requestData"));
 
     int result = _httpClient.GET();
+    TRACE(F("GET result: %d\n"), result);
 
     if (result < 0)
     {
@@ -78,7 +79,6 @@ bool DsmrMonitorClient::parseJson(String json)
     {
         _lastError = F("JSON error: "); 
         _lastError += parseError.c_str();
-        TRACE(_lastError);
         return false;     
     }
 
