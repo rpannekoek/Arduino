@@ -8,6 +8,7 @@
 #include <TimeUtils.h>
 #include <Tracer.h>
 #include <StringBuilder.h>
+#include <Navigation.h>
 #include <HtmlWriter.h>
 #include "OTGW.h"
 #include <Log.h>
@@ -18,8 +19,6 @@
 #include "StatusLogEntry.h"
 #include "HeatMonClient.h"
 
-#define ICON "/apple-touch-icon.png"
-#define CSS "/styles.css"
 #define SECONDS_PER_DAY (24 * 3600)
 #define SET_BOILER_RETRY_INTERVAL 6
 #define OTGW_WATCHDOG_INTERVAL 10
@@ -66,8 +65,35 @@
 #define CFG_HEATMON_HOST F("heatmonHost")
 #define CFG_PUMP_MOD F("pumpMod")
 
+enum FileId
+{
+    Logo,
+    Styles,
+    Home,
+    Calibrate,
+    Graph,
+    LogFile,
+    Settings,
+    Upload,
+    _Last
+};
+
+const char* Files[] PROGMEM =
+{
+    "Logo.png",
+    "styles.css",
+    "Home.svg",
+    "Calibrate.svg",
+    "Graph.svg",
+    "LogFile.svg",
+    "Settings.svg",
+    "Upload.svg"
+};
+
+
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeText = "text/plain";
+const char* ButtonClass = "button";
 
 const char* BoilerLevelNames[5] = {"Off", "Pump-only", "Low", "High", "Thermostat"};
 
@@ -104,12 +130,13 @@ WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
 HeatMonClient HeatMon(WIFI_TIMEOUT_MS);
 WeatherAPI WeatherService(WIFI_TIMEOUT_MS);
 StringBuilder HttpResponse(12288); // 12KB HTTP response buffer
-HtmlWriter Html(HttpResponse, ICON, CSS, 40);
+HtmlWriter Html(HttpResponse, Files[FileId::Logo], Files[FileId::Styles], 40);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
 StringLog OTGWMessageLog(OTGW_MESSAGE_LOG_LENGTH, 10);
 StaticLog<OpenThermLogEntry> OpenThermLog(OT_LOG_LENGTH);
 StaticLog<StatusLogEntry> StatusLog(7); // 7 days
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
+Navigation Nav;
 
 // OpenTherm data values indexed by data ID
 uint16_t thermostatRequests[256];
@@ -185,30 +212,75 @@ void setup()
     Html.setTitlePrefix(PersistentData.hostName);
     initBoilerLevels();
 
-    SPIFFS.begin();
-
-    const char* cacheControl = "max-age=86400, public";
-    WebServer.on("/", handleHttpRootRequest);
-    WebServer.on("/i2c", handleHttpI2cScanRequest);
-    WebServer.on("/ot", handleHttpOpenThermRequest);
-    WebServer.on("/traffic", handleHttpOpenThermTrafficRequest);
-    WebServer.on("/log", handleHttpOpenThermLogRequest);
-    WebServer.on("/log/sync", handleHttpOpenThermLogSyncRequest);
-    WebServer.on("/log-csv", handleHttpOpenThermLogCsvRequest);
-    WebServer.on("/log-otgw", handleHttpOTGWMessageLogRequest);
-    WebServer.on("/events", handleHttpEventLogRequest);
-    WebServer.on("/cmd", HTTP_GET, handleHttpCommandFormRequest);
-    WebServer.on("/cmd", HTTP_POST, handleHttpCommandFormPost);
-    WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
-    WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
-    WebServer.serveStatic(ICON, SPIFFS, ICON, cacheControl);
-    WebServer.serveStatic(CSS, SPIFFS, CSS, cacheControl);
-    WebServer.onNotFound(handleHttpNotFound);
-    
     memset(thermostatRequests, 0xFF, sizeof(thermostatRequests));
     memset(boilerResponses, 0xFF, sizeof(boilerResponses));
     memset(otgwRequests, 0xFF, sizeof(otgwRequests));
     memset(otgwResponses, 0xFF, sizeof(otgwResponses));
+
+    if (SPIFFS.begin())
+        WiFiSM.registerStaticFiles(Files, FileId::_Last);
+    else
+        WiFiSM.logEvent(F("Failed starting SPIFFS"));
+
+    Nav.width = F("12em");
+    Nav.menuItems =
+    {
+        MenuItem 
+        {
+            .icon = Files[FileId::Home],
+            .label = PSTR("Home"),
+            .handler = handleHttpRootRequest            
+        },
+        MenuItem
+        {
+            .icon = Files[FileId::LogFile],
+            .label = PSTR("Event log"),
+            .urlPath = PSTR("events"),
+            .handler = handleHttpEventLogRequest            
+        },
+        MenuItem
+        {
+            .icon = Files[FileId::Graph],
+            .label = PSTR("OpenTherm log"),
+            .urlPath = PSTR("otlog"),
+            .handler = handleHttpOpenThermLogRequest            
+        },
+        MenuItem
+        {
+            .icon = Files[FileId::Logo],
+            .label = PSTR("OpenTherm data"),
+            .urlPath = PSTR("ot"),
+            .handler = handleHttpOpenThermRequest            
+        },
+        MenuItem
+        {
+            .icon = Files[FileId::Upload],
+            .label = PSTR("FTP Sync"),
+            .urlPath = PSTR("sync"),
+            .handler = handleHttpOpenThermLogSyncRequest            
+        },
+        MenuItem
+        {
+            .icon = Files[FileId::Calibrate],
+            .label = PSTR("OTGW Command"),
+            .urlPath = PSTR("cmd"),
+            .handler = handleHttpCommandFormRequest,
+            .postHandler = handleHttpCommandFormPost            
+        },
+        MenuItem
+        {
+            .icon = Files[FileId::Settings],
+            .label = PSTR("Settings"),
+            .urlPath = PSTR("config"),
+            .handler = handleHttpConfigFormRequest,
+            .postHandler = handleHttpConfigFormPost            
+        }
+    };
+
+    Nav.registerHttpHandlers(WebServer);
+    WebServer.on("/traffic", handleHttpOpenThermTrafficRequest);
+    WebServer.on("/log-otgw", handleHttpOTGWMessageLogRequest);
+    WebServer.onNotFound(handleHttpNotFound);
 
     WiFiSM.on(WiFiInitState::TimeServerInitializing, onTimeServerInit);
     WiFiSM.on(WiFiInitState::TimeServerSynced, onTimeServerSynced);
@@ -985,23 +1057,35 @@ void handleHttpRootRequest()
     else
         ftpSyncTime = formatTime("%H:%M", lastOTLogSyncTime);
 
-    Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
+    Html.writeHeader(F("Home"), Nav, HTTP_POLL_INTERVAL);
 
-    HttpResponse.println(F("<h1>OpenTherm Gateway status</h1>"));
+    Html.writeDivStart(F("flex-container"));
 
-    HttpResponse.println(F("<table>"));
-    HttpResponse.printf(F("<tr><th>RSSI</th><td>%d dBm</td></tr>\r\n"), static_cast<int>(WiFi.RSSI()));
-    HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
-    HttpResponse.printf(F("<tr><th>OTGW Errors</th><td>%u</td></tr>\r\n"), otgwErrors);
-    HttpResponse.printf(F("<tr><th>OTGW Resets</th><td>%u</td></tr>\r\n"), OTGW.resets);
-    HttpResponse.printf(F("<tr><th><a href=\"/log/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSyncTime.c_str());
-    HttpResponse.printf(F("<tr><th>FTP sync entries</th><td>%d / %d</td></tr>"), otLogEntriesToSync, PersistentData.ftpSyncEntries);
-    HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
-    HttpResponse.printf(F("<tr><th><a href=\"/log\">OpenTherm log</a></th><td>%d</td></tr>\r\n"), OpenThermLog.count());
-    HttpResponse.println(F("</table>"));
+    Html.writeSectionStart(F("Status"));
+    Html.writeTableStart();
+    Html.writeRow(F("WiFi RSSI"), F("%d dBm"), static_cast<int>(WiFi.RSSI()));
+    Html.writeRow(F("Free Heap"), F("%u"), ESP.getFreeHeap());
+    Html.writeRow(F("Uptime"), F("%0.1f days"), float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
+    Html.writeRow(F("OTGW Errors"), F("%u"), otgwErrors);
+    Html.writeRow(F("OTGW Resets"), F("%u"), OTGW.resets);
+    Html.writeRow(F("FTP Sync"), F("%s"), ftpSyncTime.c_str());
+    Html.writeRow(F("Sync entries"), F("%d / %d"), otLogEntriesToSync, PersistentData.ftpSyncEntries);
+    Html.writeTableEnd();
+    Html.writeSectionEnd();
 
-    HttpResponse.println(F("<h1><a href=\"/ot\">Current OpenTherm values</a></h1>"));
+    writeCurrentValues();
+    writeStatisticsPerDay();
+
+    Html.writeDivEnd();
+    Html.writeFooter();
+
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
+}
+
+void writeCurrentValues()
+{
+    Html.writeSectionStart(F("Current values"));
+
     if (lastOTLogEntryPtr != nullptr)
     {
         bool flame = boilerResponses[OpenThermDataId::Status] & OpenThermStatus::SlaveFlame;
@@ -1062,22 +1146,17 @@ void handleHttpRootRequest()
         HttpResponse.println(F("</td></tr>"));
     }
 
-    HttpResponse.println(F("</table>"));
-
-    writeStatisticsPerDay();
-
-    Html.writeFooter();
-
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    Html.writeTableEnd();
+    Html.writeSectionEnd();
 }
 
 
 void writeStatisticsPerDay()
 {
-    HttpResponse.println(F("<h1>Statistics per day</h1>"));
+    Html.writeSectionStart(F("Statistics per day"));
 
-    HttpResponse.println(F("<table>"));
-    HttpResponse.print(F("<tr>"));
+    Html.writeTableStart();
+    Html.writeRowStart();
     Html.writeHeaderCell(F("Day"));
     Html.writeHeaderCell(F("CH start"));
     Html.writeHeaderCell(F("CH stop"));
@@ -1085,12 +1164,13 @@ void writeStatisticsPerDay()
     Html.writeHeaderCell(F("CH on"));
     Html.writeHeaderCell(F("DHW on"));
     Html.writeHeaderCell(F("Flame"));
-    HttpResponse.println(F("</tr>"));
+    Html.writeRowEnd();
+
     uint32_t maxFlameSeconds = getMaxFlameSeconds() + 1; // Prevent division by zero
     StatusLogEntry* logEntryPtr = StatusLog.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
-        HttpResponse.print(F("<tr>"));
+        Html.writeRowStart();
         Html.writeCell(formatTime("%a", logEntryPtr->startTime));
         Html.writeCell(formatTime("%H:%M", logEntryPtr->startTime));
         Html.writeCell(formatTime("%H:%M", logEntryPtr->stopTime));
@@ -1098,13 +1178,16 @@ void writeStatisticsPerDay()
         Html.writeCell(formatTimeSpan(logEntryPtr->chSeconds));
         Html.writeCell(formatTimeSpan(logEntryPtr->dhwSeconds));
         Html.writeCell(formatTimeSpan(logEntryPtr->flameSeconds));
-        HttpResponse.print(F("<td class=\"graph\">"));
+        Html.writeCellStart(F("graph"));
         Html.writeBar(float(logEntryPtr->flameSeconds) / maxFlameSeconds, F("flameBar"), false, false);
-        HttpResponse.println(F("</td></tr>"));
+        Html.writeCellEnd();
+        Html.writeRowEnd();
 
         logEntryPtr = StatusLog.getNextEntry();
     }
-    HttpResponse.println(F("</table>"));
+
+    Html.writeTableEnd();
+    Html.writeSectionEnd();
 }
 
 
@@ -1118,31 +1201,6 @@ uint32_t getMaxFlameSeconds()
         logEntryPtr = StatusLog.getNextEntry();
     }
     return result;
-}
-
-
-void handleHttpI2cScanRequest()
-{
-    Html.writeHeader(F("I2C scan"), true, true);
-
-    HttpResponse.println(F("<table>"));
-
-    for (int i = 1; i < 127; i++)
-    {
-        Wire.beginTransmission(i);
-        uint8_t err = Wire.endTransmission();
-
-        HttpResponse.printf(
-            F("<tr><td>%d</td><td>%d</td></tr>\r\n"),
-            i,
-            err);
-    }
-
-    HttpResponse.println(F("</table>"));
-
-    Html.writeFooter();
-
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
@@ -1161,74 +1219,83 @@ void handleHttpOpenThermRequest()
         avgBurnerOnTime =  float(totalBurnerHours * 3600) / burnerStarts; 
     }
 
-    Html.writeHeader(F("Current OpenTherm values"), true, true);
+    Html.writeHeader(F("OpenTherm data"), Nav);
 
-    HttpResponse.println(F("<h2>Thermostat</h2>"));
-    HttpResponse.println(F("<table>"));
-    HttpResponse.printf(F("<tr><td>Status</td><td>%s</td></tr>\r\n"), OTGW.getMasterStatus(thermostatRequests[OpenThermDataId::Status]));
-    HttpResponse.printf(F("<tr><td>TSet</td><td>%0.1f</td></tr>\r\n"), getDecimal(thermostatRequests[OpenThermDataId::TSet]));
-    HttpResponse.printf(F("<tr><td>Max Modulation %%</td><td>%0.1f</td></tr>\r\n"), getDecimal(thermostatRequests[OpenThermDataId::MaxRelModulation]));
-    HttpResponse.printf(F("<tr><td>Max TSet</td><td>%0.1f</td></tr>\r\n"), getDecimal(thermostatRequests[OpenThermDataId::MaxTSet]));
-    HttpResponse.println(F("</table>"));
+    Html.writeDivStart(F("flex-container"));
 
-    HttpResponse.println(F("<h2>Boiler</h2>"));
-    HttpResponse.println(F("<table>"));
-    HttpResponse.printf(F("<tr><td>Status</td><td>%s</td></tr>\r\n"), OTGW.getSlaveStatus(boilerResponses[OpenThermDataId::Status]));
-    HttpResponse.printf(F("<tr><td>TSet</td><td>%0.1f</td></tr>\r\n"), getDecimal(boilerResponses[OpenThermDataId::TSet]));
-    HttpResponse.printf(F("<tr><td>Fault flags</td><td>%s</td></tr>\r\n"), OTGW.getFaultFlags(boilerResponses[OpenThermDataId::SlaveFault]));
-    HttpResponse.printf(F("<tr><td>Burner starts</td><td>%d</td></tr>\r\n"), burnerStarts);
-    HttpResponse.printf(F("<tr><td>Burner on</td><td>%d h</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerBurnerHours]);
-    HttpResponse.printf(F("<tr><td>Burner on DHW</td><td>%d h</td></tr>\r\n"), boilerResponses[OpenThermDataId::BoilerDHWBurnerHours]);
-    HttpResponse.printf(F("<tr><td>Avg burner on</td><td>%s</td></tr>\r\n"), formatTimeSpan(avgBurnerOnTime));
-    HttpResponse.println(F("</table>"));
+    Html.writeSectionStart(F("Thermostat"));
+    Html.writeTableStart();
+    Html.writeRow(F("Status"), F("%s"), OTGW.getMasterStatus(thermostatRequests[OpenThermDataId::Status]));
+    Html.writeRow(F("TSet"), F("%0.1f"), getDecimal(thermostatRequests[OpenThermDataId::TSet]));
+    Html.writeRow(F("Max Modulation %"), F("%0.1f"), getDecimal(thermostatRequests[OpenThermDataId::MaxRelModulation]));
+    Html.writeRow(F("Max TSet"), F("%0.1f"), getDecimal(thermostatRequests[OpenThermDataId::MaxTSet]));
+    Html.writeTableEnd();
+    Html.writeSectionEnd();
 
-    HttpResponse.println(F("<h1>Boiler override</h1>"));
-    HttpResponse.println(F("<table>"));
-    HttpResponse.printf(F("<tr><td>Current level</td><td>%s</td></tr>\r\n"), BoilerLevelNames[currentBoilerLevel]);
+    Html.writeSectionStart(F("Boiler"));
+    Html.writeTableStart();
+    Html.writeRow(F("Status"), F("%s"), OTGW.getSlaveStatus(boilerResponses[OpenThermDataId::Status]));
+    Html.writeRow(F("TSet"), F("%0.1f"), getDecimal(boilerResponses[OpenThermDataId::TSet]));
+    Html.writeRow(F("Fault flags"), F("%s"), OTGW.getFaultFlags(boilerResponses[OpenThermDataId::SlaveFault]));
+    Html.writeRow(F("Burner starts"), F("%d"), burnerStarts);
+    Html.writeRow(F("Burner on"), F("%d h"), boilerResponses[OpenThermDataId::BoilerBurnerHours]);
+    Html.writeRow(F("Avg burner on"), F("%s"), formatTimeSpan(avgBurnerOnTime));
+    Html.writeTableEnd();
+    Html.writeSectionEnd();
+
+    Html.writeSectionStart(F("Boiler override"));
+    Html.writeTableStart();
+    Html.writeRow(F("Current level"), F("%s"), BoilerLevelNames[currentBoilerLevel]);
     if (changeBoilerLevelTime != 0)
     {
-        HttpResponse.printf(F("<tr><td>Change to</td><td>%s</td></tr>\r\n"), BoilerLevelNames[changeBoilerLevel]);
-        HttpResponse.printf(F("<tr><td>Change at</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", changeBoilerLevelTime));
+        Html.writeRow(F("Change to"), F("%s"), BoilerLevelNames[changeBoilerLevel]);
+        Html.writeRow(F("Change at"), F("%s"), formatTime("%H:%M", changeBoilerLevelTime));
     }
     if (lowLoadPeriod != 0)
-        HttpResponse.printf(F("<tr><td>Low-load period</td><td>%s</td></tr>\r\n"), formatTimeSpan(lowLoadPeriod, false));
+        Html.writeRow(F("Low-load period"), F("%s"), formatTimeSpan(lowLoadPeriod, false));
     if (lowLoadDutyInterval != 0)
-        HttpResponse.printf(F("<tr><td>Low-load duty</td><td>%s</td></tr>\r\n"), formatTimeSpan(lowLoadDutyInterval, false));
+        Html.writeRow(F("Low-load duty"), F("%s"), formatTimeSpan(lowLoadDutyInterval, false));
     if (lastHeatmonUpdateTime != 0)
-        HttpResponse.printf(F("<tr><td>HeatMon update</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastHeatmonUpdateTime));
+        Html.writeRow(F("HeatMon update"), F("%s"), formatTime("%H:%M", lastHeatmonUpdateTime));
     if (lastWeatherUpdateTime != 0)
-        HttpResponse.printf(F("<tr><td>Weather update</td><td>%s</td></tr>\r\n"), formatTime("%H:%M", lastWeatherUpdateTime));
-    HttpResponse.println(F("</table>"));
+        Html.writeRow(F("Weather update"), F("%s"), formatTime("%H:%M", lastWeatherUpdateTime));
+    Html.writeTableEnd();
+    Html.writeSectionEnd();
 
-    HttpResponse.println(F("<p class=\"traffic\"><a href=\"/traffic\">View all OpenTherm traffic</a></p>"));
-    HttpResponse.println(F("<p class=\"cmd\"><a href=\"/cmd\">Send command to OpenTherm Gateway</a></p>"));
+    Html.writeDivEnd();
+
+    HttpResponse.println(F("<a class=\"button\" href=\"/traffic\">View all OpenTherm traffic</a>"));
 
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
-void writeHtmlOpenThermDataTable(String title, uint16_t* otDataTable)
+void writeHtmlOpenThermDataTable(const String& title, uint16_t* otDataTable)
 {
-    HttpResponse.printf(F("<h2>%s</h2>\r\n"), title.c_str());
-    HttpResponse.println(F("<table>"));
-    HttpResponse.println(F("<tr><th>Data ID</th><th>Data Value (hex)</th><th>Data value (dec)</th></tr>"));
+    Html.writeSectionStart(title);
+    Html.writeTableStart();
+
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("Data ID"));
+    Html.writeHeaderCell(F("Data Value (hex)"));
+    Html.writeHeaderCell(F("Data value (dec)"));
+    Html.writeRowEnd();
 
     for (int i = 0; i < 256; i++)
     {
-      uint16_t dataValue = otDataTable[i];
-      if (dataValue == DATA_VALUE_NONE)
-        continue;
-        HttpResponse.printf
-            (F("<tr><td>%d</td><td>0x%04X</td><td>%0.2f</td></tr>\r\n"), 
+        uint16_t dataValue = otDataTable[i];
+        if (dataValue == DATA_VALUE_NONE) continue;
+        HttpResponse.printf(
+            F("<tr><td>%d</td><td>0x%04X</td><td>%0.2f</td></tr>\r\n"), 
             i, 
             dataValue, 
-            getDecimal(dataValue)
-            );
+            getDecimal(dataValue));
     }
 
-    HttpResponse.println(F("</table>"));
+    Html.writeTableEnd();
+    Html.writeSectionEnd();
 }
 
 
@@ -1236,16 +1303,19 @@ void handleHttpOpenThermTrafficRequest()
 {
     Tracer tracer(F("handleHttpOpenThermTrafficRequest"));
 
-    Html.writeHeader(F("OpenTherm traffic"), true, true);
+    Html.writeHeader(F("OpenTherm traffic"), Nav);
     
+    Html.writeDivStart(F("flex-container"));
+
     writeHtmlOpenThermDataTable(F("Thermostat requests"), thermostatRequests);
     writeHtmlOpenThermDataTable(F("Boiler responses"), boilerResponses);
     writeHtmlOpenThermDataTable(F("OTGW requests (thermostat overrides)"), otgwRequests);
     writeHtmlOpenThermDataTable(F("OTGW responses (boiler overrides)"), otgwResponses);
 
+    Html.writeDivEnd();
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -1253,31 +1323,19 @@ void handleHttpOpenThermLogRequest()
 {
     Tracer tracer(F("handleHttpOpenThermLogRequest"));
 
-    Html.writeHeader(F("OpenTherm log"), true, true);
+    Html.writeHeader(F("OpenTherm log"), Nav);
     
-    HttpResponse.println(F("<p class=\"log-csv\"><a href=\"/log-csv\">Get log in CSV format</a></p>"));
-
     int currentPage = WebServer.hasArg("page") ? WebServer.arg("page").toInt() : 0;
     int totalPages = ((OpenThermLog.count() - 1) / OT_LOG_PAGE_SIZE) + 1;
-    HttpResponse.print(F("<p>Pages: "));
-    for (int i = 0; i < totalPages; i++)
-    {
-        if (i > 0)
-            HttpResponse.print(F(" | "));
-        if (i == currentPage)
-            HttpResponse.printf(F("%d"), i + 1);
-        else
-            HttpResponse.printf(F("<a href='?page=%d'>%d</a>"), i, i + 1);           
-    }
-    HttpResponse.println(F("</p>"));
+    Html.writePager(totalPages, currentPage);
 
-    HttpResponse.println(F("<table>"));
-    HttpResponse.print(F("<tr>"));
+    Html.writeTableStart();
+    Html.writeRowStart();
     for (PGM_P header : logHeaders)
     {
         Html.writeHeaderCell(FPSTR(header));
     }
-    HttpResponse.println(F("</tr>"));
+    Html.writeRowEnd();
 
     OpenThermLogEntry* otLogEntryPtr = OpenThermLog.getFirstEntry();
     for (int i = 0; i < (currentPage * OT_LOG_PAGE_SIZE) && otLogEntryPtr != nullptr; i++)
@@ -1286,7 +1344,7 @@ void handleHttpOpenThermLogRequest()
     }
     for (int j = 0; j < OT_LOG_PAGE_SIZE && otLogEntryPtr != nullptr; j++)
     {
-        HttpResponse.print(F("<tr>"));
+        Html.writeRowStart();
         Html.writeCell(formatTime("%H:%M:%S", otLogEntryPtr->time));
         Html.writeCell(OTGW.getMasterStatus(otLogEntryPtr->boilerStatus));
         Html.writeCell(OTGW.getSlaveStatus(otLogEntryPtr->boilerStatus));
@@ -1298,17 +1356,15 @@ void handleHttpOpenThermLogRequest()
         Html.writeCell(getDecimal(otLogEntryPtr->tBuffer));
         Html.writeCell(getDecimal(otLogEntryPtr->tOutside));
         Html.writeCell(getDecimal(otLogEntryPtr->pHeatPump), F("%0.2f"));
-        HttpResponse.println(F("</tr>"));
+        Html.writeRowEnd();
 
         otLogEntryPtr = OpenThermLog.getNextEntry();
     }
-    HttpResponse.println(F("</table>"));
 
+    Html.writeTableEnd();
     Html.writeFooter();
 
-    TRACE(F("Response size: %u\n"), strlen(HttpResponse));
-
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -1316,7 +1372,7 @@ void handleHttpOpenThermLogSyncRequest()
 {
     Tracer tracer(F("handleHttpOpenThermLogSyncRequest"));
 
-    Html.writeHeader(F("FTP Sync"), true, true);
+    Html.writeHeader(F("FTP Sync"), Nav);
 
     HttpResponse.printf(
         F("<p>Sending %d OpenTherm log entries to FTP server (%s) ...</p>\r\n"), 
@@ -1330,38 +1386,15 @@ void handleHttpOpenThermLogSyncRequest()
 
     if (success)
     {
-        HttpResponse.println(F("<p>Success!</p>"));
+        Html.writeParagraph(F("Success!"));
         otLogSyncTime = 0; // Cancel scheduled sync (if any)
     }
     else
-        HttpResponse.println(F("<p>Failed!</p>"));
+        Html.writeParagraph(F("Failed!"));
  
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
-}
-
-
-void handleHttpOpenThermLogCsvRequest()
-{
-    Tracer tracer(F("handleHttpOpenThermLogCsvRequest"));
-
-    HttpResponse.clear();
-    bool first = true;
-    for (PGM_P header : logHeaders)
-    {
-        if (first)
-            first = false;
-        else
-            HttpResponse.print(";");
-        HttpResponse.print(FPSTR(header));
-    }
-    HttpResponse.println();
-
-    OpenThermLogEntry* otLogEntryPtr = OpenThermLog.getFirstEntry();
-    writeCsvDataLines(otLogEntryPtr, nullptr, HttpResponse);
-
-    WebServer.send(200, ContentTypeText, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -1418,7 +1451,7 @@ void handleHttpOTGWMessageLogRequest()
 
     OTGWMessageLog.clear();
 
-    WebServer.send(200, ContentTypeText, HttpResponse);
+    WebServer.send(200, ContentTypeText, HttpResponse.c_str());
 }
 
 
@@ -1432,7 +1465,7 @@ void handleHttpEventLogRequest()
         WiFiSM.logEvent(F("Event log cleared."));
     }
 
-    Html.writeHeader(F("Event log"), true, true);
+    Html.writeHeader(F("Event log"), Nav);
 
     const char* event = EventLog.getFirstEntry();
     while (event != nullptr)
@@ -1441,11 +1474,11 @@ void handleHttpEventLogRequest()
         event = EventLog.getNextEntry();
     }
 
-    HttpResponse.printf(F("<p><a href=\"?clear=%u\">Clear event log</a></p>\r\n"), currentTime);
+    Html.writeActionLink(F("clear"), F("Clear event log"), currentTime, ButtonClass);
 
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -1462,28 +1495,30 @@ void handleHttpCommandFormRequest()
         value = F("A");
     }
 
-    Html.writeHeader(F("Send OTGW Command"), true, true);
+    Html.writeHeader(F("OTGW Command"), Nav);
 
-    HttpResponse.printf(F("<p><a href=\"?cmd=PR&value=A\">OTGW version</a></p>\r\n"));
-    HttpResponse.printf(F("<p><a href=\"?cmd=CS&value=%d\">Set boiler level Low</a></p>\r\n"), boilerTSet[BoilerLevel::Low]);
-    HttpResponse.printf(F("<p><a href=\"?cmd=CS&value=0\">Stop override</a></p>\r\n"));
+    HttpResponse.println(F("<a class=\"button\" href=\"?cmd=PR&value=A\">OTGW version</a>"));
+    HttpResponse.printf(
+        F("<a class=\"button\" href=\"?cmd=CS&value=%d\">Set boiler level Low</a>\r\n"),
+        boilerTSet[BoilerLevel::Low]);
+    HttpResponse.println(F("<a class=\"button\" href=\"?cmd=CS&value=0\">Stop override</a>"));
 
-    HttpResponse.println(F("<form action=\"/cmd\" method=\"POST\">"));
-    HttpResponse.println(F("<table>"));
+    Html.writeFormStart(F("cmd"));
+    Html.writeTableStart();
     Html.writeTextBox(F("cmd"), F("Command"), cmd, 2);
     Html.writeTextBox(F("value"), F("Value"), value, 16);
-    HttpResponse.println(F("</table>"));
-    HttpResponse.println(F("<input type=\"submit\">"));
-    HttpResponse.println(F("</form>"));
+    Html.writeTableEnd();
+    Html.writeSubmitButton(F("Send command"));
+    Html.writeFormEnd();
 
-    HttpResponse.println(F("<h2>OTGW Response</h2>"));
+    Html.writeHeading(F("OTGW Response"), 2);
     HttpResponse.printf(F("<div class=\"response\"><pre>%s</pre></div>"), otgwResponse.c_str());
 
     Html.writeFooter();
 
     otgwResponse = String();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -1517,37 +1552,38 @@ void handleHttpConfigFormRequest()
 {
     Tracer tracer(F("handleHttpConfigFormRequest"));
 
-    Html.writeHeader(F("Configuration"), true, true);
+    Html.writeHeader(F("Settings"), Nav);
 
     Html.writeFormStart(F("/config"));
-    Html.writeTableStart();
     Html.writeTextBox(CFG_WIFI_SSID, F("WiFi SSID"), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID) - 1);
-    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1);
+    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1, F("password"));
     Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
     Html.writeTextBox(CFG_HEATMON_HOST, F("Heatmon host"), PersistentData.heatmonHost, sizeof(PersistentData.heatmonHost) - 1);
     Html.writeTextBox(CFG_NTP_SERVER, F("NTP server"), PersistentData.ntpServer, sizeof(PersistentData.ntpServer) - 1);
     Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
     Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
-    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
-    Html.writeTextBox(CFG_FTP_SYNC_ENTRIES, F("FTP Sync Entries"), String(PersistentData.ftpSyncEntries), 4);
+    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1, F("password"));
+    Html.writeNumberBox(CFG_FTP_SYNC_ENTRIES, F("FTP Sync Entries"), PersistentData.ftpSyncEntries, 0, OT_LOG_LENGTH);
     Html.writeTextBox(CFG_WEATHER_API_KEY, F("Weather API Key"), PersistentData.weatherApiKey, 16);
     Html.writeTextBox(CFG_WEATHER_LOC, F("Weather Location"), PersistentData.weatherLocation, 16);
-    Html.writeTextBox(CFG_MAX_TSET, F("Max TSet"), String(PersistentData.maxTSet), 2);
-    Html.writeTextBox(CFG_MIN_TSET, F("Min TSet"), String(PersistentData.minTSet), 2);
-    Html.writeTextBox(CFG_BOILER_ON_DELAY, F("Boiler on delay (s)"), String(PersistentData.boilerOnDelay), 4);
+    Html.writeNumberBox(CFG_MAX_TSET, F("Max TSet"), PersistentData.maxTSet, 20, 90);
+    Html.writeNumberBox(CFG_MIN_TSET, F("Min TSet"), PersistentData.maxTSet, 20, 90);
+    Html.writeNumberBox(CFG_BOILER_ON_DELAY, F("Boiler on delay (s)"), PersistentData.boilerOnDelay, 0, 7200);
     Html.writeCheckbox(CFG_PUMP_MOD, F("Pump Modulation"), PersistentData.usePumpModulation);
-    Html.writeTableEnd();
-    Html.writeSubmitButton();
+    Html.writeSubmitButton(F("Save"));
     Html.writeFormEnd();
 
     if (WiFiSM.shouldPerformAction(F("reset")))
+    {
+        Html.writeParagraph(F("Resetting..."));
         WiFiSM.reset();
+    }
     else
-        HttpResponse.printf(F("<p><a href=\"?reset=%u\">Reset ESP</a></p>\r\n"), currentTime);
+        Html.writeActionLink(F("reset"), F("Reset ESP"), currentTime, ButtonClass);
 
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 

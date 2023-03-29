@@ -210,17 +210,66 @@ void HtmlWriter::writeSubmitButton()
 }
 
 
-void HtmlWriter::writeTextBox(const String& name, const String& label, const String& value,  uint16_t maxLength, const String& type)
+void HtmlWriter::writeSubmitButton(const String& label, const String& cssClass)
 {
     _output.printf(
-        F("<tr><td><label for=\"%s\">%s</label></td><td><input type=\"%s\" name=\"%s\" value=\"%s\" maxlength=\"%d\"></td></tr>\r\n"), 
-        name.c_str(),
+        F("<input type=\"submit\" value=\"%s\" class=\"%s\">\r\n"),
         label.c_str(),
+        cssClass.c_str());
+}
+
+
+void HtmlWriter::writeLabel(const String& label, const String& forId)
+{
+    _output.printf(
+        F("<label for=\"%s\">%s</label>"), 
+        forId.c_str(),
+        label.c_str());
+}
+
+
+void HtmlWriter::writeTextBox(
+    const String& name,
+    const String& label,
+    const String& value,
+    uint16_t maxLength,
+    const String& type)
+{
+    writeLabel(label, name);
+    _output.printf(
+        F("<input type=\"%s\" name=\"%s\" value=\"%s\" maxlength=\"%d\">\r\n"), 
         type.c_str(),
         name.c_str(),
         value.c_str(),
-        maxLength
-        );
+        maxLength);
+}
+
+
+void HtmlWriter::writeNumberBox(
+    const String& name,
+    const String& label,
+    float value,
+    float minValue,
+    float maxValue,
+    int decimals)
+{
+    float step = pow10f(-decimals);
+
+    static char format[128];
+    snprintf(
+        format,
+        sizeof(format),
+        "<input type=\"number\" name=\"%%s\" value=\"%%0.%df\" min=\"%%0.%df\" max=\"%%0.%df\" step=\"%%0.%df\">\r\n",
+        decimals, decimals, decimals, decimals);
+
+    writeLabel(label, name);
+    _output.printf(
+        FPSTR(format), 
+        name.c_str(),
+        value,
+        minValue,
+        maxValue,
+        step);
 }
 
 
@@ -228,23 +277,17 @@ void HtmlWriter::writeCheckbox(const String& name, const String& label, bool val
 {
     const char* checked = value ? "checked" : "";
 
+    writeLabel(label, name);
     _output.printf(
-        F("<tr><td><label for=\"%s\">%s</label></td><td><input type=\"checkbox\" name=\"%s\" value=\"true\" %s></td></tr>\r\n"), 
+        F("<input type=\"checkbox\" name=\"%s\" value=\"true\" %s>\r\n"), 
         name.c_str(),
-        label.c_str(),
-        name.c_str(),
-        checked
-        );
+        checked);
 }
 
 
 void HtmlWriter::writeRadioButtons(const String& name, const String& label, const char** values, int numValues, int index)
 {
-    _output.printf(
-        F("<tr><td><label for=\"%s\">%s</label></td><td>"), 
-        name.c_str(),
-        label.c_str()
-        );
+    writeLabel(label, name);
 
     for (int i = 0; i < numValues; i++)
     {
@@ -254,17 +297,14 @@ void HtmlWriter::writeRadioButtons(const String& name, const String& label, cons
             name.c_str(),
             i,
             checked,
-            values[i]
-            );
+            values[i]);
     }
-
-    _output.println(F("</td></tr>"));
 }
 
 
 void HtmlWriter::writeSlider(const String& name, const String& label, const String& unitOfMeasure, int value, int minValue, int maxValue, int denominator)
 {
-    _output.printf(F("<tr><td><label for=\"%s\">%s</label></td><td>"), name.c_str(), label.c_str());
+    writeLabel(label, name);
     _output.printf(
         F("<div><input name=\"%s\" type=\"range\" min=\"%d\" max=\"%d\" value=\"%d\"></div>"),
         name.c_str(),
@@ -287,6 +327,31 @@ void HtmlWriter::writeHeading(const String& title, int level)
         level,
         title.c_str(),
         level);
+}
+
+
+void HtmlWriter::writeSectionStart(const String& title)
+{
+    _output.println(F("<section>"));
+    writeHeading(title, 1);
+}
+
+
+void HtmlWriter::writeSectionEnd()
+{
+    _output.println(F("</section>"));
+}
+
+
+void HtmlWriter::writeDivStart(const String& cssClass)
+{
+    _output.printf(F("<div class=\"%s\">\r\n"), cssClass.c_str());
+}
+
+
+void HtmlWriter::writeDivEnd()
+{
+    _output.println(F("</div>"));
 }
 
 
@@ -324,7 +389,7 @@ void HtmlWriter::writeCellStart(const String& cssClass)
 
 void HtmlWriter::writeCellEnd()
 {
-    _output.println(F("</td>"));
+    _output.print(F("</td>"));
 }
 
 
@@ -379,19 +444,33 @@ void HtmlWriter::writeCell(float value, const __FlashStringHelper* format)
 }
 
 
+void HtmlWriter::writeRow(const String& name, const String& format, ...)
+{
+    static char value[64];
+    va_list args;
+    va_start(args, format);
+    int length = vsnprintf(value, sizeof(value) - 1, format.c_str(), args);
+    value[length] = 0;
+    va_end(args);
+
+    _output.printf(
+        F("<tr><th>%s</th><td>%s</td></tr>\r\n"),
+        name.c_str(),
+        value);
+}
+
+
 void HtmlWriter::writePager(int totalPages, int currentPage)
 {
-    _output.print(F("<p>Pages: "));
+    writeDivStart(F("pager"));
     for (int i = 0; i < totalPages; i++)
     {
-        if (i > 0)
-            _output.print(F(" | "));
         if (i == currentPage)
-            _output.printf(F("%d"), i + 1);
+            _output.printf(F("<span>%d</span>"), i + 1);
         else
             _output.printf(F("<a href='?page=%d'>%d</a>"), i, i + 1);           
     }
-    _output.println(F("</p>"));
+    writeDivEnd();
 }
 
 

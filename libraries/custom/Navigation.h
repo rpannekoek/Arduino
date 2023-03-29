@@ -15,8 +15,7 @@ struct MenuItem
 
 struct Navigation
 {
-    String width;
-    std::vector<PGM_P> files;
+    String width = "10em";
     std::vector<MenuItem> menuItems;
 
     void registerHttpHandlers(ESPWebServer& webServer);

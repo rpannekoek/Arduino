@@ -1,7 +1,7 @@
 #ifndef HEATMON_CLIENT_H
 #define HEATMON_CLIENT_H
 
-#include <ESP8266HTTPClient.h>
+#include <ESPHTTPClient.h>
 
 class HeatMonClient
 {

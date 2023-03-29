@@ -36,6 +36,8 @@ class WiFiStateMachine
         WiFiStateMachine(WiFiNTP& timeServer, ESPWebServer& webServer, StringLog& eventLog);
 
         void on(WiFiInitState state, void (*handler)(void));
+
+        void registerStaticFiles(PGM_P* files, size_t count);
  
         void begin(String ssid, String password, String hostName, uint32_t reconnectInterval = 60);
         void run();

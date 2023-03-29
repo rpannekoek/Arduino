@@ -44,6 +44,17 @@ void WiFiStateMachine::on(WiFiInitState state, void (*handler)(void))
 }
 
 
+void WiFiStateMachine::registerStaticFiles(PGM_P* files, size_t count)
+{
+    for (int i = 0; i < count; i++)
+    {
+        String path = F("/");
+        path += FPSTR(files[i]);
+        _webServer.serveStatic(path.c_str(), SPIFFS, path.c_str(), "max-age=86400, public");
+    }
+}
+
+
 void WiFiStateMachine::begin(String ssid, String password, String hostName, uint32_t reconnectInterval)
 {
     Tracer tracer(F("WiFiStateMachine::begin"), hostName.c_str());
