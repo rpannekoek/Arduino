@@ -68,89 +68,37 @@
 #define CFG_CURRENT_LIMIT F("CurrentLimit")
 #define CAL_CURRENT F("ActualCurrent")
 #define CAL_CURRENT_ZERO F("CurrentZero")
-#define CAL_CONTROL_PILOT F("ControlPilot")
 #define CAL_TEMP_OFFSET F("TempOffset")
 
-void handleHttpRootRequest();
-void handleHttpEventLogRequest();
-void handleHttpChargeLogRequest();
-void handleHttpBluetoothRequest();
-void handleHttpBluetoothFormPost();
-void handleHttpSmartMeterRequest();
-void handleHttpCalibrateRequest();
-void handleHttpConfigFormRequest();
-void handleHttpConfigFormPost();
-
-Navigation Nav =
+enum FileId
 {
-    .width = F("8em"),
-    .files =
-    {
-        PSTR("Logo.png"),
-        PSTR("styles.css"),
-        PSTR("Bluetooth.svg"),
-        PSTR("Calibrate.svg"),
-        PSTR("Cancel.svg"),
-        PSTR("Confirm.svg"),
-        PSTR("Flash.svg"),
-        PSTR("Home.svg"),
-        PSTR("LogFile.svg"),
-        PSTR("Meter.svg"),
-        PSTR("Settings.svg")
-    },
-    .menuItems = 
-    {
-        MenuItem
-        {
-            .icon = PSTR("Home.svg"),
-            .label = PSTR("Home"),
-            .handler = handleHttpRootRequest
-        },
-        MenuItem
-        {
-            .icon = PSTR("LogFile.svg"),
-            .label = PSTR("Event log"),
-            .urlPath = PSTR("events"),
-            .handler = handleHttpEventLogRequest
-        },
-        MenuItem
-        {
-            .icon = PSTR("Flash.svg"),
-            .label = PSTR("Charge log"),
-            .urlPath = PSTR("chargelog"),
-            .handler = handleHttpChargeLogRequest
-        },
-        MenuItem
-        {
-            .icon = PSTR("Bluetooth.svg"),
-            .label = PSTR("Bluetooth"),
-            .urlPath = PSTR("bt"),
-            .handler = handleHttpBluetoothRequest,
-            .postHandler = handleHttpBluetoothFormPost
-        },
-        MenuItem
-        {
-            .icon = PSTR("Meter.svg"),
-            .label = PSTR("Smart Meter"),
-            .urlPath = PSTR("dsmr"),
-            .handler = handleHttpSmartMeterRequest
-        },
-        MenuItem
-        {
-            .icon = PSTR("Calibrate.svg"),
-            .label = PSTR("Calibrate"),
-            .urlPath = PSTR("calibrate"),
-            .handler = handleHttpCalibrateRequest
-        },
-        MenuItem
-        {
-            .icon = PSTR("Settings.svg"),
-            .label = PSTR("Settings"),
-            .urlPath = PSTR("config"),
-            .handler = handleHttpConfigFormRequest,
-            .postHandler = handleHttpConfigFormPost
-        },
-    }
+    Logo,
+    Styles,
+    BluetoothIcon,
+    CalibrateIcon,
+    CancelIcon,
+    ConfirmIcon,
+    FlashIcon,
+    HomeIcon,
+    LogFileIcon,
+    MeterIcon,
+    SettingsIcon,
+    _LastFileId
+};
+
+const char* Files[] PROGMEM =
+{
+    "Logo.png",
+    "styles.css",
+    "Bluetooth.svg",
+    "Calibrate.svg",
+    "Cancel.svg",
+    "Confirm.svg",
+    "Flash.svg",
+    "Home.svg",
+    "LogFile.svg",
+    "Meter.svg",
+    "Settings.svg"
 };
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
@@ -165,7 +113,7 @@ WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
 DsmrMonitorClient SmartMeter(WIFI_TIMEOUT_MS);
 BLE Bluetooth;
 StringBuilder HttpResponse(8192); // 8KB HTTP response buffer
-HtmlWriter Html(HttpResponse, Nav.files[0], Nav.files[1], 60);
+HtmlWriter Html(HttpResponse, Files[Logo], Files[Styles], 60);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
 CurrentSensor OutputCurrentSensor(CURRENT_SENSE_PIN);
@@ -176,6 +124,7 @@ OneWire OneWireBus(TEMP_SENSOR_PIN);
 DallasTemperature TempSensors(&OneWireBus);
 StaticLog<ChargeLogEntry> ChargeLog(CHARGE_LOG_SIZE);
 DayStatistics DayStats;
+Navigation Nav;
 
 EVSEState state = EVSEState::Booting;
 float temperature = 0;
@@ -215,14 +164,67 @@ void setup()
     TimeServer.NTPServer = PersistentData.ntpServer;
     Html.setTitlePrefix(PersistentData.hostName);
 
-    if (!SPIFFS.begin())
-        WiFiSM.logEvent(F("Starting SPIFFS failed"));
-
+    Nav.width = F("8em");
+    Nav.menuItems = 
+    {
+        MenuItem
+        {
+            .icon = Files[HomeIcon],
+            .label = PSTR("Home"),
+            .handler = handleHttpRootRequest
+        },
+        MenuItem
+        {
+            .icon = Files[LogFileIcon],
+            .label = PSTR("Event log"),
+            .urlPath = PSTR("events"),
+            .handler = handleHttpEventLogRequest
+        },
+        MenuItem
+        {
+            .icon = Files[FlashIcon],
+            .label = PSTR("Charge log"),
+            .urlPath = PSTR("chargelog"),
+            .handler = handleHttpChargeLogRequest
+        },
+        MenuItem
+        {
+            .icon = Files[BluetoothIcon],
+            .label = PSTR("Bluetooth"),
+            .urlPath = PSTR("bt"),
+            .handler = handleHttpBluetoothRequest,
+            .postHandler = handleHttpBluetoothFormPost
+        },
+        MenuItem
+        {
+            .icon = Files[MeterIcon],
+            .label = PSTR("Smart Meter"),
+            .urlPath = PSTR("dsmr"),
+            .handler = handleHttpSmartMeterRequest
+        },
+        MenuItem
+        {
+            .icon = Files[CalibrateIcon],
+            .label = PSTR("Calibrate"),
+            .urlPath = PSTR("calibrate"),
+            .handler = handleHttpCalibrateRequest
+        },
+        MenuItem
+        {
+            .icon = Files[SettingsIcon],
+            .label = PSTR("Settings"),
+            .urlPath = PSTR("config"),
+            .handler = handleHttpConfigFormRequest,
+            .postHandler = handleHttpConfigFormPost
+        },
+    };
     Nav.registerHttpHandlers(WebServer);
+
     WebServer.on("/bt/json", handleHttpBluetoothJsonRequest);
     WebServer.on("/current", handleHttpCurrentRequest);
     WebServer.onNotFound(handleHttpNotFound);
     
+    WiFiSM.registerStaticFiles(Files, _LastFileId);
     WiFiSM.on(WiFiInitState::TimeServerSynced, onWiFiTimeSynced);
     WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
     WiFiSM.scanAccessPoints();
@@ -793,93 +795,41 @@ void handleHttpRootRequest()
     Html.writeHeader(F("Home"), Nav, HTTP_POLL_INTERVAL);
 
     Html.writeTableStart();
-    HttpResponse.printf(
-        F("<tr><th>WiFi RSSI</th><td>%d dBm</td></tr>\r\n"),
-        static_cast<int>(WiFi.RSSI()));
 
-    HttpResponse.printf(
-        F("<tr><th>WiFi AP</th><td>%s</td></tr>\r\n"),
-        WiFi.BSSIDstr().c_str());
-
-    HttpResponse.printf(
-        F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"),
-        ESP.getFreeHeap());
-
-    HttpResponse.printf(
-        F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"),
-        float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
-
-    Html.writeRowStart();
-    Html.writeHeaderCell(F("EVSE State"));
-    Html.writeCell(EVSEStateNames[state]);
-    Html.writeRowEnd();
-
-    Html.writeRowStart();
-    Html.writeHeaderCell(F("Control Pilot"));
-    Html.writeCell(ControlPilot.getStatusName());
-    Html.writeRowEnd();
+    Html.writeRow(
+        F("EVSE State"),
+        F("<span style=\"color: %s\">%s</span>"),
+        EVSEStateColors[state],
+        EVSEStateNames[state]);
+    Html.writeRow(F("Control Pilot"), F("%s"), ControlPilot.getStatusName());
 
     if (state == EVSEState::Charging)
     {
-        Html.writeRowStart();
-        Html.writeHeaderCell(F("Current limit"));
-        Html.writeCell(currentLimit, F("%0.1f A"));
-        Html.writeRowEnd();
-
-        Html.writeRowStart();
-        Html.writeHeaderCell(F("Output current"));
-        Html.writeCell(outputCurrent, F("%0.1f A"));
-        Html.writeRowEnd();
+        Html.writeRow(F("Current limit"), F("%0.1f A"), currentLimit);
+        Html.writeRow(F("Output current"), F("%0.1f A"), outputCurrent);
     }
 
-    Html.writeRowStart();
-    Html.writeHeaderCell(F("Energy charged"));
-    Html.writeCell(energyCharged / 3600000, F("%0.1f kWh"));
-    Html.writeRowEnd();
+    Html.writeRow(F("Energy charged"), F("%0.1f kWh"), energyCharged / 3600000);
 
     if (chargingStartedTime != 0)
     {
         time_t endTime = (chargingFinishedTime == 0) ? currentTime : chargingFinishedTime;
 
-        Html.writeRowStart();
-        Html.writeHeaderCell(F("Charge duration"));
-        Html.writeCell(formatTimeSpan(endTime - chargingStartedTime));
-        Html.writeRowEnd();
-
-        Html.writeRowStart();
-        Html.writeHeaderCell(F("Charging started"));
-        Html.writeCell(formatTime("%a %H:%M", chargingStartedTime));
-        Html.writeRowEnd();
+        Html.writeRow(F("Charge duration"), F("%s"), formatTimeSpan(endTime - chargingStartedTime));
+        Html.writeRow(F("Charging started"), F("%s"), formatTime("%a %H:%M", chargingStartedTime));
     }
 
     if (chargingFinishedTime != 0)
-    {
-        Html.writeRowStart();
-        Html.writeHeaderCell(F("Charging finished"));
-        Html.writeCell(formatTime("%a %H:%M", chargingFinishedTime));
-        Html.writeRowEnd();
-    }
+        Html.writeRow(F("Charging started"), F("%s"), formatTime("%a %H:%M", chargingFinishedTime));
 
-    Html.writeRowStart();
-    Html.writeHeaderCell(F("Temperature"));
-    Html.writeCell(temperature, F("%0.1f °C"));
-    Html.writeRowEnd();
+    Html.writeRow(F("Temperature"), F("%0.1f °C"), temperature);
+    Html.writeRow(F("T<sub>max</sub>"), F("%0.1f °C @ %s"), DayStats.tMax, formatTime("%H:%M", DayStats.tMaxTime));
+    Html.writeRow(F("T<sub>min</sub>"), F("%0.1f °C @ %s"), DayStats.tMin, formatTime("%H:%M", DayStats.tMinTime));
 
-    Html.writeRowStart();
-    Html.writeHeaderCell(F("T<sub>max</sub>"));
-    HttpResponse.printf(
-        F("<td>%0.1f °C @ %s</td>"),
-        DayStats.tMax,
-        formatTime("%H:%M", DayStats.tMaxTime));
-    Html.writeRowEnd();
-
-    Html.writeRowStart();
-    Html.writeHeaderCell(F("T<sub>min</sub>"));
-    HttpResponse.printf(
-        F("<td>%0.1f °C @ %s</td>"),
-        DayStats.tMin,
-        formatTime("%H:%M", DayStats.tMinTime));
-    Html.writeRowEnd();
+    Html.writeRow(F("WiFi RSSI"), F("%d dBm"), static_cast<int>(WiFi.RSSI()));
+    Html.writeRow(F("WiFi AP"), F("%s"), WiFi.BSSIDstr().c_str());
+    Html.writeRow(F("Free Heap"), F("%0.1f kB"), float(ESP.getFreeHeap()) / 1024);
+    Html.writeRow(F("Uptime"), F("%0.1f days"), float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
 
     Html.writeTableEnd();
 
@@ -992,9 +942,9 @@ void handleHttpBluetoothRequest()
         Html.writeTableEnd();
     }
     else if (btState == BluetoothState::Discovering)
-        HttpResponse.println(F("<p>Discovery in progress...</p>"));
+        Html.writeParagraph(F("Discovery in progress..."));
 
-    Html.writeSubmitButton();
+    Html.writeSubmitButton(F("Update registration"), Button);
     Html.writeFormEnd();
     Html.writeFooter();
 
@@ -1224,9 +1174,6 @@ void handleHttpCalibrateRequest()
 
     bool savePersistentData = false;
 
-    if (WiFiSM.shouldPerformAction(CAL_CONTROL_PILOT))
-        ControlPilot.calibrate();
-
     if (WiFiSM.shouldPerformAction(CAL_CURRENT_ZERO))
     {
         PersistentData.currentZero = OutputCurrentSensor.calibrateZero();
@@ -1260,77 +1207,35 @@ void handleHttpCalibrateRequest()
     float outputCurrentDC = OutputCurrentSensor.getDC();
     float cpVoltage = ControlPilot.getVoltage();
     float cpDutyCycle = ControlPilot.getDutyCycle();
+    float tMeasured = TempSensors.getTempC(PersistentData.tempSensorAddress);
 
     Html.writeHeader(F("Calibrate"), Nav);
 
-    Html.writeHeading(F("Output current"), 2);
-    Html.writeFormStart(F("/calibrate"));
-    Html.writeTableStart();
-
-    Html.writeRowStart();
-    Html.writeHeaderCell(F("Samples"));
-    Html.writeCell(OutputCurrentSensor.getSampleCount());
-    Html.writeRowEnd();
-    Html.writeRowStart();
-    Html.writeHeaderCell(F("Measured (RMS)"));
-    Html.writeCell(outputCurrentRMS, F("%0.2f A"));
-    Html.writeRowEnd();
-    Html.writeRowStart();
-    Html.writeHeaderCell(F("Measured (Peak)"));
-    Html.writeCell(outputCurrentPeak, F("%0.2f A"));
-    Html.writeRowEnd();
-    Html.writeHeaderCell(F("Measured (DC)"));
-    Html.writeCell(outputCurrentDC * 1000, F("%0.1f mA"));
-    Html.writeRowEnd();
-
-    Html.writeTextBox(CAL_CURRENT, F("Actual (RMS)"), String(outputCurrentRMS), 6);
-    Html.writeTableEnd();
-
-    Html.writeSubmitButton();
-    Html.writeFormEnd();
-
-    if (std::abs(outputCurrentDC) > 0.01)
-        Html.writeActionLink(CAL_CURRENT_ZERO, F("Calibrate DC"), currentTime);
-
     Html.writeHeading(F("Control Pilot"), 2);
     Html.writeTableStart();
-    Html.writeRowStart();
-    Html.writeHeaderCell(F("Measured"));
-    Html.writeCell(cpVoltage, F("%0.2f V"));
-    Html.writeRowEnd();
-    Html.writeHeaderCell(F("Duty Cycle"));
-    Html.writeCell(cpDutyCycle * 100, F("%0.0f %%"));
-    Html.writeRowEnd();
+    Html.writeRow(F("Measured"), F("%0.2f V"), cpVoltage);
+    Html.writeRow(F("Duty Cycle"), F("%0.0f %%"), cpDutyCycle * 100);
     Html.writeTableEnd();
 
-    Html.writeActionLink(CAL_CONTROL_PILOT, F("Calibrate Control Pilot Idle"), currentTime);
+    Html.writeHeading(F("Output current"), 2);
+    Html.writeFormStart(F("/calibrate"), F("grid"));
+    HttpResponse.printf(F("<label>Samples</label><div>%d</div>\r\n"), OutputCurrentSensor.getSampleCount());
+    HttpResponse.printf(F("<label>Measured (DC)</labeL><div>%0.1f mA "), outputCurrentDC * 1000);
+    Html.writeActionLink(CAL_CURRENT_ZERO, F("[Calibrate zero]"), currentTime);
+    Html.writeDivEnd();
+    HttpResponse.printf(F("<label>Measured (Peak)</labeL><div>%0.2f A</div>\r\n"), outputCurrentPeak);
+    HttpResponse.printf(F("<label>Measured (RMS)</labeL><div>%0.2f A</div>\r\n"), outputCurrentRMS);
+    Html.writeNumberBox(CAL_CURRENT, F("Actual (RMS)"), outputCurrentRMS, 0, 20, 2);
+    Html.writeSubmitButton(F("Calibrate"));
+    Html.writeFormEnd();
 
     Html.writeHeading(F("Temperature sensor"), 2);
-    if (TempSensors.isConnected(PersistentData.tempSensorAddress))
-    {
-        float tMeasured = TempSensors.getTempC(PersistentData.tempSensorAddress);
-
-        Html.writeFormStart(F("/calibrate"));
-        Html.writeTableStart();
-
-        Html.writeRowStart();
-        Html.writeHeaderCell(F("Measured"));
-        Html.writeCell(tMeasured, F("%0.2f °C"));
-        Html.writeRowEnd();
-
-        Html.writeTextBox(CAL_TEMP_OFFSET, F("Offset"), String(PersistentData.tempSensorOffset), 5);
-
-        Html.writeRowStart();
-        Html.writeHeaderCell(F("Effective"));
-        Html.writeCell(tMeasured + PersistentData.tempSensorOffset, F("%0.2f °C"));
-        Html.writeRowEnd();
-
-        Html.writeTableEnd();
-        Html.writeSubmitButton();
-        Html.writeFormEnd();
-    }
-    else
-        Html.writeParagraph(F("Not connected"));
+    Html.writeFormStart(F("/calibrate"), F("grid"));
+    HttpResponse.printf(F("<label>Measured</label><div>%0.2f °C</div>\r\n"), tMeasured);
+    Html.writeTextBox(CAL_TEMP_OFFSET, F("Offset"), String(PersistentData.tempSensorOffset), 5);
+    HttpResponse.printf(F("<label>Effective</label><div>%0.2f °C</div>\r\n"), tMeasured + PersistentData.tempSensorOffset);
+    Html.writeSubmitButton(F("Calibrate"));
+    Html.writeFormEnd();
 
     Html.writeFooter();
 
@@ -1344,46 +1249,15 @@ void handleHttpConfigFormRequest()
 
     Html.writeHeader(F("Settings"), Nav);
 
-    Html.writeFormStart(F("/config"));
-    Html.writeTableStart();
-    Html.writeTextBox(
-        CFG_WIFI_SSID,
-        F("WiFi SSID"),
-        PersistentData.wifiSSID,
-        sizeof(PersistentData.wifiSSID) - 1);
-    Html.writeTextBox(
-        CFG_WIFI_KEY, F("WiFi Key"),
-        PersistentData.wifiKey,
-        sizeof(PersistentData.wifiKey) - 1,
-        F("password"));
-    Html.writeTextBox(
-        CFG_HOST_NAME,
-        F("Host name"),
-        PersistentData.hostName,
-        sizeof(PersistentData.hostName) - 1);
-    Html.writeTextBox(
-        CFG_NTP_SERVER,
-        F("NTP server"),
-        PersistentData.ntpServer,
-        sizeof(PersistentData.ntpServer) - 1);
-    Html.writeTextBox(
-        CFG_DSMR_MONITOR,
-        F("DSMR monitor"),
-        PersistentData.dsmrMonitor,
-        sizeof(PersistentData.dsmrMonitor) - 1);
-    Html.writeTextBox(
-        CFG_DSMR_PHASE,
-        F("DSMR phase"),
-        String((int)PersistentData.dsmrPhase + 1),
-        1,
-        F("number"));
-    Html.writeTextBox(
-        CFG_CURRENT_LIMIT, F("Current limit (A)"),
-        String((int)PersistentData.currentLimit),
-        2,
-        F("number"));
-    Html.writeTableEnd();
-    Html.writeSubmitButton();
+    Html.writeFormStart(F("/config"), F("grid"));
+    Html.writeTextBox(CFG_WIFI_SSID, F("WiFi SSID"), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID) - 1);
+    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1, F("password"));
+    Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
+    Html.writeTextBox(CFG_NTP_SERVER, F("NTP server"), PersistentData.ntpServer, sizeof(PersistentData.ntpServer) - 1);
+    Html.writeTextBox(CFG_DSMR_MONITOR, F("DSMR monitor"), PersistentData.dsmrMonitor, sizeof(PersistentData.dsmrMonitor) - 1);
+    Html.writeNumberBox(CFG_DSMR_PHASE, F("DSMR phase"), PersistentData.dsmrPhase + 1, 1, 3);
+    Html.writeNumberBox(CFG_CURRENT_LIMIT, F("Current limit (A)"), PersistentData.currentLimit, 6, 35);
+    Html.writeSubmitButton(F("Save"));
     Html.writeFormEnd();
 
     if (WiFiSM.shouldPerformAction(F("reset")))

@@ -75,7 +75,6 @@ nav a:hover
 {
     display: inline-block;
     font-size: 2em;
-    font-weight: bold;
     text-decoration: none;
     color: white;
     background-color: green;
@@ -83,6 +82,56 @@ nav a:hover
     border: none;
     border-radius: 0.5em;
     margin-top: 0.5em;
+}
+
+.pager
+{
+    font-size: 1.5em;
+    padding: 5px;
+    margin-bottom: 5px;
+}
+
+.pager span
+{
+    padding: 5px;
+    background-color: blue;
+    color: white;
+}
+
+.pager a
+{
+    padding: 5px;
+    text-decoration: none;
+}
+
+.pager a:hover
+{
+    color: white;
+}
+
+.grid
+{
+    display: grid;
+    grid-template-columns: 10em auto;
+    max-width: 30em;
+    grid-gap: 0.5em;
+}
+
+.grid label 
+{
+    text-align: right;
+}
+
+.grid input
+{
+    grid-column: 2;
+}
+
+pre
+{
+    font-size: 1.25em;
+    background-color: white;
+    color: black;
 }
 
 table

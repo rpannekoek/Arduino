@@ -15,6 +15,7 @@ enum EVSEState
 };
 
 extern const char* EVSEStateNames[];
+extern const char* EVSEStateColors[];
 
 class StatusLED
 {

@@ -46,6 +46,12 @@ void WiFiStateMachine::on(WiFiInitState state, void (*handler)(void))
 
 void WiFiStateMachine::registerStaticFiles(PGM_P* files, size_t count)
 {
+    if (!SPIFFS.begin())
+    {
+        logEvent(F("Starting SPIFFS failed"));
+        return;
+    }
+
     for (int i = 0; i < count; i++)
     {
         String path = F("/");

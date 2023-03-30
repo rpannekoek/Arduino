@@ -31,6 +31,19 @@ const char* EVSEStateNames[] =
     [EVSEState::ChargeCompleted] = "Charge completed"
 };
 
+const char* EVSEStateColors[] = 
+{
+    [EVSEState::Booting] = "blue",
+    [EVSEState::SelfTest] = "magenta",
+    [EVSEState::Failure] = "red",
+    [EVSEState::Ready] = "green",
+    [EVSEState::Authorize] = "white",
+    [EVSEState::AwaitCharging] = "cyan",
+    [EVSEState::Charging] = "orange",
+    [EVSEState::StopCharging] = "yellow",
+    [EVSEState::ChargeCompleted] = "black"
+};
+
 pixelColor_t StatusLED::_statusColors[] =
 {
     [EVSEState::Booting] = BLUE,

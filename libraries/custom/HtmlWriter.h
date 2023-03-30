@@ -24,7 +24,7 @@ class HtmlWriter
         void writeGraphCell(float value, const String& barCssClass, bool fill, size_t maxBarLength = 0);
         void writeGraphCell(float value1, float value2, const String& barCssClass1, const String& barCssClass2, bool fill);
 
-        void writeFormStart(const String& action);
+        void writeFormStart(const String& action, const String& cssClass = String());
         void writeFormEnd();
         void writeSubmitButton();
         void writeSubmitButton(const String& label, const String& cssClass = String("submit"));
@@ -38,8 +38,9 @@ class HtmlWriter
         void writeHeading(const String& title, int level = 1);
         void writeSectionStart(const String& title);
         void writeSectionEnd();
-        void writeDivStart(const String& cssClass);
+        void writeDivStart(const String& cssClass = String());
         void writeDivEnd();
+        void writeDiv(const String& content, const String& cssClass = String());
 
         void writeTableStart();
         void writeTableEnd();
