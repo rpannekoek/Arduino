@@ -14,15 +14,13 @@
 #include <Tracer.h>
 #include <StringBuilder.h>
 #include <HtmlWriter.h>
+#include <Navigation.h>
 #include <Log.h>
 #include <Wire.h>
 #include <bsec.h>
 #include <s8_uart.h>
 #include "PersistentData.h"
 #include "MonitoredTopics.h"
-
-#define ICON "/apple-touch-icon.png"
-#define CSS "/styles.css"
 
 #define SECONDS_PER_DAY (24 * 3600)
 #define BSEC_STATE_SAVE_INTERVAL (24 * 3600)
@@ -60,12 +58,36 @@
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeJson = "application/json";
 const char* ContentTypeText = "text/plain";
+const char* ButtonClass = "button";
+
+enum FileId
+{
+    Logo,
+    Styles,
+    GraphIcon,
+    HomeIcon,
+    LogFileIcon,
+    SettingsIcon,
+    UploadIcon,
+    _LastFile
+};
+
+const char* Files[] PROGMEM =
+{
+    "Logo.png",
+    "styles.css",
+    "Graph.svg",
+    "Home.svg",
+    "LogFile.svg",
+    "Settings.svg",
+    "Upload.svg"
+};
 
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
-HtmlWriter Html(HttpResponse, ICON, CSS, 60);
+HtmlWriter Html(HttpResponse, Files[Logo], Files[Styles], 60);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
 StaticLog<TopicLogEntry> IAQLog(IAQ_LOG_SIZE);
 StaticLog<TopicLogEntry> HourStats(24 * 2); // 24 hrs
@@ -74,6 +96,7 @@ Adafruit_SSD1306 Display(128, 64, &Wire);
 Ticker DisplayTicker;
 Ticker MeasureTicker;
 S8_UART CO2Sensor(Serial1);
+Navigation Nav;
 
 time_t currentTime = 0;
 time_t syncFTPTime = 0;
@@ -125,20 +148,50 @@ void setup()
     TimeServer.NTPServer = PersistentData.ntpServer;
     Html.setTitlePrefix(PersistentData.hostName);
 
-    SPIFFS.begin();
+    Nav.menuItems =
+    {
+        MenuItem
+        {
+            .icon = Files[HomeIcon],
+            .label = PSTR("Home"),
+            .handler = handleHttpRootRequest            
+        },
+        MenuItem
+        {
+            .icon = Files[LogFileIcon],
+            .label = PSTR("Event log"),
+            .urlPath =PSTR("events"),
+            .handler = handleHttpEventLogRequest
+        },
+        MenuItem
+        {
+            .icon = Files[GraphIcon],
+            .label = PSTR("IAQ log"),
+            .urlPath = PSTR("iaqlog"),
+            .handler = handleHttpIAQLogRequest
+        },
+        MenuItem
+        {
+            .icon = Files[UploadIcon],
+            .label = PSTR("FTP Sync"),
+            .urlPath = PSTR("sync"),
+            .handler= handleHttpFtpSyncRequest
+        },
+        MenuItem
+        {
+            .icon = Files[SettingsIcon],
+            .label = PSTR("Settings"),
+            .urlPath =PSTR("config"),
+            .handler = handleHttpConfigFormRequest,
+            .postHandler = handleHttpConfigFormPost
+        },
+    };
+    Nav.registerHttpHandlers(WebServer);
 
-    const char* cacheControl = "max-age=86400, public";
-    WebServer.on("/", handleHttpRootRequest);
     WebServer.on("/json", handleHttpJsonRequest);
-    WebServer.on("/iaqlog", handleHttpIAQLogRequest);
-    WebServer.on("/sync", handleHttpFtpSyncRequest);
-    WebServer.on("/events", handleHttpEventLogRequest);
-    WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
-    WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
-    WebServer.serveStatic(ICON, SPIFFS, ICON, cacheControl);
-    WebServer.serveStatic(CSS, SPIFFS, CSS, cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
-    
+
+    WiFiSM.registerStaticFiles(Files, _LastFile);
     WiFiSM.on(WiFiInitState::TimeServerInitializing, onWiFiConnected);
     WiFiSM.on(WiFiInitState::TimeServerSynced, onWiFiTimeSynced);
     WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
@@ -599,47 +652,35 @@ void handleHttpRootRequest()
     else
         ftpSync = formatTime("%H:%M", lastFTPSyncTime);
 
-    Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
+    Html.writeHeader(F("Home"), Nav, HTTP_POLL_INTERVAL);
 
-    Html.writeHeading(F("Air Monitor status"));
+    Html.writeDivStart(F("flex-container"));
 
+    Html.writeSectionStart(F("Status"));
     Html.writeTableStart();
-    HttpResponse.printf(
-        F("<tr><th>RSSI</th><td>%d dBm</td></tr>\r\n"),
-        static_cast<int>(WiFi.RSSI()));
-    HttpResponse.printf(
-        F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"),
-        ESP.getFreeHeap());
-    HttpResponse.printf(
-        F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"),
-        float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
-    HttpResponse.printf(
-        F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"),
-        ftpSync);
+    Html.writeRow(F("WiFi RSSI"), F("%d dBm"), static_cast<int>(WiFi.RSSI()));
+    Html.writeRow(F("Free Heap"), F("%0.1f kB"), float(ESP.getFreeHeap()) / 1024);
+    Html.writeRow(F("Uptime"), F("%0.1f days"), float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
+    Html.writeRow(F("FTP Sync"), ftpSync);
     if (PersistentData.isFTPEnabled())
-        HttpResponse.printf(
-            F("<tr><th>FTP Sync entries</th><td>%d / %d</td></tr>\r\n"),
-            ftpSyncEntries,
-            PersistentData.ftpSyncEntries);
-    HttpResponse.printf(
-        F("<tr><th><a href=\"/iaqlog\">IAQ log</a></th><td>%d</td>\r\n"),
-        IAQLog.count());
-    HttpResponse.printf(
-        F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td>\r\n"),
-        EventLog.count());
-    HttpResponse.printf(
-        F("<tr><th>Fan on</th><td><div>%s</div><div>%d CO<sub>2</sub></div></td></tr>\r\n"),
+        Html.writeRow(F("Sync entries"), F("%d / %d"), ftpSyncEntries, PersistentData.ftpSyncEntries);        
+    Html.writeRow(
+        F("Fan on"),
+        F("<div>%s</div><div>%d CO<sub>2</sub></div>"),
         formatTime("%H:%M", getStartOfDay(currentTime) + PersistentData.fanOffToMinutes * 60),
         PersistentData.fanCO2Threshold);
-    HttpResponse.printf(
-        F("<tr><th>Fan off</th><td><div>%s</div><div>%d CO<sub>2</sub></div></td></tr>\r\n"),
+    Html.writeRow(
+        F("Fan off"),
+        F("<div>%s</div><div>%d CO<sub>2</sub></div>"),
         formatTime("%H:%M", getStartOfDay(currentTime) + PersistentData.fanOffFromMinutes * 60),
         PersistentData.fanCO2Threshold - PersistentData.fanCO2Hysteresis);
     Html.writeTableEnd();
+    Html.writeSectionEnd();
 
     writeCurrentValues();
     writeHourStats();
 
+    Html.writeDivEnd();
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
@@ -648,7 +689,7 @@ void handleHttpRootRequest()
 
 void writeCurrentValues()
 {
-    Html.writeHeading(F("Current values"));
+    Html.writeSectionStart(F("Current values"));
     Html.writeTableStart();
 
     for (int i = 0; i < NUMBER_OF_MONITORED_TOPICS; i++)
@@ -671,12 +712,13 @@ void writeCurrentValues()
     }
 
     Html.writeTableEnd();
+    Html.writeSectionEnd();
 }
 
 
 void writeHourStats()
 {
-    Html.writeHeading(F("Last 24 hours"));
+    Html.writeSectionStart(F("Last 24 hours"));
     Html.writeTableStart();
 
     Html.writeRowStart();
@@ -718,6 +760,7 @@ void writeHourStats()
     }
 
     Html.writeTableEnd();
+    Html.writeSectionEnd();
 }
 
 
@@ -771,7 +814,7 @@ void handleHttpIAQLogRequest()
     int currentPage = WebServer.hasArg("page") ? WebServer.arg("page").toInt() : 0;
     int totalPages = ((IAQLog.count() - 1) / IAQ_LOG_PAGE_SIZE) + 1;
 
-    Html.writeHeader(F("IAQ log"), true, true);
+    Html.writeHeader(F("IAQ log"), Nav);
     Html.writePager(totalPages, currentPage);
     Html.writeTableStart();
 
@@ -812,28 +855,28 @@ void handleHttpFtpSyncRequest()
 {
     Tracer tracer(F(__func__));
 
-    Html.writeHeader(F("FTP Sync"), true, true);
+    Html.writeHeader(F("FTP Sync"), Nav);
 
-    HttpResponse.println(F("<div><pre>"));
+    HttpResponse.println(F("<pre>"));
     bool success = trySyncFTP(&HttpResponse); 
-    HttpResponse.println(F("</pre></div>"));
+    HttpResponse.println(F("</pre>"));
 
     if (success)
     {
-        HttpResponse.println(F("<p>Success!</p>"));
+        Html.writeParagraph(F("Success!"));
         syncFTPTime = 0; // Cancel scheduled sync (if any)
     }
     else
-        HttpResponse.println(F("<p>Failed!</p>"));
+        Html.writeParagraph(F("Failed!"));
  
     Html.writeHeading(F("CSV header"), 2);
-    HttpResponse.print("<div><pre>Time");
+    HttpResponse.print("<pre>Time");
     for (int i = 0; i < NUMBER_OF_MONITORED_TOPICS; i++)
     {
         HttpResponse.print(";");
         HttpResponse.print(MonitoredTopics[i].label);
     }
-    HttpResponse.println(F("</pre></div>"));
+    HttpResponse.println(F("</pre>"));
 
     Html.writeFooter();
 
@@ -851,16 +894,16 @@ void handleHttpEventLogRequest()
         WiFiSM.logEvent(F("Event log cleared."));
     }
 
-    Html.writeHeader(F("Event log"), true, true);
+    Html.writeHeader(F("Event log"), Nav);
 
     const char* event = EventLog.getFirstEntry();
     while (event != nullptr)
     {
-        HttpResponse.printf(F("<div>%s</div>\r\n"), event);
+        Html.writeDiv(event);
         event = EventLog.getNextEntry();
     }
 
-    HttpResponse.printf(F("<p><a href=\"?clear=%u\">Clear event log</a></p>\r\n"), currentTime);
+    Html.writeActionLink(F("clear"), F("Clear event log"), currentTime, ButtonClass);
 
     Html.writeFooter();
 
@@ -872,31 +915,29 @@ void handleHttpConfigFormRequest()
 {
     Tracer tracer(F(__func__));
 
-    Html.writeHeader(F("Configuration"), true, true);
+    Html.writeHeader(F("Settings"), Nav);
 
-    Html.writeFormStart(F("/config"));
-    Html.writeTableStart();
+    Html.writeFormStart(F("/config"), F("grid"));
     Html.writeTextBox(CFG_WIFI_SSID, F("WiFi SSID"), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID) - 1);
-    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1);
+    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1, F("password"));
     Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
     Html.writeTextBox(CFG_NTP_SERVER, F("NTP server"), PersistentData.ntpServer, sizeof(PersistentData.ntpServer) - 1);
     Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
     Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
-    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
-    Html.writeTextBox(CFG_FTP_ENTRIES, F("FTP sync entries"), String(PersistentData.ftpSyncEntries), 3);
-    Html.writeTextBox(CFG_FAN_THRESHOLD, F("Fan threshold"), String(PersistentData.fanCO2Threshold), 4);
-    Html.writeTextBox(CFG_FAN_HYSTERESIS, F("Fan hysteresis"), String(PersistentData.fanCO2Hysteresis), 3);
+    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1, F("password"));
+    Html.writeNumberBox(CFG_FTP_ENTRIES, F("FTP sync entries"), PersistentData.ftpSyncEntries, 0, IAQ_LOG_SIZE);
+    Html.writeNumberBox(CFG_FAN_THRESHOLD, F("Fan threshold"), PersistentData.fanCO2Threshold, 400, 5000);
+    Html.writeNumberBox(CFG_FAN_HYSTERESIS, F("Fan hysteresis"), PersistentData.fanCO2Hysteresis, 0, 1000);
     Html.writeTextBox(CFG_FAN_OFF_FROM, F("Fan off from"), formatTime("%H:%M", getStartOfDay(currentTime) + PersistentData.fanOffFromMinutes * 60), 5);
     Html.writeTextBox(CFG_FAN_OFF_TO, F("Fan off to"), formatTime("%H:%M", getStartOfDay(currentTime) + PersistentData.fanOffToMinutes * 60), 5);
-    Html.writeTextBox(CFG_TEMP_OFFSET, F("Temp offset"), String(PersistentData.tOffset, 1), 4);
-    Html.writeTableEnd();
-    Html.writeSubmitButton();
+    Html.writeNumberBox(CFG_TEMP_OFFSET, F("Temp offset"), PersistentData.tOffset, -5, 5, 1);
+    Html.writeSubmitButton(F("Save"));
     Html.writeFormEnd();
 
     if (WiFiSM.shouldPerformAction(F("reset")))
         WiFiSM.reset();
     else
-        HttpResponse.printf(F("<p><a href=\"?reset=%u\">Reset ESP</a></p>\r\n"), currentTime);
+        Html.writeActionLink(F("reset"), F("Reset ESP"), currentTime, ButtonClass);
 
     Html.writeFooter();
 
