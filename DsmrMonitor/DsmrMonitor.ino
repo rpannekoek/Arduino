@@ -17,9 +17,6 @@
 #include "PowerLogEntry.h"
 #include "P1Telegram.h"
 
-#define ICON "/apple-touch-icon.png"
-#define CSS "/styles.css"
-
 #define REFRESH_INTERVAL 30
 #define FTP_RETRY_INTERVAL (15 * 60)
 #define SECONDS_PER_HOUR 3600
@@ -54,14 +51,49 @@
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeText = "text/plain";
 const char* ContentTypeJson = "application/json";
+const char* ButtonClass = "button";
+
+enum FileId
+{
+    Logo,
+    Styles,
+    CalibrateIcon,
+    GraphIcon,
+    HomeIcon,
+    LogFileIcon,
+    SettingsIcon,
+    UploadIcon,
+    _LastFile
+};
+
+const char* Files[] PROGMEM =
+{
+    "Logo.png",
+    "styles.css",
+    "Calibrate.svg",
+    "Graph.svg",
+    "Home.svg",
+    "LogFile.svg",
+    "Settings.svg",
+    "Upload.svg"
+};
+
+const char* Units[] PROGMEM = 
+{
+    "hour",
+    "day",
+    "week",
+    "month"
+};
 
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
-HtmlWriter Html(HttpResponse, ICON, CSS, 60); // Max bar length: 60
+HtmlWriter Html(HttpResponse, Files[Logo], Files[Styles], 45);
 Log<const char> EventLog(50); // Max 50 log entries
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
+Navigation Nav;
 
 P1Telegram LastP1Telegram;
 StaticLog<PowerLogEntry> PowerLog(MAX_POWER_LOG_SIZE);
@@ -115,21 +147,57 @@ void setup()
     TimeServer.NTPServer = PersistentData.ntpServer;
     Html.setTitlePrefix(PersistentData.hostName);
 
-    SPIFFS.begin();
+    Nav.menuItems =
+    {
+        MenuItem
+        {
+            .icon = Files[HomeIcon],
+            .label = PSTR("Home"),
+            .handler = handleHttpRootRequest            
+        },
+        MenuItem
+        {
+            .icon = Files[LogFileIcon],
+            .label = PSTR("Event log"),
+            .urlPath =PSTR("events"),
+            .handler = handleHttpEventLogRequest
+        },
+        MenuItem
+        {
+            .icon = Files[GraphIcon],
+            .label = PSTR("Power log"),
+            .urlPath = PSTR("powerlog"),
+            .handler = handleHttpPowerLogRequest
+        },
+        MenuItem
+        {
+            .icon = Files[UploadIcon],
+            .label = PSTR("FTP Sync"),
+            .urlPath = PSTR("sync"),
+            .handler= handleHttpSyncFTPRequest
+        },
+        MenuItem
+        {
+            .icon = Files[CalibrateIcon],
+            .label = PSTR("P1 Telegram"),
+            .urlPath = PSTR("telegram"),
+            .handler= handleHttpViewTelegramRequest
+        },
+        MenuItem
+        {
+            .icon = Files[SettingsIcon],
+            .label = PSTR("Settings"),
+            .urlPath =PSTR("config"),
+            .handler = handleHttpConfigFormRequest,
+            .postHandler = handleHttpConfigFormPost
+        },
+    };
+    Nav.registerHttpHandlers(WebServer);
 
-    const char* cacheControl = "max-age=86400, public";
-    WebServer.on("/", handleHttpRootRequest);
     WebServer.on("/json", handleHttpJsonRequest);
-    WebServer.on("/telegram", handleHttpViewTelegramRequest);
-    WebServer.on("/powerlog", handleHttpPowerLogRequest);
-    WebServer.on("/sync", handleHttpSyncFTPRequest);
-    WebServer.on("/events", handleHttpEventLogRequest);
-    WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
-    WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
-    WebServer.serveStatic(ICON, SPIFFS, ICON, cacheControl);
-    WebServer.serveStatic(CSS, SPIFFS, CSS, cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
 
+    WiFiSM.registerStaticFiles(Files, _LastFile);
     WiFiSM.on(WiFiInitState::TimeServerSynced, onTimeServerSynced);
     WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
     WiFiSM.scanAccessPoints();
@@ -530,32 +598,33 @@ void writeCsvPowerLogEntries(PowerLogEntry* logEntryPtr, Print& destination)
 
 void writeHtmlPhaseData(PhaseData& phaseData, float maxPower)
 {
-    HttpResponse.printf(F("<tr><th>%s</th>"), phaseData.label.c_str());
-    HttpResponse.printf(F("<td>%0.1f V</td>"), phaseData.voltage);
-    HttpResponse.printf(F("<td>%0.0f A</td>"), phaseData.current);
+    Html.writeRowStart();
+    Html.writeHeaderCell(phaseData.label);
+    Html.writeCell(phaseData.voltage, F("%0.1f V"));
+    Html.writeCell(phaseData.current, F("%0.0f A"));
     HttpResponse.printf(
-        F("<td><div>+%0.0f W</div><div>-%0.0f W</div></td><td class=\"graph\">"),
+        F("<td><div>+%0.0f W</div><div>-%0.0f W</div></td>"),
         phaseData.powerDelivered,
         phaseData.powerReturned
         );
-
+    Html.writeCellStart(F("graph"));
     Html.writeBar(phaseData.powerDelivered / maxPower, F("deliveredBar"), true);
     Html.writeBar(phaseData.powerReturned / maxPower, F("returnedBar"), true);
-
-    HttpResponse.println(F("</td></tr>"));
+    Html.writeCellEnd();
+    Html.writeRowEnd();
 }
 
 
 void writeHtmlGasData(float maxPower)
 {
-    HttpResponse.printf(
-        F("<tr><th>Gas</th><td colspan=\"2\">%0.1f kWh</td><td>%0.0f W</td><td class=\"graph\">"),
-        gasData.energy,
-        gasData.power);
-
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("Gas"));
+    HttpResponse.printf(F("<td colspan=\"2\">%0.1f kWh</td>"), gasData.energy);
+    Html.writeCell(gasData.power, F("%0.0f W"));
+    Html.writeCellStart(F("graph"));
     Html.writeBar(gasData.power / maxPower, F("gasBar"), true);
-
-    HttpResponse.println(F("</td></tr>"));
+    Html.writeCellEnd();
+    Html.writeRowEnd();
 }
 
 
@@ -564,27 +633,24 @@ void writeHtmlEnergyRow(
     const char* timeFormat,
     float maxValue)
 {
-    HttpResponse.printf(F("<tr><td>%s</td>"), formatTime(timeFormat, energyLogEntryPtr->time));
-
+    Html.writeRowStart();
+    Html.writeCell(formatTime(timeFormat, energyLogEntryPtr->time));
     HttpResponse.printf(
         F("<td><div>+%d</div><div>-%d</div><div>%d</div></td>"),
         energyLogEntryPtr->maxPowerDelivered,
         energyLogEntryPtr->maxPowerReturned,
-        energyLogEntryPtr->maxPowerGas
-        );
-
+        energyLogEntryPtr->maxPowerGas);
     HttpResponse.printf(
-        F("<td><div>+%0.1f</div><div>-%0.1f</div><div>%0.1f</div></td><td class=\"graph\">"),
+        F("<td><div>+%0.1f</div><div>-%0.1f</div><div>%0.1f</div></td>"),
         energyLogEntryPtr->energyDelivered,
         energyLogEntryPtr->energyReturned,
-        energyLogEntryPtr->energyGas
-        );
-
+        energyLogEntryPtr->energyGas);
+    Html.writeCellStart(F("graph"));
     Html.writeBar(energyLogEntryPtr->energyDelivered / maxValue, F("deliveredBar"), false);
     Html.writeBar(energyLogEntryPtr->energyReturned / maxValue, F("returnedBar"), false);
     Html.writeBar(energyLogEntryPtr->energyGas / maxValue, F("gasBar"), false);
-
-    HttpResponse.println(F("</td></tr>")); 
+    Html.writeCellEnd();
+    Html.writeRowEnd();
 }
 
 
@@ -599,37 +665,42 @@ void writeHtmlEnergyLogTable(
     EnergyLogEntry* energyLogEntryPtr = energyLog.getFirstEntry();
     while (energyLogEntryPtr != nullptr)
     {
-        if (energyLogEntryPtr->energyDelivered > maxValue) maxValue  = energyLogEntryPtr->energyDelivered;
-        if (energyLogEntryPtr->energyReturned > maxValue) maxValue  = energyLogEntryPtr->energyReturned;
-        if (energyLogEntryPtr->energyGas > maxValue) maxValue  = energyLogEntryPtr->energyGas;
+        maxValue = std::max(maxValue, energyLogEntryPtr->energyDelivered);
+        maxValue = std::max(maxValue, energyLogEntryPtr->energyReturned);
+        maxValue = std::max(maxValue, energyLogEntryPtr->energyGas);
         energyLogEntryPtr = energyLog.getNextEntry();
     }
 
-    HttpResponse.printf(F("<h1>Energy per %s</h1>"), unit.c_str());
-    HttpResponse.println(F("<table class=\"nrg\">"));
+    HttpResponse.println(F("<section>"));
     HttpResponse.printf(
-        F("<tr><th>%s</th><th>P<sub>max</sub> (W)</th><th>E (%s)</th></tr>\r\n"),
-        unit.c_str(),
-        unitOfMeasure
-        );
+        F("<h1>Energy per <span class=\"dropdown\"><span>%s</span>"),
+        unit.c_str());
+    Html.writeDivStart(F("dropdown-list"));
+    for (int i = 0; i < 4; i++)
+    {
+        String u = FPSTR(Units[i]);
+        if (u == unit) continue;
+        HttpResponse.printf(F("<a href=\"?showEnergy=%s\">%s</a>\r\n"), u.c_str(), u.c_str());
+    }
+    Html.writeDivEnd();
+    HttpResponse.println(F("</span></h1>"));
+
+    Html.writeTableStart();
+    Html.writeRowStart();
+    Html.writeHeaderCell(unit);
+    Html.writeHeaderCell(F("P<sub>max</sub> (W)"));
+    HttpResponse.printf(F("<th>E (%s)</th>"), unitOfMeasure);
+    Html.writeRowEnd();
 
     energyLogEntryPtr = energyLog.getFirstEntry();
     while (energyLogEntryPtr != nullptr)
     {
-        writeHtmlEnergyRow(
-            energyLogEntryPtr,
-            timeFormat,
-            maxValue);
+        writeHtmlEnergyRow(energyLogEntryPtr, timeFormat, maxValue);
         energyLogEntryPtr = energyLog.getNextEntry();
     }
 
-    HttpResponse.println(F("</table>"));
-}
-
-
-void writeEnergyLink(String unit)
-{
-    HttpResponse.printf(F(" <a href=\"?%s=%s\">%s</a>"), SHOW_ENERGY, unit.c_str(), unit.c_str());
+    Html.writeTableEnd();
+    Html.writeSectionEnd();
 }
 
 
@@ -651,45 +722,27 @@ void handleHttpRootRequest()
     else
         ftpSync = formatTime("%H:%M", lastFTPSyncTime);
 
-    Html.writeHeader(F("Home"), false, false, REFRESH_INTERVAL);
+    Html.writeHeader(F("Home"), Nav, REFRESH_INTERVAL);
 
-    Html.writeHeading(F("Monitor status"));
+    Html.writeDivStart(F("flex-container"));
+
+    Html.writeSectionStart(F("Status"));
     Html.writeTableStart();
-    HttpResponse.printf(
-        F("<tr><th>RSSI</th><td>%d dBm</td></tr>\r\n"),
-        static_cast<int>(WiFi.RSSI()));
-    HttpResponse.printf(
-        F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"),
-        ESP.getFreeHeap());
-    HttpResponse.printf(
-        F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"),
-        float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
-    HttpResponse.printf(
-        F("<tr><th><a href=\"/telegram\">Last Telegram</a></th><td>%s</td></tr>\r\n"),
-        formatTime("%H:%M:%S", lastTelegramReceivedTime));
-    HttpResponse.printf(
-        F("<tr><th>Last Gas Time</th><td>%s</td></tr>\r\n"),
-        formatTime("%H:%M:%S", gasData.time));
-    HttpResponse.printf(
-        F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"),
-        ftpSync.c_str());
+    Html.writeRow(F("WiFi RSSI"), F("%d dBm"), static_cast<int>(WiFi.RSSI()));
+    Html.writeRow(F("Free Heap"), F("%0.1f kB"), float(ESP.getFreeHeap()) / 1024);
+    Html.writeRow(F("Uptime"), F("%0.1f days"), float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
+    Html.writeRow(F("Last Telegram"), formatTime("%H:%M:%S", lastTelegramReceivedTime));
+    Html.writeRow(F("Gas update"), formatTime("%H:%M:%S", gasData.time));
+    Html.writeRow(F("FTP Sync"), ftpSync);
     if (PersistentData.isFTPEnabled())
-        HttpResponse.printf(
-            F("<tr><th>FTP Sync entries</td><td>%d / %d</th></tr>\r\n"),
-            logEntriesToSync,
-            PersistentData.ftpSyncEntries);
-    HttpResponse.printf(
-        F("<tr><th><a href=\"/powerlog\">Power log</a></th><td>%d</td></tr>\r\n"),
-        PowerLog.count());
-    HttpResponse.printf(
-        F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></tr>\r\n"),
-        EventLog.count());
+        Html.writeRow(F("Sync entries"), F("%d / %d"), logEntriesToSync, PersistentData.ftpSyncEntries);
     Html.writeTableEnd();
+    Html.writeSectionEnd();
 
     int maxPhasePower = 230 * PersistentData.maxPhaseCurrent; 
     int maxTotalPower = maxPhasePower * PersistentData.phaseCount;
 
-    Html.writeHeading(F("Current power"));
+    Html.writeSectionStart(F("Current power"));
     Html.writeTableStart();
     if (PersistentData.phaseCount == 3)
     {
@@ -699,15 +752,9 @@ void handleHttpRootRequest()
     writeHtmlPhaseData(total, maxTotalPower);
     writeHtmlGasData(maxTotalPower);
     Html.writeTableEnd();
+    Html.writeSectionEnd();
 
-    String showEnergy = WebServer.hasArg(SHOW_ENERGY) ? WebServer.arg(SHOW_ENERGY) : HOUR;
-    HttpResponse.print(F("<p>Show energy per"));
-    if (showEnergy != HOUR) writeEnergyLink(HOUR);
-    if (showEnergy != DAY) writeEnergyLink(DAY);
-    if (showEnergy != WEEK) writeEnergyLink(WEEK);
-    if (showEnergy != MONTH) writeEnergyLink(MONTH);
-    HttpResponse.println(F("</p>"));
-
+    String showEnergy = WebServer.hasArg(SHOW_ENERGY) ? WebServer.arg(SHOW_ENERGY) : DAY;
     if (showEnergy == HOUR)
         writeHtmlEnergyLogTable(showEnergy, EnergyPerHourLog, "%H:%M", "Wh");
     if (showEnergy == DAY)
@@ -717,9 +764,10 @@ void handleHttpRootRequest()
     if (showEnergy == MONTH)
         writeHtmlEnergyLogTable(showEnergy, EnergyPerMonthLog, "%b", "kWh");
 
+    Html.writeDivEnd();
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -747,7 +795,7 @@ void handleHttpJsonRequest()
         gasData.energy,
         gasData.power);
 
-    WebServer.send(200, ContentTypeJson, HttpResponse);
+    WebServer.send(200, ContentTypeJson, HttpResponse.c_str());
 }
 
 
@@ -767,14 +815,15 @@ void handleHttpViewTelegramRequest()
 {
     Tracer tracer(F("handleHttpViewTelegramRequest"));
 
-    Html.writeHeader(F("P1 Telegram"), true, true, REFRESH_INTERVAL);
+    Html.writeHeader(F("P1 Telegram"), Nav, REFRESH_INTERVAL);
     
     HttpResponse.printf(
         F("<p>Received %d data lines at %s:</p>"),
         LastP1Telegram._numDataLines,
         formatTime("%H:%M:%S", lastTelegramReceivedTime)
         );
-    HttpResponse.println(F("<pre class=\"telegram\">"));
+
+    HttpResponse.println(F("<pre>"));
 
     for (int i = 0; i < LastP1Telegram._numDataLines; i++)
     {
@@ -784,7 +833,7 @@ void handleHttpViewTelegramRequest()
     HttpResponse.println(F("</pre>"));
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -792,12 +841,10 @@ void handleHttpPowerLogRequest()
 {
     Tracer tracer(F("handleHttpPowerLogRequest"));
 
-    Html.writeHeader(F("Power Log"), true, true, REFRESH_INTERVAL);
-
     int currentPage = WebServer.hasArg("page") ? WebServer.arg("page").toInt() : 0;
     int totalPages = ((PowerLog.count() - 1) / POWER_LOG_PAGE_SIZE) + 1;
 
-    Html.writeHeader(F("Power log"), true, true);
+    Html.writeHeader(F("Power log"), Nav);
     Html.writePager(totalPages, currentPage);
     Html.writeTableStart();
 
@@ -831,7 +878,7 @@ void handleHttpPowerLogRequest()
     Html.writeTableEnd();
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -839,27 +886,22 @@ void handleHttpSyncFTPRequest()
 {
     Tracer tracer(F("handleHttpSyncFTPRequest"));
 
-    Html.writeHeader(F("FTP Sync"), true, true);
+    Html.writeHeader(F("FTP Sync"), Nav);
 
-    HttpResponse.println("<div><pre class=\"ftplog\">");
+    HttpResponse.println("<pre>");
     bool success = trySyncFTP(&HttpResponse); 
-    HttpResponse.println("</pre></div>");
+    HttpResponse.println("</pre>");
 
-    if (success)
-    {
-        HttpResponse.println("<p>Success!</p>");
-    }
-    else
-        HttpResponse.println("<p>Failed!</p>");
+    Html.writeParagraph(success ? F("Success!") : F("Failed!"));
  
     Html.writeHeading(F("CSV header"), 2);
-    HttpResponse.print(F("<div><pre>"));
+    HttpResponse.print(F("<pre>"));
     writeCsvPowerLogHeader(HttpResponse);
-    HttpResponse.println(F("</pre></div>"));
+    HttpResponse.println(F("</pre>"));
 
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -867,15 +909,13 @@ void handleHttpEventLogRequest()
 {
     Tracer tracer(F("handleHttpEventLogRequest"));
 
-    Html.writeHeader(F("Event log"), true, true, REFRESH_INTERVAL);
+    Html.writeHeader(F("Event log"), Nav);
 
     if (WiFiSM.shouldPerformAction(F("clear")))
     {
         EventLog.clear();
         WiFiSM.logEvent(F("Event log cleared."));
     }
-    else
-        HttpResponse.printf(F("<p><a href=\"?clear=%u\">Clear event log</a></p>\r\n"), currentTime);
 
     const char* event = EventLog.getFirstEntry();
     while (event != nullptr)
@@ -884,9 +924,10 @@ void handleHttpEventLogRequest()
         event = EventLog.getNextEntry();
     }
 
+    Html.writeActionLink(F("clear"), "Clear event log", currentTime, ButtonClass);
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 
@@ -894,34 +935,35 @@ void handleHttpConfigFormRequest()
 {
     Tracer tracer(F("handleHttpConfigFormRequest"));
 
-    Html.writeHeader(F("Configuration"), true, true);
+    Html.writeHeader(F("Settings"), Nav);
 
-    HttpResponse.println(F("<form action=\"/config\" method=\"POST\">"));
-    HttpResponse.println(F("<table>"));
+    Html.writeFormStart(F("/config"), F("grid"));
     Html.writeTextBox(CFG_WIFI_SSID, F("WiFi SSID"), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID) - 1);
-    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1);
+    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1, F("password"));
     Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
     Html.writeTextBox(CFG_NTP_SERVER, F("NTP server"), PersistentData.ntpServer, sizeof(PersistentData.ntpServer) - 1);
     Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
     Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
-    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
-    Html.writeTextBox(CFG_FTP_SYNC_ENTRIES, F("FTP sync entries"), String(PersistentData.ftpSyncEntries), 3);
-    Html.writeTextBox(CFG_MAX_CURRENT, F("Max current"), String(PersistentData.maxPhaseCurrent), 2);
+    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1, F("password"));
+    Html.writeNumberBox(CFG_FTP_SYNC_ENTRIES, F("FTP sync entries"), PersistentData.ftpSyncEntries, 0, MAX_POWER_LOG_SIZE);
+    Html.writeNumberBox(CFG_MAX_CURRENT, F("Max current"), PersistentData.maxPhaseCurrent, 0, 50);
     Html.writeCheckbox(CFG_IS_3PHASE, F("Three phases"), (PersistentData.phaseCount == 3));
-    Html.writeTextBox(CFG_GAS_CALORIFIC, F("Gas kWh per m3"), String(PersistentData.gasCalorificValue, 3), 6);
-    Html.writeTextBox(CFG_POWER_LOG_DELTA, F("Power log delta"), String(PersistentData.powerLogDelta), 4);
-    HttpResponse.println(F("</table>"));
-    HttpResponse.println(F("<input type=\"submit\">"));
-    HttpResponse.println(F("</form>"));
+    Html.writeNumberBox(CFG_GAS_CALORIFIC, F("Gas kWh per m3"), PersistentData.gasCalorificValue, 8, 12, 3);
+    Html.writeNumberBox(CFG_POWER_LOG_DELTA, F("Power log delta"), PersistentData.powerLogDelta, 0, 100);
+    Html.writeSubmitButton(F("Save"));
+    Html.writeFormEnd();
 
     if (WiFiSM.shouldPerformAction(F("reset")))
+    {
+        Html.writeParagraph(F("Resetting..."));
         WiFiSM.reset();
+    }
     else
-        HttpResponse.printf(F("<p><a href=\"?reset=%u\">Reset ESP</a></p>\r\n"), currentTime);
+        Html.writeActionLink(F("reset"), F("Reset ESP"), currentTime, ButtonClass);
         
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
 void copyString(const String& input, char* buffer, size_t bufferSize)
