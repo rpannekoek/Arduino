@@ -87,7 +87,7 @@ MonitoredTopic MonitoredTopics[] =
     { TopicId::TOutput, "Tout", "T<sub>out</sub>", "°C", "water", 1, 20, 60 },
     { TopicId::TBuffer, "Tbuffer", "T<sub>buffer</sub>", "°C", "water", 1, 20, 90 },
     { TopicId::DeltaT, "DeltaT", "ΔT", "°C", "deltat", 1, 0, 20 },
-    { TopicId::FlowRate, "Flow", "Flow rate", "l/min", "flow", 1, 0, 30 },
+    { TopicId::FlowRate, "Flow", "Flow rate", "l/min", "flow", 1, 0, 15 },
     { TopicId::POut, "Pout", "P<sub>out</sub>", "kW", "power", 1, 0, 10 },
     { TopicId::PIn, "Pin", "P<sub>in</sub>", "kW", "pIn", 2, 0, 4 },
 };

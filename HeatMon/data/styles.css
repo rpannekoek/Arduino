@@ -1,18 +1,163 @@
 html 
 {
-    background-color: orange;
+    background-color: gray;
     font-family: sans-serif;
-    font-size: 12pt;
 }
 
-h1
+header 
 {
-	font-size: 18pt;
+    font-size: 2em;
+    font-weight: bold;
+    background-color: #FFC90E;
+    color: darkblue;
+    padding: 0.25em;
+    margin-bottom: 0.5em;
 }
 
-h2
+header .openbtn
 {
-	font-size: 14pt;
+    color: black;
+    text-decoration: none;
+    padding-right: 0.5em;
+}
+
+header .logo
+{
+    content: url(Logo.png);
+    height: 1.25em;
+    float: right;
+}
+
+nav
+{
+    font-size: 1.5em;
+    height: 100%;
+    width: 0; /* Start hidden; changed by JavaScript */
+    position: fixed;
+    z-index: 1;
+    top: 0;
+    left: 0;
+    background-color: black;
+    overflow-x: hidden;
+    padding-top: 2em;
+    transition: 0.5s;
+}
+  
+nav .closebtn
+{
+    position: absolute;
+    top: 0;
+    right: 0.5em;
+}
+
+nav a
+{
+    padding: 0.5em;
+    text-decoration: none;
+    color: gray;
+    display: block;
+}
+  
+nav a:hover
+{
+    color: white;
+}
+
+.icon 
+{
+    width: 1em;
+    padding-right: 0.25em;
+    float: left;
+}
+
+.button
+{
+    display: inline-block;
+    font-size: 1.5em;
+    font-weight: bold;
+    text-decoration: none;
+    color: white;
+    background-color: green;
+    padding: 0.5em;
+    border: none;
+    border-radius: 0.5em;
+    margin: 0.5em;
+}
+
+.flex-container
+{
+    display: flex;
+    flex-wrap: wrap;
+}
+
+section
+{
+    background-color: lightgray;
+    opacity: 80%;
+    border: none;
+    border-radius: 10px;
+    padding: 10px;
+    margin-bottom: 10px;
+    margin-right: 10px;
+}
+
+section h1
+{
+    font-size: 1.5em;
+    text-align: center;
+    margin-top: 0;
+    margin-bottom: 0.5em;
+}
+
+.pager
+{
+    font-size: 1.5em;
+    padding: 5px;
+    margin-bottom: 5px;
+}
+
+.pager span
+{
+    padding: 5px;
+    background-color: lightgray;
+    opacity: 80%;
+}
+
+.pager a
+{
+    padding: 5px;
+    text-decoration: none;
+}
+
+.pager a:hover
+{
+    color: white;
+}
+
+.grid
+{
+    display: grid;
+    grid-template-columns: 10em auto;
+    max-width: 30em;
+    grid-gap: 0.5em;
+}
+
+.grid label 
+{
+    text-align: right;
+}
+
+.grid input
+{
+    grid-column: 2;
+}
+
+pre
+{
+    font-size: 1.25em;
+    background-color: white;
+    color: black;
+    padding: 5px;
 }
 
 table
@@ -24,7 +169,7 @@ td,th
 {
 	padding-left: 0.5em;
 	padding-right: 0.5em;
-    border: thin solid gray;
+    border: thin solid black;
 }
 
 td
@@ -36,6 +181,14 @@ td.graph
 {
     border: none;
     text-align: left;
+}
+
+@media screen and (max-width: 700px)
+{
+    td.graph
+    {
+        display: none;
+    }
 }
 
 .deltatBar
@@ -94,8 +247,7 @@ td.graph
 
 .emptyBar
 {
-    background-color: orange;
-    color: orange;
+    opacity: 0;
 }
 
 

@@ -9,6 +9,7 @@
 #include <Tracer.h>
 #include <StringBuilder.h>
 #include <HtmlWriter.h>
+#include <Navigation.h>
 #include <Log.h>
 #include <FlowSensor.h>
 #include <EnergyMeter.h>
@@ -18,14 +19,8 @@
 #include "MonitoredTopics.h"
 #include "DayStatsEntry.h"
 
-#define ICON "/apple-touch-icon.png"
-#define CSS "/styles.css"
-
 #define SECONDS_PER_DAY (24 * 3600)
 #define SPECIFIC_HEAT_CAP_H2O 4.186
-#define MAX_FLOW 30
-#define MAX_POWER 10
-#define MAX_INPUT_POWER 4
 #define HTTP_POLL_INTERVAL 60
 #define EVENT_LOG_LENGTH 50
 #define BAR_LENGTH 40
@@ -51,16 +46,43 @@
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeJson = "application/json";
+const char* ButtonClass = "button";
+
+enum FileId
+{
+    Logo,
+    Styles,
+    CalibrateIcon,
+    GraphIcon,
+    HomeIcon,
+    LogFileIcon,
+    SettingsIcon,
+    UploadIcon,
+    _LastFile
+};
+
+const char* Files[] PROGMEM =
+{
+    "Logo.png",
+    "styles.css",
+    "Calibrate.svg",
+    "Graph.svg",
+    "Home.svg",
+    "LogFile.svg",
+    "Settings.svg",
+    "Upload.svg"
+};
 
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
-HtmlWriter Html(HttpResponse, ICON, CSS, BAR_LENGTH);
+HtmlWriter Html(HttpResponse, Files[Logo], Files[Styles], BAR_LENGTH);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
 StaticLog<HeatLogEntry> HeatLog(24 * 2); // 24 hrs
 StaticLog<DayStatsEntry> DayStats(31); // 31 days
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
+Navigation Nav;
 
 OneWire OneWireBus(D7);
 DallasTemperature TempSensors(&OneWireBus);
@@ -169,25 +191,72 @@ void setup()
     TimeServer.NTPServer = PersistentData.ntpServer;
     Html.setTitlePrefix(PersistentData.hostName);
 
-    SPIFFS.begin();
+    Nav.menuItems =
+    {
+        MenuItem
+        {
+            .icon = Files[HomeIcon],
+            .label = PSTR("Home"),
+            .handler = handleHttpRootRequest            
+        },
+        MenuItem
+        {
+            .icon = Files[LogFileIcon],
+            .label = PSTR("Event log"),
+            .urlPath =PSTR("events"),
+            .handler = handleHttpEventLogRequest
+        },
+        MenuItem
+        {
+            .icon = Files[GraphIcon],
+            .label = PSTR("Heat log"),
+            .urlPath = PSTR("heatlog"),
+            .handler = handleHttpHeatLogRequest
+        },
+        MenuItem
+        {
+            .icon = Files[GraphIcon],
+            .label = PSTR("Temperature log"),
+            .urlPath = PSTR("templog"),
+            .handler = handleHttpTempLogRequest
+        },
+        MenuItem
+        {
+            .icon = Files[GraphIcon],
+            .label = PSTR("Buffer log"),
+            .urlPath = PSTR("bufferlog"),
+            .handler = handleHttpBufferLogRequest
+        },
+        MenuItem
+        {
+            .icon = Files[UploadIcon],
+            .label = PSTR("FTP Sync"),
+            .urlPath = PSTR("sync"),
+            .handler= handleHttpFtpSyncRequest
+        },
+        MenuItem
+        {
+            .icon = Files[CalibrateIcon],
+            .label = PSTR("Calibrate"),
+            .urlPath = PSTR("calibrate"),
+            .handler= handleHttpCalibrateFormRequest,
+            .postHandler = handleHttpCalibrateFormPost
+        },
+        MenuItem
+        {
+            .icon = Files[SettingsIcon],
+            .label = PSTR("Settings"),
+            .urlPath =PSTR("config"),
+            .handler = handleHttpConfigFormRequest,
+            .postHandler = handleHttpConfigFormPost
+        },
+    };
+    Nav.registerHttpHandlers(WebServer);
 
-    const char* cacheControl = "max-age=86400, public";
-    WebServer.on("/", handleHttpRootRequest);
     WebServer.on("/json", handleHttpJsonRequest);
-    WebServer.on("/sync", handleHttpFtpSyncRequest);
-    WebServer.on("/calibrate", HTTP_GET, handleHttpCalibrateFormRequest);
-    WebServer.on("/calibrate", HTTP_POST, handleHttpCalibrateFormPost);
-    WebServer.on("/heatlog", handleHttpHeatLogRequest);
-    WebServer.on("/templog", handleHttpTempLogRequest);
-    WebServer.on("/bufferlog", handleHttpBufferLogRequest);
-    WebServer.on("/events", handleHttpEventLogRequest);
-    WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
-    WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
-    WebServer.serveStatic("/favicon.ico", SPIFFS, "/favicon.ico", cacheControl);
-    WebServer.serveStatic(ICON, SPIFFS, ICON, cacheControl);
-    WebServer.serveStatic(CSS, SPIFFS, CSS, cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
-    
+
+    WiFiSM.registerStaticFiles(Files, _LastFile);    
     WiFiSM.on(WiFiInitState::TimeServerSynced, onTimeServerSynced);
     WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
     WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
@@ -560,34 +629,32 @@ void handleHttpRootRequest()
     else
         ftpSync = formatTime("%H:%M", lastFTPSyncTime);
 
-    Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
+    Html.writeHeader(F("Home"), Nav, HTTP_POLL_INTERVAL);
 
-    Html.writeHeading(F("Heat Monitor status"));
+    Html.writeDivStart(F("flex-container"));
+
+    Html.writeSectionStart(F("Status"));
     Html.writeTableStart();
-    HttpResponse.printf(F("<tr><th>RSSI</th><td>%d dBm</td></tr>\r\n"), static_cast<int>(WiFi.RSSI()));
-    HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
-    HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync.c_str());
-    HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
-    HttpResponse.printf(F("<tr><th><a href=\"/heatlog\">Heat log</a></th><td>%d</td></p>\r\n"), HeatLog.count());
-    HttpResponse.printf(F("<tr><th><a href=\"/templog\">Temperature log</a></th><td>%d</td></p>\r\n"), HeatLog.count());
+    Html.writeRow(F("WiFi RSSI"), F("%d dBm"), static_cast<int>(WiFi.RSSI()));
+    Html.writeRow(F("Free Heap"), F("%0.1f kB"), float(ESP.getFreeHeap()) / 1024);
+    Html.writeRow(F("Uptime"), F("%0.1f days"), float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
     if (PersistentData.isBufferEnabled())
     {
-        HttpResponse.printf(F("<tr><th><a href=\"/bufferlog\">Buffer log</a></th><td>%d</td></p>\r\n"), HeatLog.count());
-        HttpResponse.printf(
-            F("<tr><th>T<sub>buffer,max</sub></th><td>%0.1f °C</td></tr>\r\n"),
-            PersistentData.tBufferMax);
-        HttpResponse.printf(
-            F("<tr><th>T<sub>max</sub> valve</th><td><a href=\"?valve=%u\">%s</a></td></tr>\r\n"),
-            (uint32_t)currentTime,
-            maxTempValveActivated ? "On" : "Off"
-            );
+        Html.writeRow(F("T<sub>buffer,max</sub>"), F("%0.1f °C"), PersistentData.tBufferMax);
+        Html.writeRowStart();
+        Html.writeHeaderCell(F("T<sub>max</sub> valve"));
+        Html.writeCellStart("");
+        Html.writeActionLink(F("valve"), maxTempValveActivated ? F("On") : F("Off"), currentTime);
+        Html.writeCellEnd();
+        Html.writeRowEnd();
     }
     Html.writeTableEnd();
+    Html.writeSectionEnd();
 
     writeCurrentValues();
     writeDayStats();
 
+    Html.writeDivEnd();
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
@@ -598,7 +665,7 @@ void writeCurrentValues()
 {
     float flowRate = Flow_Sensor.getFlowRate();
 
-    Html.writeHeading(F("Current values"));
+    Html.writeSectionStart(F("Current values"));
     Html.writeTableStart();
 
     for (int i = 0; i < NUMBER_OF_TOPICS; i++)
@@ -627,12 +694,13 @@ void writeCurrentValues()
     }
 
     Html.writeTableEnd();
+    Html.writeSectionEnd();
 }
 
 
 void writeDayStats()
 {
-    Html.writeHeading(F("Statistics per day"));
+    Html.writeSectionStart(F("Statistics per day"));
 
     Html.writeTableStart();
     Html.writeRowStart();
@@ -651,7 +719,7 @@ void writeDayStats()
         Html.writeRowStart();
         Html.writeCell(formatTime("%d %b", logEntryPtr->time));
         if (PersistentData.isBufferEnabled())
-            Html.writeCell(formatTimeSpan(logEntryPtr->valveActivatedSeconds));
+            Html.writeCell(formatTimeSpan(logEntryPtr->valveActivatedSeconds, false));
         Html.writeCell(logEntryPtr->energyOut, F("%0.2f"));
         Html.writeCell(logEntryPtr->energyIn, F("%0.2f"));
         Html.writeCell(logEntryPtr->getCOP());
@@ -668,6 +736,7 @@ void writeDayStats()
     }
 
     Html.writeTableEnd();
+    Html.writeSectionEnd();
 }
 
 
@@ -700,24 +769,17 @@ void handleHttpFtpSyncRequest()
 {
     Tracer tracer(F("handleHttpFtpSyncRequest"));
 
-    Html.writeHeader(F("FTP Sync"), true, true);
+    Html.writeHeader(F("FTP Sync"), Nav);
 
-    HttpResponse.println(F("<div><pre>"));
+    HttpResponse.println(F("<pre>"));
     bool success = trySyncFTP(&HttpResponse); 
-    HttpResponse.println(F("</pre></div>"));
+    HttpResponse.println(F("</pre>"));
 
-    if (success)
-    {
-        HttpResponse.println(F("<p>Success!</p>"));
-        syncFTPTime = 0; // Cancel scheduled sync (if any)
-    }
-    else
-        HttpResponse.println(F("<p>Failed!</p>"));
+    Html.writeParagraph(success ? F("Success!") : F("Failed!"));
  
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
-
 }
 
 
@@ -741,7 +803,7 @@ void handleHttpHeatLogRequest()
     TopicId showTopicsIds[] = { TopicId::DeltaT, TopicId::FlowRate, TopicId::POut, TopicId::PIn };
     float maxPower = std::max(getMaxPower(), 0.01F); // Prevent division by zero
 
-    Html.writeHeader(F("Heat log"), true, true);
+    Html.writeHeader(F("Heat log"), Nav);
 
     HttpResponse.printf(
         F("<p>Max: %0.2f kW</p>\r\n"),
@@ -797,7 +859,7 @@ void handleHttpTempLogRequest()
 
     TopicId showTopicsIds[] = { TopicId::TInput, TopicId::TOutput };
 
-    Html.writeHeader(F("Temperature log"), true, true);
+    Html.writeHeader(F("Temperature log"), Nav);
 
     HttpResponse.printf(
         F("<p>Min: %0.1f °C. Max: %0.1f °C.</p>\r\n"),
@@ -865,7 +927,7 @@ void handleHttpBufferLogRequest()
     }
     tMax = std::max(tMax, tMin + 1); // Prevent division by zero
 
-    Html.writeHeader(F("Buffer log"), true, true);
+    Html.writeHeader(F("Buffer log"), Nav);
     
     HttpResponse.printf(
         F("<p>Min: %0.1f °C. Max: %0.1f °C.</p>\r\n"),
@@ -913,7 +975,7 @@ void handleHttpCalibrateFormRequest()
 {
     Tracer tracer(F("handleHttpCalibrateFormRequest"));
 
-    Html.writeHeader(F("Calibrate sensors"), true, true);
+    Html.writeHeader(F("Calibrate sensors"), Nav);
 
     if (TempSensors.getDS18Count() < 2)
     {
@@ -957,7 +1019,7 @@ void handleHttpCalibrateFormRequest()
             Html.writeCheckbox(F("swapInBuf"), F("Swap input and buffer sensors"), false);
         Html.writeTableEnd();
 
-        Html.writeSubmitButton();
+        Html.writeSubmitButton(F("Calibrate"));
         Html.writeFormEnd();
     }
 
@@ -1014,7 +1076,7 @@ void handleHttpEventLogRequest()
         WiFiSM.logEvent(F("Event log cleared."));
     }
 
-    Html.writeHeader(F("Event log"), true, true);
+    Html.writeHeader(F("Event log"), Nav);
 
     const char* event = EventLog.getFirstEntry();
     while (event != nullptr)
@@ -1023,7 +1085,7 @@ void handleHttpEventLogRequest()
         event = EventLog.getNextEntry();
     }
 
-    HttpResponse.printf(F("<p><a href=\"?clear=%u\">Clear event log</a></p>\r\n"), currentTime);
+    Html.writeActionLink(F("clear"), F("Clear event log"), currentTime, ButtonClass);
 
     Html.writeFooter();
 
@@ -1035,26 +1097,30 @@ void handleHttpConfigFormRequest()
 {
     Tracer tracer(F("handleHttpConfigFormRequest"));
 
-    Html.writeHeader(F("Configuration"), true, true);
+    Html.writeHeader(F("Settings"), Nav);
 
-    Html.writeFormStart(F("/config"));
-    Html.writeTableStart();
+    Html.writeFormStart(F("/config"), F("grid"));
     Html.writeTextBox(CFG_WIFI_SSID, F("WiFi SSID"), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID) - 1);
-    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1);
+    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1, F("password"));
     Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
     Html.writeTextBox(CFG_NTP_SERVER, F("NTP server"), PersistentData.ntpServer, sizeof(PersistentData.ntpServer) - 1);
     Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
     Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
-    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
-    Html.writeTextBox(CFG_MAX_TEMP, F("Buffer max"), String(PersistentData.tBufferMax, 1), 5);
-    Html.writeTableEnd();
-    Html.writeSubmitButton();
+    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1, F("password"));
+    Html.writeNumberBox(CFG_MAX_TEMP, F("Buffer max"), PersistentData.tBufferMax, 0, 90, 1);
+    Html.writeSubmitButton(F("Save"));
     Html.writeFormEnd();
 
     if (!TempSensors.isConnected(PersistentData.tempSensorAddress[TopicId::TBuffer]))
+        Html.writeParagraph(F("NOTE: No buffer sensor is connected. Leave 'Buffer max' zero to suppress buffer temperature in UI."));
+
+    if (WiFiSM.shouldPerformAction(F("reset")))
     {
-        HttpResponse.println("<p>NOTE: No buffer sensor is connected. Leave 'Buffer max' zero to suppress buffer temperature in UI.</p>");
+        Html.writeParagraph(F("Resetting..."));
+        WiFiSM.reset();
     }
+    else
+        Html.writeActionLink(F("reset"), F("Reset ESP"), currentTime, ButtonClass);
 
     Html.writeFooter();
 
