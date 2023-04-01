@@ -17,15 +17,17 @@ struct MonitoredTopic
     {
         // First build the format string
         static char format[16];
-        if (includeUnitOfMeasure)
-            snprintf(format, sizeof(format), "%%0.%df %s", decimals + additionalDecimals, unitOfMeasure);
-        else
-            snprintf(format, sizeof(format), "%%0.%df", decimals + additionalDecimals);
+        snprintf(format, sizeof(format), "%%0.%df", decimals + additionalDecimals);
 
         // Then format the value
         static char buffer[16];
         snprintf(buffer, sizeof(buffer), format, value);
 
+        if (includeUnitOfMeasure)
+        {
+            strcat(buffer, " ");
+            strcat_P(buffer, unitOfMeasure);
+        }
         return buffer;
     }
 };
@@ -53,7 +55,7 @@ struct TopicLogEntry
 };
 
 
-MonitoredTopic MonitoredTopics[] =
+MonitoredTopic MonitoredTopics[] PROGMEM =
 {
     { TopicId::Main_Inlet_Temp, "Tinlet", "T<sub>inlet</sub>", "°C", "temp1", 1, 0, 60 },
     { TopicId::Main_Outlet_Temp, "Toutlet", "T<sub>outlet</sub>", "°C", "temp1", 1, 0, 60 },
