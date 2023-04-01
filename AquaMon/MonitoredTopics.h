@@ -70,6 +70,6 @@ MonitoredTopic MonitoredTopics[] PROGMEM =
     { TopicId::Fan1_Motor_Speed, "Fan", "Fan", "rpm", "flow", 0, 0, 900 },
     { TopicId::Pump_Flow, "Qpump", "Q<sub>pump</sub>", "l/min", "flow", 1, 0, 30 },
     { TopicId::Compressor_Freq, "Fcomp", "F<sub>comp</sub>", "Hz", "freq", 0, 0, 60},
-    { TopicId::Compressor_Power, "Pcomp", "P<sub>comp</sub>", "kW", "in", 1, 0, 6 },
+    { TopicId::Compressor_Power, "Pcomp", "P<sub>comp</sub>", "kW", "in", 1, 0, 3 },
     { TopicId::Heat_Power, "Pheat", "P<sub>heat</sub>", "kW", "out", 1, 0, 6 },
 };
