@@ -1,20 +1,14 @@
 #include <Arduino.h>
 #include <HtmlWriter.h>
 #include <math.h>
+#include <Tracer.h>
 
 // Constructor
 HtmlWriter::HtmlWriter(StringBuilder& output, PGM_P icon, PGM_P css, size_t maxBarLength)
-    : _output(output), _icon(FPSTR(icon)), _css(FPSTR(css)), _maxBarLength(maxBarLength)
+    : _output(output), _icon(FPSTR(icon)), _css(FPSTR(css))
 {
     _titlePrefix = F("ESP");
-    _bar = new char[maxBarLength + 1]; 
-}
-
-
-// Destructor
-HtmlWriter::~HtmlWriter()
-{
-    delete[] _bar;
+    _maxBarLength = std::min(maxBarLength, (size_t)(sizeof(_strBuffer) - 1));
 }
 
 
@@ -97,14 +91,8 @@ void HtmlWriter::writeFooter()
 
 void HtmlWriter::writeBar(float value, const String& cssClass, bool fill, bool useDiv, size_t maxBarLength)
 {
-    char* bar;
-    if (maxBarLength == 0)
-    {
-        bar = _bar;
-        maxBarLength = _maxBarLength;
-    }
-    else
-        bar = new char[maxBarLength + 1];
+    char* bar = _strBuffer;
+    maxBarLength = (maxBarLength == 0) ? _maxBarLength : std::min(maxBarLength, (size_t)(sizeof(_strBuffer) - 1));
 
     value = std::max(std::min(value, 1.0F), 0.0F);
     size_t barLength = roundf(value * maxBarLength);
@@ -112,7 +100,7 @@ void HtmlWriter::writeBar(float value, const String& cssClass, bool fill, bool u
     memset(bar, 'o', barLength);
     bar[barLength] = 0;
 
-    if (useDiv) _output.print(F("<div>"));
+    if (useDiv) writeDivStart();
 
     _output.printf(F("<span class=\"%s\">%s</span>"), cssClass.c_str(), bar);
 
@@ -129,40 +117,36 @@ void HtmlWriter::writeBar(float value, const String& cssClass, bool fill, bool u
         _output.print(F("<span class=\"emptyBar\">o</span>"));
     }
 
-    if (useDiv) _output.print("</div>");
-
-    if (bar != _bar)
-    {
-        delete[] bar;
-    }
+    if (useDiv) writeDivEnd();
 }
 
 
 void HtmlWriter::writeStackedBar(float value1, float value2, const String& cssClass1, const String& cssClass2, bool fill, bool useDiv)
 {
+    char* bar = _strBuffer;
     value1 = std::max(std::min(value1, 1.0f), 0.0f);
     value2 = std::max(std::min(value2, 1.0f - value1), 0.0f);
     size_t barLength1 = roundf(value1 * _maxBarLength);
     size_t barLength2 = roundf(value2 * _maxBarLength);
 
-    if (useDiv) _output.print(F("<div>"));
+    if (useDiv) writeDivStart();
 
-    memset(_bar, 'o', barLength1);
-    _bar[barLength1] = 0;
+    memset(bar, 'o', barLength1);
+    bar[barLength1] = 0;
 
-    _output.printf(F("<span class=\"%s\">%s</span>"), cssClass1.c_str(), _bar);
+    _output.printf(F("<span class=\"%s\">%s</span>"), cssClass1.c_str(), bar);
 
-    memset(_bar, 'o', barLength2);
-    _bar[barLength2] = 0;
+    memset(bar, 'o', barLength2);
+    bar[barLength2] = 0;
 
-    _output.printf(F("<span class=\"%s\">%s</span>"), cssClass2.c_str(), _bar);
+    _output.printf(F("<span class=\"%s\">%s</span>"), cssClass2.c_str(), bar);
 
     if (fill)
     {
-        memset(_bar, 'o', _maxBarLength - barLength1 - barLength2);
-        _bar[_maxBarLength - barLength1 - barLength2] = 0;
+        memset(bar, 'o', _maxBarLength - barLength1 - barLength2);
+        bar[_maxBarLength - barLength1 - barLength2] = 0;
 
-        _output.printf(F("<span class=\"barFill\">%s</span>"), _bar);
+        _output.printf(F("<span class=\"barFill\">%s</span>"), bar);
     }
     else if (barLength1 == 0 && barLength2 == 0)
     {
@@ -170,7 +154,7 @@ void HtmlWriter::writeStackedBar(float value1, float value2, const String& cssCl
         _output.print(F("<span class=\"emptyBar\">o</span>"));
     }
 
-    if (useDiv) _output.print("</div>");
+    if (useDiv) writeDivEnd();
 }
 
 
@@ -257,16 +241,16 @@ void HtmlWriter::writeNumberBox(
 {
     float step = pow10f(-decimals);
 
-    static char format[128];
-    snprintf(
-        format,
-        sizeof(format),
+    int length = snprintf(
+        _strBuffer,
+        sizeof(_strBuffer) - 1,
         "<input type=\"number\" id=\"%%s\" name=\"%%s\" value=\"%%0.%df\" min=\"%%0.%df\" max=\"%%0.%df\" step=\"%%0.%df\">\r\n",
         decimals, decimals, decimals, decimals);
+    _strBuffer[length] = 0;
 
     writeLabel(label, name);
     _output.printf(
-        FPSTR(format), 
+        FPSTR(_strBuffer), 
         name.c_str(),
         name.c_str(),
         value,
@@ -376,11 +360,32 @@ void HtmlWriter::writeDivEnd()
 }
 
 
-void HtmlWriter::writeDiv(const String& content, const String& cssClass)
+void HtmlWriter::writeDiv(const String& format, ...)
 {
-    writeDivStart(cssClass);
-    _output.print(content);
+    va_list args;
+    va_start(args, format);
+    int length = vsnprintf(_strBuffer, sizeof(_strBuffer) - 1, format.c_str(), args);
+    _strBuffer[length] = 0;
+    va_end(args);
+
+    writeDivStart();
+    _output.print(_strBuffer);
     writeDivEnd();
+}
+
+
+void HtmlWriter::writePreStart(const String& cssClass)
+{
+    if (cssClass.length() == 0)
+        _output.println(F("<pre>"));
+    else
+        _output.printf(F("<pre class=\"%s\">\r\n"), cssClass.c_str());
+}
+
+
+void HtmlWriter::writePreEnd()
+{
+    _output.println(F("</pre>"));
 }
 
 
@@ -433,9 +438,15 @@ void HtmlWriter::writeHeaderCell(const String& value, int colspan, int rowspan)
 }
 
 
-void HtmlWriter::writeCell(const String& value)
+void HtmlWriter::writeCell(const String& format, ...)
 {
-    return writeCell(value.c_str());
+    va_list args;
+    va_start(args, format);
+    int length = vsnprintf(_strBuffer, sizeof(_strBuffer) - 1, format.c_str(), args);
+    _strBuffer[length] = 0;
+    va_end(args);
+
+    return writeCell(_strBuffer);
 }
 
 
@@ -475,17 +486,16 @@ void HtmlWriter::writeCell(float value, const __FlashStringHelper* format)
 
 void HtmlWriter::writeRow(const String& name, const String& format, ...)
 {
-    static char value[64];
     va_list args;
     va_start(args, format);
-    int length = vsnprintf(value, sizeof(value) - 1, format.c_str(), args);
-    value[length] = 0;
+    int length = vsnprintf(_strBuffer, sizeof(_strBuffer) - 1, format.c_str(), args);
+    _strBuffer[length] = 0;
     va_end(args);
 
     _output.printf(
         F("<tr><th>%s</th><td>%s</td></tr>\r\n"),
         name.c_str(),
-        value);
+        _strBuffer);
 }
 
 
@@ -503,11 +513,27 @@ void HtmlWriter::writePager(int totalPages, int currentPage)
 }
 
 
-void HtmlWriter::writeParagraph(const String& innerHtml)
+void HtmlWriter::writeParagraph(const String& format, ...)
 {
+    va_list args;
+    va_start(args, format);
+    int length = vsnprintf(_strBuffer, sizeof(_strBuffer) - 1, format.c_str(), args);
+    _strBuffer[length] = 0;
+    va_end(args);
+
     _output.print(F("<p>"));
-    _output.print(innerHtml);
+    _output.print(_strBuffer);
     _output.println(F("</p>"));
+}
+
+
+void HtmlWriter::writeLink(const String& href, const String& label, const String& cssClass)
+{
+    _output.printf(
+        F("<a class=\"%s\" href=\"%s\">%s</a>"),
+        cssClass.c_str(),
+        href.c_str(),
+        label.c_str());
 }
 
 

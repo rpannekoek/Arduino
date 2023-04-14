@@ -108,7 +108,7 @@ enum BoilerLevel // Unscoped enum so it can be used as array index without casti
 
 int boilerTSet[5] = {0, 15, 40, 60,  0}; // See initBoilerLevels()
 
-const char* logHeaders[] PROGMEM =
+const char* LogHeaders[] PROGMEM =
 {
     "Time",
     "Status (t)",
@@ -129,7 +129,7 @@ WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
 HeatMonClient HeatMon(WIFI_TIMEOUT_MS);
 WeatherAPI WeatherService(WIFI_TIMEOUT_MS);
-StringBuilder HttpResponse(12288); // 12KB HTTP response buffer
+StringBuilder HttpResponse(12 * 1024); // 12KB HTTP response buffer
 HtmlWriter Html(HttpResponse, Files[FileId::Logo], Files[FileId::Styles], 40);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
 StringLog OTGWMessageLog(OTGW_MESSAGE_LOG_LENGTH, 10);
@@ -947,7 +947,8 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
         {
             bool pwmPending = pwmDutyCycle < 1;
             float tSet = getDecimal(otFrame.dataValue);
-            float tPwmCeiling = std::max((float)PersistentData.minTSet, HeatMon.tBuffer);
+            float tBoiler = getDecimal(boilerResponses[OpenThermDataId::TBoiler]);
+            float tPwmCeiling = std::max((float)PersistentData.minTSet, tBoiler);
             const float tPwmFloor = 20;
             if (tSet >= tPwmFloor && tSet < tPwmCeiling)
             {
@@ -1022,16 +1023,13 @@ float getBarValue(float t, float tMin = 20, float tMax = 0)
 void writeOpenThermTemperatureRow(String label, String cssClass, uint16_t dataValue, float tMin = 20, float tMax = 0)
 {
     float value = getDecimal(dataValue);
+    float barValue = getBarValue(value, tMin, tMax);
 
-    HttpResponse.print(F("<tr>"));
+    Html.writeRowStart();
     Html.writeHeaderCell(label);
     Html.writeCell(value, F("%0.1f °C"));
-    HttpResponse.print(F("<td class=\"graph\">"));
-    if (cssClass.length() > 0)
-    {
-        Html.writeBar(getBarValue(value, tMin, tMax), cssClass, true, false);
-    }
-    HttpResponse.println(F("</td></tr>"));
+    Html.writeGraphCell(barValue, cssClass, true);
+    Html.writeRowEnd();
 }
 
 
@@ -1064,12 +1062,16 @@ void handleHttpRootRequest()
     Html.writeSectionStart(F("Status"));
     Html.writeTableStart();
     Html.writeRow(F("WiFi RSSI"), F("%d dBm"), static_cast<int>(WiFi.RSSI()));
-    Html.writeRow(F("Free Heap"), F("%u"), ESP.getFreeHeap());
+    Html.writeRow(F("Free Heap"), F("%0.1f kB"), float(ESP.getFreeHeap()) / 1024);
     Html.writeRow(F("Uptime"), F("%0.1f days"), float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
     Html.writeRow(F("OTGW Errors"), F("%u"), otgwErrors);
     Html.writeRow(F("OTGW Resets"), F("%u"), OTGW.resets);
     Html.writeRow(F("FTP Sync"), F("%s"), ftpSyncTime.c_str());
     Html.writeRow(F("Sync entries"), F("%d / %d"), otLogEntriesToSync, PersistentData.ftpSyncEntries);
+    if (lastHeatmonUpdateTime != 0)
+        Html.writeRow(F("HeatMon"), F("%s"), formatTime("%H:%M", lastHeatmonUpdateTime));
+    if (lastWeatherUpdateTime != 0)
+        Html.writeRow(F("Weather"), F("%s"), formatTime("%H:%M", lastWeatherUpdateTime));
     Html.writeTableEnd();
     Html.writeSectionEnd();
 
@@ -1085,6 +1087,7 @@ void handleHttpRootRequest()
 void writeCurrentValues()
 {
     Html.writeSectionStart(F("Current values"));
+    Html.writeTableStart();
 
     if (lastOTLogEntryPtr != nullptr)
     {
@@ -1092,21 +1095,14 @@ void writeCurrentValues()
         float maxRelMod = getDecimal(lastOTLogEntryPtr->thermostatMaxRelModulation);        
         float thermostatTSet = getDecimal(lastOTLogEntryPtr->thermostatTSet);
 
-        HttpResponse.println(F("<table>"));
-        HttpResponse.print(F("<tr>"));
+        Html.writeRowStart();
         Html.writeHeaderCell(F("Thermostat"));
         if (thermostatRequests[OpenThermDataId::Status] & OpenThermStatus::MasterCHEnable)
-        {
-            HttpResponse.printf(
-                F("<td>%0.1f °C @ %0.0f %%</td>"),
-                thermostatTSet,
-                maxRelMod);
-        }
+            Html.writeCell(F("%0.1f °C @ %0.0f %%"), thermostatTSet, maxRelMod);
         else
-            Html.writeCell("CH off");
-        HttpResponse.print(F("<td class=\"graph\">"));
-        Html.writeBar(getBarValue(thermostatTSet), F("setBar"), true, false);
-        HttpResponse.println(F("</td></tr>"));
+            Html.writeCell(F("CH off"));
+        Html.writeGraphCell(getBarValue(thermostatTSet), F("setBar"), true);
+        Html.writeRowEnd();
 
         writeOpenThermTemperatureRow(F("T<sub>set</sub>"), F("setBar"), lastOTLogEntryPtr->boilerTSet); 
         writeOpenThermTemperatureRow(F("T<sub>boiler</sub>"), flame ? F("flameBar") : F("waterBar"), lastOTLogEntryPtr->tBoiler); 
@@ -1117,33 +1113,31 @@ void writeCurrentValues()
 
     if (HeatMon.isInitialized)
     {
-        HttpResponse.print(F("<tr><th>P<sub>heatpump</sub></th>"));
+        Html.writeRowStart();
+        Html.writeHeaderCell(F("P<sub>heatpump</sub>"));
         Html.writeCell(HeatMon.pIn, F("%0.2f kW"));
-        HttpResponse.print(F("<td class=\"graph\">"));
-        Html.writeBar(HeatMon.pIn / MAX_HEATPUMP_POWER, F("powerBar"), true, false);
-        HttpResponse.println(F("</td></tr>"));
+        Html.writeGraphCell(HeatMon.pIn / MAX_HEATPUMP_POWER, F("powerBar"), true);
+        Html.writeRowEnd();
     }
 
     time_t overrideTimeLeft =(changeBoilerLevelTime == 0) ? 0 : changeBoilerLevelTime - currentTime;
     const char* duration = (overrideTimeLeft == 0) ? "" : formatTimeSpan(overrideTimeLeft, false); 
-    HttpResponse.printf(
-        F("<tr><th>Override</th><td>%s %s</td><td class=\"graph\">"),
-        BoilerLevelNames[currentBoilerLevel],
-        duration);
-    Html.writeBar(float(overrideTimeLeft) / TSET_OVERRIDE_DURATION, F("overrideBar"), true, false);
-    HttpResponse.println(F("</td></tr>"));
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("Override"));
+    Html.writeCell(F("%s %s"), BoilerLevelNames[currentBoilerLevel], duration);
+    Html.writeGraphCell(float(overrideTimeLeft) / TSET_OVERRIDE_DURATION, F("overrideBar"), true);
+    Html.writeRowEnd();
 
     if (lowLoadPeriod != 0 || pwmDutyCycle < 1)
     {
         float dutyCycle = (pwmDutyCycle < 1) ? pwmDutyCycle : float(lowLoadDutyInterval) / lowLoadPeriod;
         const char* pwmType = (pwmDutyCycle < 1) ? "Forced" : "Low-load";
 
-        HttpResponse.printf(
-            F("<tr><th>PWM</sub></th><td>%s %0.0f %%</td><td class=\"graph\">"),
-            pwmType,
-            dutyCycle * 100);
-        Html.writeBar(dutyCycle, F("overrideBar"), true, false);
-        HttpResponse.println(F("</td></tr>"));
+        Html.writeRowStart();
+        Html.writeHeaderCell(F("PWM"));
+        Html.writeCell(F("%s %0.0f %%"), pwmType, dutyCycle * 100);
+        Html.writeGraphCell(dutyCycle, F("overrideBar"), true);
+        Html.writeRowEnd();
     }
 
     Html.writeTableEnd();
@@ -1255,16 +1249,12 @@ void handleHttpOpenThermRequest()
         Html.writeRow(F("Low-load period"), F("%s"), formatTimeSpan(lowLoadPeriod, false));
     if (lowLoadDutyInterval != 0)
         Html.writeRow(F("Low-load duty"), F("%s"), formatTimeSpan(lowLoadDutyInterval, false));
-    if (lastHeatmonUpdateTime != 0)
-        Html.writeRow(F("HeatMon update"), F("%s"), formatTime("%H:%M", lastHeatmonUpdateTime));
-    if (lastWeatherUpdateTime != 0)
-        Html.writeRow(F("Weather update"), F("%s"), formatTime("%H:%M", lastWeatherUpdateTime));
     Html.writeTableEnd();
     Html.writeSectionEnd();
 
     Html.writeDivEnd();
 
-    HttpResponse.println(F("<a class=\"button\" href=\"/traffic\">View all OpenTherm traffic</a>"));
+    Html.writeLink(F("/traffic"), F("View all OpenTherm traffic"), ButtonClass);
 
     Html.writeFooter();
 
@@ -1278,20 +1268,20 @@ void writeHtmlOpenThermDataTable(const String& title, uint16_t* otDataTable)
     Html.writeTableStart();
 
     Html.writeRowStart();
-    Html.writeHeaderCell(F("Data ID"));
-    Html.writeHeaderCell(F("Data Value (hex)"));
-    Html.writeHeaderCell(F("Data value (dec)"));
+    Html.writeHeaderCell(F("ID"));
+    Html.writeHeaderCell(F("Hex value"));
+    Html.writeHeaderCell(F("Dec value"));
     Html.writeRowEnd();
 
     for (int i = 0; i < 256; i++)
     {
         uint16_t dataValue = otDataTable[i];
         if (dataValue == DATA_VALUE_NONE) continue;
-        HttpResponse.printf(
-            F("<tr><td>%d</td><td>0x%04X</td><td>%0.2f</td></tr>\r\n"), 
-            i, 
-            dataValue, 
-            getDecimal(dataValue));
+        Html.writeRowStart();
+        Html.writeCell(i);
+        Html.writeCell(F("%04X"), dataValue);
+        Html.writeCell(F("%0.2f"), getDecimal(dataValue));
+        Html.writeRowEnd();
     }
 
     Html.writeTableEnd();
@@ -1308,9 +1298,9 @@ void handleHttpOpenThermTrafficRequest()
     Html.writeDivStart(F("flex-container"));
 
     writeHtmlOpenThermDataTable(F("Thermostat requests"), thermostatRequests);
+    writeHtmlOpenThermDataTable(F("Thermostat overrides"), otgwRequests);
     writeHtmlOpenThermDataTable(F("Boiler responses"), boilerResponses);
-    writeHtmlOpenThermDataTable(F("OTGW requests (thermostat overrides)"), otgwRequests);
-    writeHtmlOpenThermDataTable(F("OTGW responses (boiler overrides)"), otgwResponses);
+    writeHtmlOpenThermDataTable(F("Boiler overrides"), otgwResponses);
 
     Html.writeDivEnd();
     Html.writeFooter();
@@ -1331,7 +1321,7 @@ void handleHttpOpenThermLogRequest()
 
     Html.writeTableStart();
     Html.writeRowStart();
-    for (PGM_P header : logHeaders)
+    for (PGM_P header : LogHeaders)
     {
         Html.writeHeaderCell(FPSTR(header));
     }
@@ -1374,15 +1364,14 @@ void handleHttpOpenThermLogSyncRequest()
 
     Html.writeHeader(F("FTP Sync"), Nav);
 
-    HttpResponse.printf(
-        F("<p>Sending %d OpenTherm log entries to FTP server (%s) ...</p>\r\n"), 
+    Html.writeParagraph(
+        F("Sending %d OpenTherm log entries to FTP server (%s) ..."),
         otLogEntriesToSync,
-        PersistentData.ftpServer
-        );
+        PersistentData.ftpServer);
 
-    HttpResponse.println(F("<div><pre>"));
-    bool success = trySyncOpenThermLog(&HttpResponse); 
-    HttpResponse.println(F("</pre></div>"));
+    Html.writePreStart();
+    bool success = trySyncOpenThermLog(&HttpResponse);
+    Html.writePreEnd(); 
 
     if (success)
     {
@@ -1392,6 +1381,15 @@ void handleHttpOpenThermLogSyncRequest()
     else
         Html.writeParagraph(F("Failed!"));
  
+    Html.writeHeading(F("CSV header"), 2);
+    Html.writePreStart();
+    for (PGM_P header : LogHeaders)
+    {
+        HttpResponse.print(FPSTR(header));
+        HttpResponse.print(';');
+    }
+    Html.writePreEnd();
+
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
@@ -1470,7 +1468,7 @@ void handleHttpEventLogRequest()
     const char* event = EventLog.getFirstEntry();
     while (event != nullptr)
     {
-        HttpResponse.printf(F("<div>%s</div>\r\n"), event);
+        Html.writeDiv(F("%s"), event);
         event = EventLog.getNextEntry();
     }
 
@@ -1495,13 +1493,14 @@ void handleHttpCommandFormRequest()
         value = F("A");
     }
 
+    String tsetLowHref = F("?cmd=CS&value=");
+    tsetLowHref += boilerTSet[BoilerLevel::Low];
+
     Html.writeHeader(F("OTGW Command"), Nav);
 
-    HttpResponse.println(F("<a class=\"button\" href=\"?cmd=PR&value=A\">OTGW version</a>"));
-    HttpResponse.printf(
-        F("<a class=\"button\" href=\"?cmd=CS&value=%d\">Set boiler level Low</a>\r\n"),
-        boilerTSet[BoilerLevel::Low]);
-    HttpResponse.println(F("<a class=\"button\" href=\"?cmd=CS&value=0\">Stop override</a>"));
+    Html.writeLink(F("?cmd=PR&value=A"), F("OTGW version"), ButtonClass);
+    Html.writeLink(tsetLowHref, F("Set boiler level Low"), ButtonClass);
+    Html.writeLink(F("?cmd=CS&value=0"), F("Stop override"), ButtonClass);
 
     Html.writeFormStart(F("cmd"));
     Html.writeTableStart();
@@ -1512,7 +1511,9 @@ void handleHttpCommandFormRequest()
     Html.writeFormEnd();
 
     Html.writeHeading(F("OTGW Response"), 2);
-    HttpResponse.printf(F("<div class=\"response\"><pre>%s</pre></div>"), otgwResponse.c_str());
+    Html.writePreStart();
+    HttpResponse.print(otgwResponse);
+    Html.writePreEnd();
 
     Html.writeFooter();
 
@@ -1567,7 +1568,7 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_WEATHER_API_KEY, F("Weather API Key"), PersistentData.weatherApiKey, 16);
     Html.writeTextBox(CFG_WEATHER_LOC, F("Weather Location"), PersistentData.weatherLocation, 16);
     Html.writeNumberBox(CFG_MAX_TSET, F("Max TSet"), PersistentData.maxTSet, 20, 90);
-    Html.writeNumberBox(CFG_MIN_TSET, F("Min TSet"), PersistentData.maxTSet, 20, 90);
+    Html.writeNumberBox(CFG_MIN_TSET, F("Min TSet"), PersistentData.minTSet, 20, 90);
     Html.writeNumberBox(CFG_BOILER_ON_DELAY, F("Boiler on delay (s)"), PersistentData.boilerOnDelay, 0, 7200);
     Html.writeCheckbox(CFG_PUMP_MOD, F("Pump Modulation"), PersistentData.usePumpModulation);
     Html.writeSubmitButton(F("Save"));

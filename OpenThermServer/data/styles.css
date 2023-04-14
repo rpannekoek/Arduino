@@ -156,6 +156,7 @@ form input
 pre
 {
     font-size: 1.25em;
+    padding: 0.5em;
     background-color: white;
     color: black;
 }
@@ -172,8 +173,14 @@ td,th
     border: thin solid gray;
 }
 
+td
+{
+    text-align: right;
+}
+
 td.graph
 {
+    text-align: left;
     border: none;
 }
 
@@ -230,8 +237,7 @@ td.graph
 
 .emptyBar
 {
-    background-color: orange;
-    color: orange;
+    opacity: 0;
 }
 
 

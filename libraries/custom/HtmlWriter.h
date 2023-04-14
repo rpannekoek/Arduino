@@ -10,9 +10,6 @@ class HtmlWriter
         // Constructor
         HtmlWriter(StringBuilder& output, PGM_P icon, PGM_P css, size_t maxBarLength);
 
-        // Destructor
-        ~HtmlWriter();
-
         void setTitlePrefix(const String& prefix);
 
         void writeHeader(const String& title, bool includeHomePageLink, bool includeHeading, uint16_t refreshInterval = 0);
@@ -40,7 +37,9 @@ class HtmlWriter
         void writeSectionEnd();
         void writeDivStart(const String& cssClass = String());
         void writeDivEnd();
-        void writeDiv(const String& content, const String& cssClass = String());
+        void writeDiv(const String& format, ...);
+        void writePreStart(const String& cssClass = String());
+        void writePreEnd();
 
         void writeTableStart();
         void writeTableEnd();
@@ -49,7 +48,7 @@ class HtmlWriter
         void writeCellStart(const String& cssClass);
         void writeCellEnd();
         void writeHeaderCell(const String& value, int colspan = 0, int rowspan = 0);
-        void writeCell(const String& value);
+        void writeCell(const String& format, ...);
         void writeCell(const char* value);
         void writeCell(int value);
         void writeCell(uint32_t value);
@@ -58,21 +57,22 @@ class HtmlWriter
 
         void writePager(int totalPages, int currentPage);
 
-        void writeParagraph(const String& innerHtml);
+        void writeParagraph(const String& format, ...);
 
+        void writeLink(const String& href, const String& label, const String& cssClass = String());
         void writeActionLink(
             const String& action,
             const String& label,
             time_t currentTime,
-            const String& cssClass= String("actionLink"),
-            const String& icon= String());
+            const String& cssClass = String("actionLink"),
+            const String& icon = String());
 
     private:
         StringBuilder& _output;
         String _icon;
         String _css;
         String _titlePrefix;
-        char* _bar;
+        char _strBuffer[256];
         size_t _maxBarLength;
 };
 
