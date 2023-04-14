@@ -105,7 +105,7 @@ const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeJson = "application/json";
 const char* ContentTypeText = "text/plain";
 
-const char* Button = "button";
+const char* ButtonClass = "button";
 
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
@@ -798,7 +798,7 @@ void handleHttpRootRequest()
 
     Html.writeRow(
         F("EVSE State"),
-        F("<span style=\"color: %s\">%s</span>"),
+        F("<span style=\"color: %s; font-weight: bold\">%s</span>"),
         EVSEStateColors[state],
         EVSEStateNames[state]);
     Html.writeRow(F("Control Pilot"), F("%s"), ControlPilot.getStatusName());
@@ -820,7 +820,7 @@ void handleHttpRootRequest()
     }
 
     if (chargingFinishedTime != 0)
-        Html.writeRow(F("Charging started"), F("%s"), formatTime("%a %H:%M", chargingFinishedTime));
+        Html.writeRow(F("Charging stopped"), F("%s"), formatTime("%a %H:%M", chargingFinishedTime));
 
     Html.writeRow(F("Temperature"), F("%0.1f °C"), temperature);
     Html.writeRow(F("T<sub>max</sub>"), F("%0.1f °C @ %s"), DayStats.tMax, formatTime("%H:%M", DayStats.tMaxTime));
@@ -843,7 +843,7 @@ void handleHttpRootRequest()
                 setState(EVSEState::SelfTest);
             }
             else
-                Html.writeActionLink(F("selftest"), F("Perform self-test"), currentTime, Button, F("Calibrate.svg"));
+                Html.writeActionLink(F("selftest"), F("Perform self-test"), currentTime, ButtonClass, Files[CalibrateIcon]);
             break;
 
         case EVSEState::Authorize:
@@ -853,7 +853,7 @@ void handleHttpRootRequest()
                 isWebAuthorized = true;
             }
             else if (!isWebAuthorized)
-                Html.writeActionLink(F("authorize"), F("Start charging"), currentTime, Button, F("Flash.svg"));
+                Html.writeActionLink(F("authorize"), F("Start charging"), currentTime, ButtonClass, Files[FlashIcon]);
             break;
 
         case EVSEState::AwaitCharging:
@@ -866,7 +866,7 @@ void handleHttpRootRequest()
                     Html.writeParagraph(F("Stop charging failed."));
             }
             else
-                Html.writeActionLink(F("stop"), F("Stop charging"), currentTime, Button, F("Cancel.svg"));
+                Html.writeActionLink(F("stop"), F("Stop charging"), currentTime, ButtonClass, Files[CancelIcon]);
             break;
     }
 
@@ -896,7 +896,7 @@ void handleHttpBluetoothRequest()
             Html.writeParagraph(F("Scanning for devices failed."));
     }
     else if (btState == BluetoothState::Initialized || btState == BluetoothState::DiscoveryComplete)
-        Html.writeActionLink(F("startDiscovery"), F("Scan for devices"), currentTime, Button);
+        Html.writeActionLink(F("startDiscovery"), F("Scan for devices"), currentTime, ButtonClass);
 
     if (Bluetooth.isDeviceDetected())
         Html.writeParagraph(F("Registered device detected"));
@@ -944,7 +944,7 @@ void handleHttpBluetoothRequest()
     else if (btState == BluetoothState::Discovering)
         Html.writeParagraph(F("Discovery in progress..."));
 
-    Html.writeSubmitButton(F("Update registration"), Button);
+    Html.writeSubmitButton(F("Update registration"), ButtonClass);
     Html.writeFormEnd();
     Html.writeFooter();
 
@@ -1076,11 +1076,11 @@ void handleHttpEventLogRequest()
     const char* event = EventLog.getFirstEntry();
     while (event != nullptr)
     {
-        HttpResponse.printf(F("<div>%s</div>\r\n"), event);
+        Html.writeDiv(F("%s"), event);
         event = EventLog.getNextEntry();
     }
 
-    Html.writeActionLink(F("clear"), F("Clear event log"), currentTime, Button);
+    Html.writeActionLink(F("clear"), F("Clear event log"), currentTime, ButtonClass);
 
     Html.writeFooter();
 
@@ -1124,14 +1124,14 @@ void handleHttpSmartMeterRequest()
             TRACE(F("DSMR phase: %d\n"), PersistentData.dsmrPhase);
 
             PhaseData& monitoredPhaseData = electricity[PersistentData.dsmrPhase];
-            HttpResponse.printf(
-                F("<p>Phase '%s' current: %0.1f A</p>\r\n"),
+            Html.writeParagraph(
+                F("Phase '%s' current: %0.1f A"),
                 monitoredPhaseData.Name.c_str(),
                 monitoredPhaseData.Pdelivered / CHARGE_VOLTAGE);
         }
         else
-            HttpResponse.printf(
-                F("<p>%s returned %d: %s</p>\r\n"),
+            Html.writeParagraph(
+                F("%s returned %d: %s"),
                 PersistentData.dsmrMonitor,
                 dsmrResult,
                 SmartMeter.getLastError().c_str());
@@ -1139,12 +1139,12 @@ void handleHttpSmartMeterRequest()
     else
         Html.writeParagraph(F("Smart Meter is not enabled."));
 
-    HttpResponse.printf(
-        F("<p>Configured current limit: %d A</p>\r\n"),
+    Html.writeParagraph(
+        F("Configured current limit: %d A"),
         static_cast<int>(PersistentData.currentLimit));
 
     float cl = determineCurrentLimit();
-    HttpResponse.printf(F("<p>Effective current limit: %0.1f A</p>\r\n"), cl);
+    Html.writeParagraph(F("Effective current limit: %0.1f A"), cl);
 
     Html.writeFooter();
 
@@ -1263,7 +1263,7 @@ void handleHttpConfigFormRequest()
     if (WiFiSM.shouldPerformAction(F("reset")))
         WiFiSM.reset();
     else
-        Html.writeActionLink(F("reset"), F("Reset ESP"), currentTime, Button);
+        Html.writeActionLink(F("reset"), F("Reset ESP"), currentTime, ButtonClass);
 
     Html.writeFooter();
 
