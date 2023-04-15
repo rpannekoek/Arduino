@@ -948,7 +948,7 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
             bool pwmPending = pwmDutyCycle < 1;
             float tSet = getDecimal(otFrame.dataValue);
             float tBoiler = getDecimal(boilerResponses[OpenThermDataId::TBoiler]);
-            float tPwmCeiling = std::max((float)PersistentData.minTSet, tBoiler);
+            float tPwmCeiling = std::min(std::max(tBoiler, (float)PersistentData.minTSet), (float)PersistentData.maxTSet);
             const float tPwmFloor = 20;
             if (tSet >= tPwmFloor && tSet < tPwmCeiling)
             {
