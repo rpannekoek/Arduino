@@ -66,6 +66,7 @@
 #define CFG_DSMR_MONITOR F("DSMRMonitor")
 #define CFG_DSMR_PHASE F("DSMRPhase")
 #define CFG_CURRENT_LIMIT F("CurrentLimit")
+#define CFG_AUTH_TIMEOUT F("AuthTimeout")
 #define CAL_CURRENT F("ActualCurrent")
 #define CAL_CURRENT_ZERO F("CurrentZero")
 #define CAL_TEMP_OFFSET F("TempOffset")
@@ -136,6 +137,7 @@ bool isWebAuthorized = false;
 bool isMeasuringTemp = false;
 
 time_t currentTime = 0;
+time_t stateChangeTime = 0;
 time_t tempPollTime = 0;
 time_t chargeControlTime = 0;
 time_t chargingStartedTime = 0;
@@ -270,6 +272,7 @@ void setup()
 void setState(EVSEState newState)
 {
     state = newState;
+    stateChangeTime = currentTime;
     WiFiSM.logEvent(F("EVSE State changed to %s"), EVSEStateNames[newState]);
     if (!RGBLED.setStatus(newState))
         WiFiSM.logEvent(F("Failed setting RGB LED status"));
@@ -504,6 +507,14 @@ bool isChargingAuthorized()
         WiFiSM.logEvent(F("Charging authorized through Bluetooth"));
         return true;
     } 
+
+    if ((PersistentData.authorizeTimeout != 0) && (currentTime - stateChangeTime > PersistentData.authorizeTimeout))
+    {
+        WiFiSM.logEvent(
+            F("Charging authorized by timeout (%s)"),
+            formatTimeSpan(PersistentData.authorizeTimeout));
+        return true;
+    }
 
     // If discovery complete, start new one.
     if (Bluetooth.getState() == BluetoothState::DiscoveryComplete)
@@ -1257,6 +1268,7 @@ void handleHttpConfigFormRequest()
     Html.writeTextBox(CFG_DSMR_MONITOR, F("DSMR monitor"), PersistentData.dsmrMonitor, sizeof(PersistentData.dsmrMonitor) - 1);
     Html.writeNumberBox(CFG_DSMR_PHASE, F("DSMR phase"), PersistentData.dsmrPhase + 1, 1, 3);
     Html.writeNumberBox(CFG_CURRENT_LIMIT, F("Current limit (A)"), PersistentData.currentLimit, 6, 35);
+    Html.writeNumberBox(CFG_AUTH_TIMEOUT, F("Authorize timeout (s)"), PersistentData.authorizeTimeout, 0, 65535);
     Html.writeSubmitButton(F("Save"));
     Html.writeFormEnd();
 
@@ -1290,6 +1302,7 @@ void handleHttpConfigFormPost()
 
     PersistentData.dsmrPhase = WebServer.arg(CFG_DSMR_PHASE).toInt() - 1;
     PersistentData.currentLimit = WebServer.arg(CFG_CURRENT_LIMIT).toInt();
+    PersistentData.authorizeTimeout = WebServer.arg(CFG_AUTH_TIMEOUT).toInt();
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();

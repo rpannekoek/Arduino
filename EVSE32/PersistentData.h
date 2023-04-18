@@ -19,6 +19,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
     DeviceAddress tempSensorAddress;
     float tempSensorOffset;
     uuid128_t registeredBeacons[MAX_BT_DEVICES];
+    uint16_t authorizeTimeout;
 
 
     PersistentDataStruct() : PersistentDataBase(
@@ -35,7 +36,8 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         sizeof(currentScale) +
         sizeof(tempSensorAddress) +
         sizeof(tempSensorOffset) +
-        sizeof(registeredBeacons)
+        sizeof(registeredBeacons) +
+        sizeof(authorizeTimeout)
         ) {}
 
     virtual void initialize()
@@ -53,6 +55,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         memset(registeredBeacons, 0, sizeof(registeredBeacons));
         memset(tempSensorAddress, 0, sizeof(DeviceAddress));
         tempSensorOffset = 0;
+        authorizeTimeout = 15 * 60;
     }
 
     virtual void validate()
@@ -67,7 +70,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         dsmrPhase = std::min(dsmrPhase, (uint8_t)2);
         currentLimit = std::min(std::max(currentLimit, (uint8_t)6), (uint8_t)25);
         registeredBeaconCount = std::min(registeredBeaconCount, (uint16_t)MAX_BT_DEVICES);
-        tempSensorOffset == std::min(std::max(tempSensorOffset, 5.0F), -5.0F);
+        tempSensorOffset = std::min(std::max(tempSensorOffset, -5.0F), 5.0F);
     }
 };
 
