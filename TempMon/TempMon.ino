@@ -9,6 +9,7 @@
 #include <Tracer.h>
 #include <StringBuilder.h>
 #include <HtmlWriter.h>
+#include <Navigation.h>
 #include <Log.h>
 #include <Wire.h>
 #include <U8g2lib.h>
@@ -18,9 +19,6 @@
 #include "TempLogEntry.h"
 #include "TempStatsEntry.h"
 #include "DayStatistics.h"
-
-#define ICON "/apple-touch-icon.png"
-#define CSS "/styles.css"
 
 #define SECONDS_PER_DAY (24 * 3600)
 #define HTTP_POLL_INTERVAL 60
@@ -47,17 +45,44 @@
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeJson = "application/json";
 const char* ContentTypeText = "text/plain";
+const char* ButtonClass = "button";
+
+enum FileId
+{
+    Logo,
+    Styles,
+    CalibrateIcon,
+    GraphIcon,
+    HomeIcon,
+    LogFileIcon,
+    SettingsIcon,
+    UploadIcon,
+    _LastFile
+};
+
+const char* Files[] PROGMEM =
+{
+    "Logo.png",
+    "styles.css",
+    "Calibrate.svg",
+    "Graph.svg",
+    "Home.svg",
+    "LogFile.svg",
+    "Settings.svg",
+    "Upload.svg"
+};
 
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(2000); // 2 sec timeout
 StringBuilder HttpResponse(16384); // 16KB HTTP response buffer
-HtmlWriter Html(HttpResponse, ICON, CSS, 40);
+HtmlWriter Html(HttpResponse, Files[Logo], Files[Styles], 40);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
 StaticLog<TempLogEntry> TempLog(TEMP_LOG_SIZE);
 StaticLog<TempStatsEntry> HourStats(24 * 2); // 24 hrs
 DayStatistics DayStats;
 WiFiStateMachine WiFiSM(TimeServer, WebServer, EventLog);
+Navigation Nav;
 
 OneWire OneWireBus(D7);
 DallasTemperature TempSensors(&OneWireBus);
@@ -172,22 +197,58 @@ void setup()
     TimeServer.NTPServer = PersistentData.ntpServer;
     Html.setTitlePrefix(PersistentData.hostName);
 
-    SPIFFS.begin();
+    Nav.menuItems =
+    {
+        MenuItem
+        {
+            .icon = Files[HomeIcon],
+            .label = PSTR("Home"),
+            .handler = handleHttpRootRequest            
+        },
+        MenuItem
+        {
+            .icon = Files[LogFileIcon],
+            .label = PSTR("Event log"),
+            .urlPath =PSTR("events"),
+            .handler = handleHttpEventLogRequest
+        },
+        MenuItem
+        {
+            .icon = Files[GraphIcon],
+            .label = PSTR("Temperature log"),
+            .urlPath = PSTR("templog"),
+            .handler = handleHttpTempLogRequest
+        },
+        MenuItem
+        {
+            .icon = Files[UploadIcon],
+            .label = PSTR("FTP Sync"),
+            .urlPath = PSTR("sync"),
+            .handler= handleHttpFtpSyncRequest
+        },
+        MenuItem
+        {
+            .icon = Files[CalibrateIcon],
+            .label = PSTR("Calibrate"),
+            .urlPath = PSTR("calibrate"),
+            .handler= handleHttpCalibrateFormRequest,
+            .postHandler = handleHttpCalibrateFormPost
+        },
+        MenuItem
+        {
+            .icon = Files[SettingsIcon],
+            .label = PSTR("Settings"),
+            .urlPath =PSTR("config"),
+            .handler = handleHttpConfigFormRequest,
+            .postHandler = handleHttpConfigFormPost
+        },
+    };
+    Nav.registerHttpHandlers(WebServer);
 
-    const char* cacheControl = "max-age=86400, public";
-    WebServer.on("/", handleHttpRootRequest);
     WebServer.on("/json", handleHttpJsonRequest);
-    WebServer.on("/templog", handleHttpTempLogRequest);
-    WebServer.on("/sync", handleHttpFtpSyncRequest);
-    WebServer.on("/calibrate", HTTP_GET, handleHttpCalibrateFormRequest);
-    WebServer.on("/calibrate", HTTP_POST, handleHttpCalibrateFormPost);
-    WebServer.on("/events", handleHttpEventLogRequest);
-    WebServer.on("/config", HTTP_GET, handleHttpConfigFormRequest);
-    WebServer.on("/config", HTTP_POST, handleHttpConfigFormPost);
-    WebServer.serveStatic(ICON, SPIFFS, ICON, cacheControl);
-    WebServer.serveStatic(CSS, SPIFFS, CSS, cacheControl);
     WebServer.onNotFound(handleHttpNotFound);
     
+    WiFiSM.registerStaticFiles(Files, _LastFile);    
     WiFiSM.on(WiFiInitState::TimeServerSynced, onWiFiTimeSynced);
     WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
     WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
@@ -589,126 +650,109 @@ void handleHttpRootRequest()
     else
         ftpSync = formatTime("%H:%M", lastFTPSyncTime);
 
-    Html.writeHeader(F("Home"), false, false, HTTP_POLL_INTERVAL);
+    Html.writeHeader(F("Home"), Nav, HTTP_POLL_INTERVAL);
 
-    Html.writeHeading(F("Temperature Monitor status"));
+    Html.writeDivStart(F("flex-container"));
 
+    Html.writeSectionStart(F("Status"));
     Html.writeTableStart();
-    HttpResponse.printf(F("<tr><th>RSSI</th><td>%d dBm</td></tr>\r\n"), static_cast<int>(WiFi.RSSI()));
-    HttpResponse.printf(F("<tr><th>Free Heap</th><td>%u</td></tr>\r\n"), ESP.getFreeHeap());
-    HttpResponse.printf(F("<tr><th>Uptime</th><td>%0.1f days</td></tr>\r\n"), float(WiFiSM.getUptime()) / 86400);
-    HttpResponse.printf(F("<tr><th><a href=\"/sync\">FTP Sync</a></th><td>%s</td></tr>\r\n"), ftpSync);
+    Html.writeRow(F("WiFi RSSI"), F("%d dBm"), static_cast<int>(WiFi.RSSI()));
+    Html.writeRow(F("Free Heap"), F("%0.1f kB"), float(ESP.getFreeHeap()) / 1024);
+    Html.writeRow(F("Uptime"), F("%0.1f days"), float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
+    Html.writeRow(F("FTP Sync"), ftpSync);
     if (PersistentData.isFTPEnabled())
-        HttpResponse.printf(F("<tr><th>FTP Sync entries</th><td>%d / %d</td></tr>\r\n"), ftpSyncEntries, PersistentData.ftpSyncEntries);
-    HttpResponse.printf(F("<tr><th><a href=\"/templog\">Temperature log</a></th><td>%d</td></p>\r\n"), TempLog.count());
-    HttpResponse.printf(F("<tr><th><a href=\"/events\">Events logged</a></th><td>%d</td></p>\r\n"), EventLog.count());
+        Html.writeRow(F("Sync entries"), F("%d / %d"), ftpSyncEntries, PersistentData.ftpSyncEntries);
     Html.writeTableEnd();
+    Html.writeSectionEnd();
 
-    if (WiFiSM.shouldPerformAction("reset"))
-    {
-        Display.begin();
-        displayMessage("Reset");
-        HttpResponse.println(F("<p>Display reset.</p>"));
-    }
-    else
-        HttpResponse.printf(F("<p><a href=\"?reset=%u\">Reset display</a></p>\r\n"), currentTime);
-
-    HttpResponse.println(F("<h1>Current values</h1>"));
-    writeCurrentValues();
-
-    HttpResponse.println(F("<h1>Today</h1>"));
-    writeDayStats();
-
-    HttpResponse.println(F("<h1>Last 24 hours</h1>"));
+    writeTemperatures();
     writeHourStats();
 
+    Html.writeDivEnd();
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
 }
 
 
-void writeCurrentValues()
+void writeTemperatures()
 {
-    HttpResponse.println(F("<table>"));
-    HttpResponse.printf(
-        F("<tr><th>T<sub>inside</sub></th><td>%0.1f °C</td><td class=\"graph\">"),
-        tInside
-        );
-    Html.writeBar(getBarValue(tInside), F("tInsideBar"), true, false);
-    HttpResponse.println(F("</td></tr>"));
-    if (hasOutsideSensor)
-    {
-        HttpResponse.printf(
-            F("<tr><th>T<sub>inside</sub></th><td>%0.1f °C</td><td class=\"graph\">"),
-            tOutside
-            );
-        Html.writeBar(getBarValue(tOutside), F("tOutsideBar"), true, false);
-        HttpResponse.println(F("</td></tr>"));
-    }
-    HttpResponse.println(F("</table>"));
-}
+    Html.writeSectionStart(F("Temperatures"));
+    Html.writeTableStart();
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("Sensor"));
+    Html.writeHeaderCell(F("Current"));
+    Html.writeHeaderCell(F("Min"));
+    Html.writeHeaderCell(F("Max"));
+    Html.writeRowEnd();
 
-
-void writeDayStats()
-{
-    HttpResponse.println(F("<table>"));
-    HttpResponse.println(F("<tr><th/><th>Min</th><th>Max</th></tr>"));
-    HttpResponse.printf(
-        F("<tr><th>Inside</th><td>%0.1f°C @ %s</td>"),
-        DayStats.tInsideMin,
-        formatTime("%H:%M", DayStats.insideMinTime)
-        );
-    HttpResponse.printf(
-        F("<td>%0.1f°C @ %s</td></tr>\r\n"),
-        DayStats.tInsideMax,
-        formatTime("%H:%M", DayStats.insideMaxTime)
-        );
+    Html.writeRowStart();
+    Html.writeCell(F("Inside"));
+    Html.writeCell(F("%0.1f °C"), tInside);
+    Html.writeCell(F("<div>%0.1f °C</div><div>@ %s</div>"), DayStats.tInsideMin, formatTime("%H:%M", DayStats.insideMinTime));
+    Html.writeCell(F("<div>%0.1f °C</div><div>@ %s</div>"), DayStats.tInsideMax, formatTime("%H:%M", DayStats.insideMaxTime));
+    Html.writeRowEnd();
 
     if (hasOutsideSensor)
     {
-        HttpResponse.printf(
-            F("<tr><th>Outside</th><td>%0.1f°C @ %s</td>"),
-            DayStats.tOutsideMin,
-            formatTime("%H:%M", DayStats.outsideMinTime)
-            );
-        HttpResponse.printf(
-            F("<td>%0.1f°C @ %s</td></tr>\r\n"),
-            DayStats.tOutsideMax,
-            formatTime("%H:%M", DayStats.outsideMaxTime)
-            );
+        Html.writeRowStart();
+        Html.writeCell(F("Outside"));
+        Html.writeCell(F("%0.1f °C"), tOutside);
+        Html.writeCell(F("<div>%0.1f °C</div><div>@ %s</div>"), DayStats.tOutsideMin, formatTime("%H:%M", DayStats.outsideMinTime));
+        Html.writeCell(F("<div>%0.1f °C</div><div>@ %s</div>"), DayStats.tOutsideMax, formatTime("%H:%M", DayStats.outsideMaxTime));
+        Html.writeRowEnd();
     }
-    HttpResponse.println(F("</table>"));
-}
 
+    Html.writeTableEnd();
+    Html.writeSectionEnd();
+}
 
 void writeHourStats()
 {
     float tMin, tMax;
     getTemperatureRange(tMin, tMax);
 
-    HttpResponse.printf(F("<p>Min: %0.1f°C, Max: %0.1f°C</p>\r\n"), tMin, tMax);
-    HttpResponse.println(F("<table>"));
-    HttpResponse.println(F("<tr><th rowspan='2'>Time</th><th colspan='3'>T<sub>inside</sub> (°C)</th><th colspan='3'>T<sub>outside</sub> (°C)</th></tr>"));
-    HttpResponse.println(F("<tr><th>Min</th><th>Max</th><th>Avg</th><th>Min</th><th>Max</th><th>Avg</th></tr>"));
+    Html.writeSectionStart(F("Last 24 hours"));
+    Html.writeParagraph(F("Min: %0.1f°C, Max: %0.1f°C"), tMin, tMax);
+    Html.writeTableStart();
+
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("Time"), 0, 2);
+    Html.writeHeaderCell(F("T<sub>inside</sub> (°C)"), 3);
+    if (hasOutsideSensor)
+        Html.writeHeaderCell(F("T<sub>outside</sub> (°C)"), 3);
+    Html.writeRowEnd();
+    Html.writeRowStart();
+    Html.writeHeaderCell(F("Min"));
+    Html.writeHeaderCell(F("Max"));
+    Html.writeHeaderCell(F("Avg"));
+    if (hasOutsideSensor)
+    {
+        Html.writeHeaderCell(F("Min"));
+        Html.writeHeaderCell(F("Max"));
+        Html.writeHeaderCell(F("Avg"));
+    }
+    Html.writeRowEnd();
 
     TempStatsEntry* logEntryPtr = HourStats.getFirstEntry();
     while (logEntryPtr != nullptr)
     {
-        HttpResponse.printf(
-            F("<tr><td>%s</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td>%0.1f</td><td class=\"graph\">"),
-            formatTime("%H:%M", logEntryPtr->time),
-            logEntryPtr->minTInside,
-            logEntryPtr->maxTInside,
-            logEntryPtr->getAvgTInside(),
-            logEntryPtr->minTOutside,
-            logEntryPtr->maxTOutside,
-            logEntryPtr->getAvgTOutside()
-            );
+        Html.writeRowStart();
+        Html.writeCell(formatTime("%H:%M", logEntryPtr->time));
+        Html.writeCell(logEntryPtr->minTInside);
+        Html.writeCell(logEntryPtr->maxTInside);
+        Html.writeCell(logEntryPtr->getAvgTInside());
+        if (hasOutsideSensor)
+        {
+            Html.writeCell(logEntryPtr->minTOutside);
+            Html.writeCell(logEntryPtr->maxTOutside);
+            Html.writeCell(logEntryPtr->getAvgTOutside());
+        }
 
         float outsideBar = hasOutsideSensor ? getBarValue(logEntryPtr->getAvgTOutside(), tMin, tMax) : 0;
         float insideBar = getBarValue(logEntryPtr->getAvgTInside(), tMin, tMax);  
 
+        Html.writeCellStart(F("graph"));
         Html.writeStackedBar(
             outsideBar,
             insideBar - outsideBar,
@@ -717,8 +761,10 @@ void writeHourStats()
             false,
             false
             );
+        Html.writeCellEnd();
 
-        HttpResponse.println(F("</td></tr>"));
+        Html.writeRowEnd();
+
         logEntryPtr = HourStats.getNextEntry();
     }
     HttpResponse.println(F("</table>"));
@@ -778,19 +824,19 @@ void handleHttpFtpSyncRequest()
 {
     Tracer tracer(F("handleHttpFtpSyncRequest"));
 
-    Html.writeHeader(F("FTP Sync"), true, true);
+    Html.writeHeader(F("FTP Sync"), Nav);
 
-    HttpResponse.println(F("<div><pre>"));
+    Html.writePreStart();
     bool success = trySyncFTP(&HttpResponse); 
-    HttpResponse.println(F("</pre></div>"));
+    Html.writePreEnd();
 
     if (success)
     {
-        HttpResponse.println(F("<p>Success!</p>"));
+        Html.writeParagraph(F("Success!"));
         syncFTPTime = 0; // Cancel scheduled sync (if any)
     }
     else
-        HttpResponse.println(F("<p>Failed!</p>"));
+        Html.writeParagraph(F("Failed!"));
  
     Html.writeFooter();
 
@@ -802,21 +848,26 @@ void handleHttpCalibrateFormRequest()
 {
     Tracer tracer(F("handleHttpCalibrateFormRequest"));
 
-    Html.writeHeader(F("Calibrate sensors"), true, true);
+    Html.writeHeader(F("Calibrate"), Nav);
 
     if (TempSensors.getDS18Count() < 1)
     {
-        HttpResponse.println(F("<h2>Missing temperature sensors</h2>"));
-        HttpResponse.printf(F("<p>Number of temperature sensors detected: %d</p>\r\n"), TempSensors.getDS18Count());
+        Html.writeHeading(F("Missing temperature sensors"), 2);
+        Html.writeParagraph(F("Number of temperature sensors detected: %d"), TempSensors.getDS18Count());
     }
     else
     {
         float tInsideMeasured = TempSensors.getTempC(PersistentData.tInsideSensorAddress);
     
-        HttpResponse.println(F("<form action=\"/calibrate\" method=\"POST\">"));
-        HttpResponse.println(F("<table>"));
-        HttpResponse.println(F("<tr><th>Sensor</th><th>Measured</th><th>Offset</th><th>Effective</th></tr>"));
-    
+        Html.writeFormStart(F("/calibrate"));
+        Html.writeTableStart();
+        Html.writeRowStart();
+        Html.writeHeaderCell(F("Sensor"));
+        Html.writeHeaderCell(F("Measured"));
+        Html.writeHeaderCell(F("Offset"));
+        Html.writeHeaderCell(F("Effective"));
+        Html.writeRowEnd();
+   
         HttpResponse.printf(
             F("<tr><td>Inside</td><td>%0.2f °C<td><input type=\"text\" name=\"tInsideOffset\" value=\"%0.2f\" maxlength=\"5\"></td><td>%0.2f °C</td></tr>\r\n"),
             tInsideMeasured,
@@ -842,7 +893,7 @@ void handleHttpCalibrateFormRequest()
                 );
         }
     
-        HttpResponse.println(F("</table>"));
+        Html.writeTableEnd();
 
         if (hasOutsideSensor)
         {
@@ -850,8 +901,8 @@ void handleHttpCalibrateFormRequest()
             HttpResponse.println(F("<br/>"));
         }
 
-        HttpResponse.println(F("<input type=\"submit\">"));
-        HttpResponse.println(F("</form>"));
+        Html.writeSubmitButton(F("Calibrate"));
+        Html.writeFormEnd();
     }
 
     Html.writeFooter();
@@ -899,16 +950,16 @@ void handleHttpEventLogRequest()
         logEvent(F("Event log cleared."));
     }
 
-    Html.writeHeader(F("Event log"), true, true);
+    Html.writeHeader(F("Event log"), Nav);
 
     const char* event = EventLog.getFirstEntry();
     while (event != nullptr)
     {
-        HttpResponse.printf(F("<div>%s</div>\r\n"), event);
+        Html.writeDiv(F("%s"), event);
         event = EventLog.getNextEntry();
     }
 
-    HttpResponse.printf(F("<p><a href=\"?clear=%u\">Clear event log</a></p>\r\n"), currentTime);
+    Html.writeActionLink(F("clear"), F("Clear event log"), currentTime, ButtonClass);
 
     Html.writeFooter();
 
@@ -920,22 +971,28 @@ void handleHttpConfigFormRequest()
 {
     Tracer tracer(F("handleHttpConfigFormRequest"));
 
-    Html.writeHeader(F("Configuration"), true, true);
+    Html.writeHeader(F("Settings"), Nav);
 
-    HttpResponse.println(F("<form action=\"/config\" method=\"POST\">"));
-    HttpResponse.println(F("<table>"));
+    Html.writeFormStart(F("/config"), F("grid"));
     Html.writeTextBox(CFG_WIFI_SSID, F("WiFi SSID"), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID) - 1);
-    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1);
+    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1, F("password"));
     Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
     Html.writeTextBox(CFG_NTP_SERVER, F("NTP server"), PersistentData.ntpServer, sizeof(PersistentData.ntpServer) - 1);
     Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
     Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
-    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1);
+    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1, F("password"));
     Html.writeTextBox(CFG_FTP_ENTRIES, F("FTP sync entries"), String(PersistentData.ftpSyncEntries), 3);
-    HttpResponse.println(F("</table>"));
-    HttpResponse.println(F("<input type=\"submit\">"));
-    HttpResponse.println(F("</form>"));
+    Html.writeSubmitButton(F("Save"));
+    Html.writeFormEnd();
 
+    if (WiFiSM.shouldPerformAction(F("reset")))
+    {
+        Html.writeParagraph(F("Resetting..."));
+        WiFiSM.reset();
+    }
+    else
+        Html.writeActionLink(F("reset"), F("Reset ESP"), currentTime, ButtonClass);
+        
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
@@ -973,5 +1030,5 @@ void handleHttpConfigFormPost()
 void handleHttpNotFound()
 {
     TRACE(F("Unexpected HTTP request: %s\n"), WebServer.uri().c_str());
-    WebServer.send(404, F("text/plain"), F("Unexpected request."));
+    WebServer.send(404, ContentTypeText, F("Unexpected request."));
 }
