@@ -47,7 +47,7 @@
 #define CP_FEEDBACK_PIN 16
 #define TEMP_SENSOR_PIN 14
 
-#define TEMP_LIMIT 60
+#define TEMP_LIMIT 50
 #define ZERO_CURRENT_THRESHOLD 0.2F
 #define LOW_CURRENT_THRESHOLD 0.75F
 #define CHARGE_VOLTAGE 230
@@ -553,18 +553,32 @@ bool stopCharging(const char* cause)
 }
 
 
+float getDeratedCurrentLimit()
+{
+    float result = PersistentData.currentLimit;
+    if (temperature > TEMP_LIMIT)
+    {
+        // Derate current when above temperature limit: 1 A/degree.
+        result = std::min(result, 16.0F) - (temperature - TEMP_LIMIT);
+    }
+    return result;
+}
+
+
 float determineCurrentLimit()
 {
+    float deratedCurrentLimit = getDeratedCurrentLimit();
+
     if (!SmartMeter.isInitialized)
-        return PersistentData.currentLimit;
+        return deratedCurrentLimit;
 
     if (!WiFiSM.isConnected())
-        return 0;
+        return (temperature > TEMP_LIMIT) ? deratedCurrentLimit : 0;
 
     if (SmartMeter.requestData() != HTTP_CODE_OK)
     {
         WiFiSM.logEvent(F("Smart Meter: %s"), SmartMeter.getLastError().c_str());
-        return 0;
+        return (temperature > TEMP_LIMIT) ? deratedCurrentLimit : 0;
     }
 
     PhaseData& phase = SmartMeter.getElectricity()[PersistentData.dsmrPhase]; 
@@ -572,11 +586,7 @@ float determineCurrentLimit()
     if (state == EVSEState::Charging)
         phaseCurrent = std::max(phaseCurrent - outputCurrent, 0.0F);
 
-    float result = PersistentData.currentLimit - phaseCurrent;
-
-    TRACE(F("Phase current: %0.1f A => Current limit = %0.1f A\n"), phaseCurrent, result);
-
-    return result; 
+    return std::min((float)PersistentData.currentLimit - phaseCurrent, deratedCurrentLimit);
 }
 
 
@@ -707,7 +717,7 @@ void onWiFiInitialized()
         {
             temperature = tMeasured + PersistentData.tempSensorOffset;
             DayStats.update(currentTime, temperature);
-            if (temperature >= TEMP_LIMIT && state != EVSEState::Failure)
+            if (temperature > (TEMP_LIMIT + 10) && state != EVSEState::Failure)
                 setFailure(F("Temperature too high"));
         }
         
@@ -1154,8 +1164,14 @@ void handleHttpSmartMeterRequest()
         F("Configured current limit: %d A"),
         static_cast<int>(PersistentData.currentLimit));
 
-    float cl = determineCurrentLimit();
-    Html.writeParagraph(F("Effective current limit: %0.1f A"), cl);
+    Html.writeParagraph(
+        F("Temperature: %0.1f °C => derated current limit: %0.1f A"),
+        temperature,
+        getDeratedCurrentLimit());
+
+    Html.writeParagraph(
+        F("Effective current limit: %0.1f A"),
+         determineCurrentLimit());
 
     Html.writeFooter();
 
