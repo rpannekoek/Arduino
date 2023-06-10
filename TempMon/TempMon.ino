@@ -19,9 +19,11 @@
 #include "TempLogEntry.h"
 #include "TempStatsEntry.h"
 #include "DayStatistics.h"
+#include "GoodWeUDP.h"
 
 #define SECONDS_PER_DAY (24 * 3600)
 #define HTTP_POLL_INTERVAL 60
+#define GOODWE_POLL_INTERVAL (5 * 60)
 #define EVENT_LOG_LENGTH 50
 #define FTP_RETRY_INTERVAL (60 * 60)
 #define HOUR_LOG_INTERVAL (30 * 60)
@@ -87,6 +89,7 @@ Navigation Nav;
 OneWire OneWireBus(D7);
 DallasTemperature TempSensors(&OneWireBus);
 U8G2_SSD1327_MIDAS_128X128_F_HW_I2C Display(U8G2_R1, /* reset=*/ U8X8_PIN_NONE);
+GoodWeUDP GoodWe;
 
 time_t currentTime = 0;
 time_t nightTime = 0;
@@ -94,6 +97,8 @@ time_t dayTime = 0;
 time_t pollTempTime = 0;
 time_t syncFTPTime = 0;
 time_t lastFTPSyncTime = 0;
+time_t initGoodWeTime = 0;
+time_t lastGoodWeInitTime = 0;
 
 int ftpSyncEntries = 0;
 TempLogEntry newTempLogEntry;
@@ -184,7 +189,7 @@ void setup()
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, LED_ON);
 
-    Serial.begin(74880); // Use same baudrate as bootloader
+    Serial.begin(115200);
     Serial.setTimeout(1000);
     Serial.println();
 
@@ -253,6 +258,9 @@ void setup()
     WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
     WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
 
+    if (!GoodWe.begin())
+        WiFiSM.logEvent(F("GoodWe init failed: %s"), GoodWe.getLastError());
+
     TempSensors.begin();
     TempSensors.setWaitForConversion(false);
 
@@ -292,6 +300,8 @@ void onWiFiTimeSynced()
 {
     pollTempTime = currentTime;
     newTempLogEntry.time = currentTime;
+    if (!WiFiSM.isInAccessPointMode())
+        initGoodWeTime = currentTime;
 }
 
 
@@ -345,6 +355,9 @@ void onWiFiInitialized()
         // This starts "night time" after a while (to let the sensor cool down a bit). 
         if (nightTime == 0) nightTime = currentTime  + NIGHT_OFFSET_DELAY;
 
+        // Try to find & initialize GoodWe(s) as soon as WiFi connection is restored
+        initGoodWeTime = currentTime;
+
         // Skip stuff that requires a WiFi connection.
         return;
     }
@@ -358,6 +371,20 @@ void onWiFiInitialized()
         {
             nightTime = 0;
             dayTime = 0;
+        }
+    }
+
+    if ((initGoodWeTime != 0) && (currentTime >= initGoodWeTime))
+    {
+        if (initializeGoodWe())
+        {
+            lastGoodWeInitTime = currentTime;
+            initGoodWeTime = 0;
+        }
+        else
+        {
+            TRACE(F("Unable to initialize GoodWe; retry in %d s.\n"), GOODWE_POLL_INTERVAL);
+            initGoodWeTime += GOODWE_POLL_INTERVAL;
         }
     }
 
@@ -376,6 +403,84 @@ void onWiFiInitialized()
             syncFTPTime += FTP_RETRY_INTERVAL;
         }
     }
+}
+
+
+bool initializeGoodWe()
+{
+    Tracer tracer(F("initializeGoodWe"));
+
+    int devicesFound = GoodWe.discover();
+    if (devicesFound < 0)
+        WiFiSM.logEvent("GoodWe discovery failed: %s", GoodWe.getLastError());
+    if (devicesFound <= 0)
+        return false;
+
+    bool result = true;
+    for (int i = 0; i < devicesFound; i++)
+    {
+        GoodWeInstance* goodWeInstancePtr = GoodWe.getInstance(i);
+        WiFiSM.logEvent(F("Found GoodWe: %s"), goodWeInstancePtr->getIPAddress().toString().c_str());
+
+        String apInfo;
+        if (goodWeInstancePtr->sendATCommand(F("WSLK"), apInfo))
+        {
+            WiFiSM.logEvent(F("Connected to: %s"), apInfo.c_str());
+
+            bool reset = false;
+            if (!ensureGoodWeProperty(goodWeInstancePtr, F("WMODE"), F("STA"), reset)
+                || !ensureGoodWeProperty(goodWeInstancePtr, F("WSDNS"), WiFi.dnsIP().toString(), reset))
+                result = false;
+
+            if (reset)
+            {
+                if (goodWeInstancePtr->sendATCommand(F("Z")))
+                    WiFiSM.logEvent(F("WiFi module resetting"));
+                else
+                {
+                    WiFiSM.logEvent(GoodWe.getLastError());
+                    result = false;
+                }
+            }
+        }
+        else
+        {
+            WiFiSM.logEvent(GoodWe.getLastError());
+            result = false;
+        }
+
+        delete goodWeInstancePtr;
+    }
+
+    return result;
+}
+
+
+bool ensureGoodWeProperty(GoodWeInstance* goodWeInstancePtr, const String& name, const String& value, bool& changed)
+{
+    String currentValue;
+    if (!goodWeInstancePtr->sendATCommand(name, currentValue))
+    {
+        WiFiSM.logEvent(GoodWe.getLastError());
+        return false;
+    }
+
+    WiFiSM.logEvent(F("%s = %s"), name.c_str(), currentValue.c_str());
+    if (currentValue == value)
+        return true;
+
+    String setCommand = name;
+    setCommand += "=";
+    setCommand += value;
+    if (!goodWeInstancePtr->sendATCommand(setCommand))
+    {
+        WiFiSM.logEvent(GoodWe.getLastError());
+        return false;
+    }
+
+    WiFiSM.logEvent(F("Changed %s to %s"), name.c_str(), value.c_str());
+    changed = true;
+    return true;
 }
 
 
@@ -642,11 +747,11 @@ void handleHttpRootRequest()
         return;
     }
 
-    const char* ftpSync;
+    String ftpSync;
     if (!PersistentData.isFTPEnabled())
-        ftpSync = "Disabled";
+        ftpSync = F("Disabled");
     else if (lastFTPSyncTime == 0)
-        ftpSync = "Not yet";
+        ftpSync = F("Not yet");
     else
         ftpSync = formatTime("%H:%M", lastFTPSyncTime);
 
@@ -662,6 +767,7 @@ void handleHttpRootRequest()
     Html.writeRow(F("FTP Sync"), ftpSync);
     if (PersistentData.isFTPEnabled())
         Html.writeRow(F("Sync entries"), F("%d / %d"), ftpSyncEntries, PersistentData.ftpSyncEntries);
+    Html.writeRow(F("GoodWe init"), formatTime("%a %H:%M", lastGoodWeInitTime));
     Html.writeTableEnd();
     Html.writeSectionEnd();
 
