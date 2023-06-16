@@ -505,7 +505,7 @@ void onWiFiInitialized()
         }
         else
         {
-            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastResponse());
+            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError());
             otLogSyncTime += FTP_RETRY_INTERVAL;
         }
     }
@@ -718,33 +718,31 @@ bool trySyncOpenThermLog(Print* printTo)
         FTP_DEFAULT_CONTROL_PORT,
         printTo))
     {
-        FTPClient.end();
         return false;
     }
 
     bool success = false;
-    if (otLogEntriesToSync == 0)
-        success = true;
-    else
+    WiFiClient& dataClient = FTPClient.append("OTGW.csv");
+    if (dataClient.connected())
     {
-        WiFiClient& dataClient = FTPClient.append("OTGW.csv");
-        if (dataClient.connected())
+        if (otLogEntriesToSync > 0)
         {
             OpenThermLogEntry* prevLogEntryPtr = OpenThermLog.getEntryFromEnd(otLogEntriesToSync + 1);
             OpenThermLogEntry* otLogEntryPtr = OpenThermLog.getEntryFromEnd(otLogEntriesToSync);
             writeCsvDataLines(otLogEntryPtr, prevLogEntryPtr, dataClient);
-            dataClient.stop();
-
-            if (FTPClient.readServerResponse() == 226)
-            {
-                TRACE(F("Successfully appended log entries.\n"));
-                otLogEntriesToSync = 0;
-                lastOTLogSyncTime = currentTime;
-                success = true;
-            }
-            else
-                TRACE(F("FTP Append command failed: %s\n"), FTPClient.getLastResponse());
+            otLogEntriesToSync = 0;
         }
+        else if (printTo != nullptr)
+            printTo->println(F("Nothing to sync."));
+        dataClient.stop();
+
+        if (FTPClient.readServerResponse() == 226)
+        {
+            lastOTLogSyncTime = currentTime;
+            success = true;
+        }
+        else
+            FTPClient.setUnexpectedResponse();
     }
 
     FTPClient.end();
@@ -1379,7 +1377,7 @@ void handleHttpOpenThermLogSyncRequest()
         otLogSyncTime = 0; // Cancel scheduled sync (if any)
     }
     else
-        Html.writeParagraph(F("Failed!"));
+        Html.writeParagraph(F("Failed: %s"), FTPClient.getLastError());
  
     Html.writeHeading(F("CSV header"), 2);
     Html.writePreStart();

@@ -263,7 +263,7 @@ void onWiFiInitialized()
         }
         else
         {
-            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastResponse());
+            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError());
             syncFTPTime += FTP_RETRY_INTERVAL;
         }
     }
@@ -394,11 +394,10 @@ bool trySyncFTP(Print* printTo)
         FTP_DEFAULT_CONTROL_PORT,
         printTo))
     {
-        FTPClient.end();
         return false;
     }
 
-    bool success = true;
+    bool success = false;
     WiFiClient& dataClient = FTPClient.append(filename);
     if (dataClient.connected())
     {
@@ -413,12 +412,12 @@ bool trySyncFTP(Print* printTo)
         dataClient.stop();
 
         if (FTPClient.readServerResponse() == 226)
-            lastFTPSyncTime = currentTime;
-        else
         {
-            TRACE(F("FTP Append command failed: %s\n"), FTPClient.getLastResponse());
-            success = false;
+            lastFTPSyncTime = currentTime;
+            success = true;
         }
+        else
+            FTPClient.setUnexpectedResponse();
     }
 
     FTPClient.end();
@@ -594,8 +593,8 @@ void handleHttpTopicsRequest()
 
     if (lastPacketReceivedTime != 0)
     {
-        HttpResponse.printf(
-            F("<p>Packet received @ %s</p>\r\n"),
+        Html.writeParagraph(
+            F("Packet received @ %s"),
             formatTime("%H:%M:%S", lastPacketReceivedTime));
 
         Html.writeTableStart();
@@ -690,18 +689,18 @@ void handleHttpHexDumpRequest()
     {
         Html.writeHeader(F("Hex dump"), Nav);
 
-        HttpResponse.printf(
-            F("<p>Received %u valid packets, %u repaired packets, %u invalid packets.</p>\r\n"),
+        Html.writeParagraph(
+            F("Received %u valid packets, %u repaired packets, %u invalid packets."),
             HeatPump.getValidPackets(),
             HeatPump.getRepairedPackets(),
             HeatPump.getInvalidPackets());
 
-        HttpResponse.printf(
-            F("<p>Last valid packet @ %s</p>\r\n"),
+        Html.writeParagraph(
+            F("Last valid packet @ %s"),
             formatTime("%H:%M:%S", lastPacketReceivedTime));
 
-        HttpResponse.printf(
-            F("<p>Last error @ %s : %s</p>\r\n"),
+        Html.writeParagraph(
+            F("Last error @ %s : %s"),
             formatTime("%H:%M:%S", lastPacketErrorTime),
             HeatPump.getLastError().c_str());
 
@@ -709,16 +708,16 @@ void handleHttpHexDumpRequest()
         {
             Html.writeHeading(F("Last valid packet"), 2);
 
-            HttpResponse.println(F("<pre>"));
+            Html.writePreStart();
             HeatPump.writeHexDump(HttpResponse, false);
-            HttpResponse.println(F("</pre>"));
+            Html.writePreEnd();
         }
 
         Html.writeHeading(F("Last invalid packet"), 2);
 
-        HttpResponse.println(F("<pre>"));
+        Html.writePreStart();
         HeatPump.writeHexDump(HttpResponse, true);
-        HttpResponse.println(F("</pre>"));
+        Html.writePreEnd();
 
         Html.writeFooter();
 
@@ -737,8 +736,8 @@ void handleHttpTestRequest()
     {
         testAntiFreeze = !testAntiFreeze;
         const char* switchState = testAntiFreeze ? "on" : "off"; 
-        HttpResponse.printf(
-            F("<p>Anti-freeze test: %s</p>\r\n"),
+        Html.writeParagraph(
+            F("Anti-freeze test: %s"),
             switchState);
     }
 
@@ -808,21 +807,28 @@ void handleHttpFtpSyncRequest()
 
     Html.writeHeader(F("FTP Sync"), Nav);
 
-    HttpResponse.println(F("<pre>"));
+    Html.writePreStart();
     bool success = trySyncFTP(&HttpResponse); 
-    HttpResponse.println(F("</pre>"));
+    Html.writePreEnd();
 
-    Html.writeParagraph(success ? F("Success!") : F("Failed!"));
+    if (success)
+    {
+        Html.writeParagraph(F("Success!"));
+        syncFTPTime = 0; // Cancel scheduled sync (if any)
+    }
+    else
+        Html.writeParagraph(F("Failed: %s"), FTPClient.getLastError());
 
     Html.writeHeading(F("CSV header"), 2);
-    HttpResponse.print("<pre>Time");
+    Html.writePreStart();
+    HttpResponse.print("Time");
     for (int i = 0; i < NUMBER_OF_MONITORED_TOPICS; i++)
     {
 
         HttpResponse.print(";");
         HttpResponse.print(FPSTR(MonitoredTopics[i].label));
     }
-    HttpResponse.println(F("</pre>"));
+    Html.writePreEnd();
 
     Html.writeFooter();
 
@@ -846,7 +852,7 @@ void handleHttpEventLogRequest()
     const char* event = EventLog.getFirstEntry();
     while (event != nullptr)
     {
-        HttpResponse.printf(F("<div>%s</div>\r\n"), event);
+        Html.writeDiv(F("%s"), event);
         event = EventLog.getNextEntry();
     }
 

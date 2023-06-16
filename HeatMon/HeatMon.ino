@@ -370,12 +370,12 @@ void onWiFiInitialized()
     {
         if (trySyncFTP(nullptr))
         {
-            WiFiSM.logEvent(F("FTP synchronized"));
+            WiFiSM.logEvent(F("FTP sync"));
             syncFTPTime = 0;
         }
         else
         {
-            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastResponse());
+            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError());
             syncFTPTime += FTP_RETRY_INTERVAL;
         }
     }
@@ -397,11 +397,10 @@ bool trySyncFTP(Print* printTo)
         FTP_DEFAULT_CONTROL_PORT,
         printTo))
     {
-        FTPClient.end();
         return false;
     }
 
-    bool success = true;
+    bool success = false;
     WiFiClient& dataClient = FTPClient.append(filename);
     if (dataClient.connected())
     {
@@ -423,12 +422,12 @@ bool trySyncFTP(Print* printTo)
         dataClient.stop();
 
         if (FTPClient.readServerResponse() == 226)
-            lastFTPSyncTime = currentTime;
-        else
         {
-            TRACE(F("FTP Append command failed: %s\n"), FTPClient.getLastResponse());
-            success = false;
+            lastFTPSyncTime = currentTime;
+            success = true;
         }
+        else
+            FTPClient.setUnexpectedResponse();
     }
 
     FTPClient.end();
@@ -775,7 +774,13 @@ void handleHttpFtpSyncRequest()
     bool success = trySyncFTP(&HttpResponse); 
     HttpResponse.println(F("</pre>"));
 
-    Html.writeParagraph(success ? F("Success!") : F("Failed!"));
+    if (success)
+    {
+        Html.writeParagraph(F("Success!"));
+        syncFTPTime = 0; // Cancel scheduled sync (if any)
+    }
+    else
+        Html.writeParagraph(F("Failed: %s"), FTPClient.getLastError());
  
     Html.writeFooter();
 

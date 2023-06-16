@@ -419,18 +419,7 @@ void onWiFiTimeSynced()
 
 void onWiFiInitialized()
 {
-    if (WiFiSM.isConnected())
-    {
-        if (isNightMode) setNightMode(false);
-    }
-    else
-    {
-        // WiFi connection is lost.
-        if (!isNightMode) setNightMode(true);
-
-        // Skip stuff that requires a WiFi connection.
-        return;
-    }
+    if (!WiFiSM.isConnected()) return;
 
     if ((syncFTPTime != 0) && (currentTime >= syncFTPTime))
     {
@@ -441,7 +430,7 @@ void onWiFiInitialized()
         }
         else
         {
-            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError().c_str());
+            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError());
             syncFTPTime += FTP_RETRY_INTERVAL;
         }
     }
@@ -470,6 +459,7 @@ void updateIAQ()
         {
             // Fan off time
             if (fanIsOn) setFanState(false);
+            if (!isNightMode) setNightMode(true);
         }
         else
         {
@@ -482,6 +472,7 @@ void updateIAQ()
             }
             else if (avgCO2 >= PersistentData.fanCO2Threshold)
                 setFanState(true);
+            if (isNightMode) setNightMode(false);
         }
 
         if (lastLogEntryPtr == nullptr || !newLogEntry.equals(lastLogEntryPtr))
@@ -541,11 +532,10 @@ bool trySyncFTP(Print* printTo)
         FTP_DEFAULT_CONTROL_PORT,
         printTo))
     {
-        FTPClient.end();
         return false;
     }
 
-    bool success = true;
+    bool success = false;
     WiFiClient& dataClient = FTPClient.append(filename);
     if (dataClient.connected())
     {
@@ -560,12 +550,12 @@ bool trySyncFTP(Print* printTo)
         dataClient.stop();
 
         if (FTPClient.readServerResponse() == 226)
-            lastFTPSyncTime = currentTime;
-        else
         {
-            FTPClient.setUnexpectedResponse();
-            success = false;
+            lastFTPSyncTime = currentTime;
+            success = true;
         }
+        else
+            FTPClient.setUnexpectedResponse();
     }
 
     FTPClient.end();
@@ -867,7 +857,7 @@ void handleHttpFtpSyncRequest()
         syncFTPTime = 0; // Cancel scheduled sync (if any)
     }
     else
-        Html.writeParagraph(F("Failed!"));
+        Html.writeParagraph(F("Failed: %s"), FTPClient.getLastError());
  
     Html.writeHeading(F("CSV header"), 2);
     HttpResponse.print("<pre>Time");

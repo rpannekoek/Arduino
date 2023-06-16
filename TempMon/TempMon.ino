@@ -25,11 +25,11 @@
 #define HTTP_POLL_INTERVAL 60
 #define GOODWE_POLL_INTERVAL (5 * 60)
 #define EVENT_LOG_LENGTH 50
-#define FTP_RETRY_INTERVAL (60 * 60)
+#define FTP_RETRY_INTERVAL (30 * 60)
 #define HOUR_LOG_INTERVAL (30 * 60)
 #define TEMP_POLL_INTERVAL 6
 #define TEMP_LOG_AGGREGATIONS 10
-#define TEMP_LOG_SIZE 250
+#define TEMP_LOG_SIZE 200
 #define NIGHT_OFFSET_DELAY (10 * 60)
 
 #define LED_ON 0
@@ -117,12 +117,6 @@ char stringBuffer[16];
 int displayPage = 0;
 
 
-void logEvent(String msg)
-{
-    WiFiSM.logEvent(msg);
-}
-
-
 void logSensorInfo(const char* name, DeviceAddress addr, float offset)
 {
     char message[64];
@@ -147,8 +141,7 @@ void logSensorInfo(const char* name, DeviceAddress addr, float offset)
             );
     }
 
-    String event(message);
-    logEvent(event);
+    WiFiSM.logEvent(message);
 }
 
 
@@ -164,7 +157,7 @@ void initTempSensors()
         newSensorFound = TempSensors.getAddress(PersistentData.tInsideSensorAddress, 0);
         if (!newSensorFound)
         {
-            logEvent(F("ERROR: Unable to obtain inside sensor address."));
+            WiFiSM.logEvent(F("ERROR: Unable to obtain inside sensor address."));
         }
     }
     if (TempSensors.getDS18Count() > 1 && !TempSensors.validFamily(PersistentData.tOutsideSensorAddress))
@@ -172,7 +165,7 @@ void initTempSensors()
         newSensorFound = TempSensors.getAddress(PersistentData.tOutsideSensorAddress, 1);
         if (!newSensorFound)
         {
-            logEvent(F("ERROR: Unable to obtain outside sensor address."));
+            WiFiSM.logEvent(F("ERROR: Unable to obtain outside sensor address."));
         }
     }
 
@@ -392,14 +385,12 @@ void onWiFiInitialized()
     {
         if (trySyncFTP(nullptr))
         {
-            logEvent(F("FTP synchronized"));
+            WiFiSM.logEvent(F("FTP sync"));
             syncFTPTime = 0;
         }
         else
         {
-            String event = F("FTP sync failed: ");
-            event += FTPClient.getLastResponse();
-            logEvent(event);
+            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError());
             syncFTPTime += FTP_RETRY_INTERVAL;
         }
     }
@@ -615,11 +606,10 @@ bool trySyncFTP(Print* printTo)
         FTP_DEFAULT_CONTROL_PORT,
         printTo))
     {
-        FTPClient.end();
         return false;
     }
 
-    bool success = true;
+    bool success = false;
     WiFiClient& dataClient = FTPClient.append(filename);
     if (dataClient.connected())
     {
@@ -633,12 +623,12 @@ bool trySyncFTP(Print* printTo)
         dataClient.stop();
 
         if (FTPClient.readServerResponse() == 226)
-            lastFTPSyncTime = currentTime;
-        else
         {
-            TRACE(F("FTP Append command failed: %s\n"), FTPClient.getLastResponse());
-            success = false;
+            lastFTPSyncTime = currentTime;
+            success = true;
         }
+        else
+            FTPClient.setUnexpectedResponse();
     }
 
     FTPClient.end();
@@ -685,7 +675,7 @@ void test(String message)
     {
         for (int i = 0; i < EVENT_LOG_LENGTH; i++)
         {
-            logEvent(F("Test event to fill the event log"));
+            WiFiSM.logEvent(F("Test event to fill the event log"));
             yield();
         }
     }
@@ -942,8 +932,12 @@ void handleHttpFtpSyncRequest()
         syncFTPTime = 0; // Cancel scheduled sync (if any)
     }
     else
-        Html.writeParagraph(F("Failed!"));
+        Html.writeParagraph(F("Failed: %s"), FTPClient.getLastError());
  
+
+    Html.writeHeading(F("CSV header"), 2);
+    HttpResponse.println(F("<pre>Time;Tinside;Toutside</pre>"));
+
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);
@@ -1053,7 +1047,7 @@ void handleHttpEventLogRequest()
     if (WiFiSM.shouldPerformAction(F("clear")))
     {
         EventLog.clear();
-        logEvent(F("Event log cleared."));
+        WiFiSM.logEvent(F("Event log cleared."));
     }
 
     Html.writeHeader(F("Event log"), Nav);

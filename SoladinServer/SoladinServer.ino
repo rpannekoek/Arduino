@@ -105,12 +105,6 @@ time_t lastFTPSyncTime = 0;
 float lastGridEnergy = 0;
 
 
-void logEvent(String msg)
-{
-    WiFiSM.logEvent(msg);
-}
-
-
 // Boot code
 void setup() 
 {
@@ -222,14 +216,12 @@ void onWiFiInitialized()
     {
         if (trySyncFTP(nullptr))
         {
-            logEvent(F("FTP synchronized"));
+            WiFiSM.logEvent(F("FTP sync"));
             syncFTPTime = 0;
         }
         else
         {
-            String event = F("FTP sync failed: ");
-            event += FTPClient.getLastResponse();
-            logEvent(event);
+            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError());
             syncFTPTime += FTP_RETRY_INTERVAL;
         }
     }
@@ -382,7 +374,7 @@ void pollSoladin()
     energyPerMonthLogEntryPtr->update(Soladin.gridPower, pollIntervalHours, true);
 
     if (Soladin.flags.length() > 0)
-        logEvent(Soladin.flags);
+        WiFiSM.logEvent("Soladin: %s",Soladin.flags.c_str());
 }
 
 
@@ -615,7 +607,14 @@ void handleHttpSyncFTPRequest()
     bool success = trySyncFTP(&HttpResponse); 
     Html.writePreEnd();
 
-    Html.writeParagraph(success ? F("Success!") : F("Failed!"));
+    if (success)
+    {
+        Html.writeParagraph(F("Success!"));
+        syncFTPTime = 0; // Cancel scheduled sync (if any)
+    }
+    else
+        Html.writeParagraph(F("Failed: %s"), FTPClient.getLastError());
+
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse);

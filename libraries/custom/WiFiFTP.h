@@ -26,12 +26,7 @@ class WiFiFTPClient
         WiFiClient& store(const char* filename);
         WiFiClient& append(const char* filename);
 
-        const char* getLastResponse()
-        {
-            return _responseBuffer;
-        }
-
-        String inline getLastError()
+        inline const char* getLastError()
         {
             return _lastError;
         }
@@ -41,13 +36,15 @@ class WiFiFTPClient
     private:
         WiFiClient _controlClient;
         WiFiClient _dataClient;
+        String _lastCommand;
         char _responseBuffer[128];
         int _serverDataPort;
         const char* _host;
         Print* _printPtr;
-        String _lastError;
+        char _lastError[128];
 
         bool initialize(const char* userName, const char* password);
+        void setLastError(String format, ...);
 };
 
 #endif

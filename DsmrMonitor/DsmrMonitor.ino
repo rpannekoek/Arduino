@@ -518,7 +518,7 @@ void onWiFiInitialized()
         }
         else
         {
-            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError().c_str());
+            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError());
             syncFTPTime += FTP_RETRY_INTERVAL;
         }
     }
@@ -532,39 +532,37 @@ bool trySyncFTP(Print* printTo)
     char filename[32];
     snprintf(filename, sizeof(filename), "%s.csv", PersistentData.hostName);
 
-    if (!FTPClient.begin(PersistentData.ftpServer, PersistentData.ftpUser, PersistentData.ftpPassword, FTP_DEFAULT_CONTROL_PORT, printTo))
+    if (!FTPClient.begin(
+        PersistentData.ftpServer,
+        PersistentData.ftpUser,
+        PersistentData.ftpPassword,
+        FTP_DEFAULT_CONTROL_PORT,
+        printTo))
     {
-        FTPClient.end();
         return false;
     }
 
     bool success = false;
-    if (logEntriesToSync == 0)
+    WiFiClient& dataClient = FTPClient.append(filename);
+    if (dataClient.connected())
     {
-        if (printTo != nullptr)
-            printTo->println(F("Nothing to sync."));
-        success = true;
-    }
-    else
-    {
-        WiFiClient& dataClient = FTPClient.append(filename);
-        if (dataClient.connected())
+        if (logEntriesToSync > 0)
         {
             PowerLogEntry* firstLogEntryPtr = PowerLog.getEntryFromEnd(logEntriesToSync);
             writeCsvPowerLogEntries(firstLogEntryPtr, dataClient);
-
-            dataClient.stop();
-
-            if (FTPClient.readServerResponse() == 226)
-            {
-                TRACE(F("Successfully appended log entries.\n"));
-                logEntriesToSync = 0;
-                lastFTPSyncTime = currentTime;
-                success = true;
-            }
-            else
-                TRACE(F("FTP Append command failed: %s\n"), FTPClient.getLastResponse());
+            logEntriesToSync = 0;
         }
+        else if (printTo != nullptr)
+            printTo->println(F("Nothing to sync."));
+        dataClient.stop();
+
+        if (FTPClient.readServerResponse() == 226)
+        {
+            lastFTPSyncTime = currentTime;
+            success = true;
+        }
+        else
+            FTPClient.setUnexpectedResponse();
     }
 
     FTPClient.end();
@@ -892,8 +890,14 @@ void handleHttpSyncFTPRequest()
     bool success = trySyncFTP(&HttpResponse); 
     HttpResponse.println("</pre>");
 
-    Html.writeParagraph(success ? F("Success!") : F("Failed!"));
- 
+    if (success)
+    {
+        Html.writeParagraph(F("Success!"));
+        syncFTPTime = 0; // Cancel scheduled sync (if any)
+    }
+    else
+        Html.writeParagraph(F("Failed: %s"), FTPClient.getLastError());
+
     Html.writeHeading(F("CSV header"), 2);
     HttpResponse.print(F("<pre>"));
     writeCsvPowerLogHeader(HttpResponse);

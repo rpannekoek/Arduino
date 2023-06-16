@@ -8,6 +8,7 @@ WiFiFTPClient::WiFiFTPClient(int timeout)
     _dataClient.setTimeout(timeout);
 
     _responseBuffer[0] = 0;
+    _lastError[0] = 0;
 }
 
 
@@ -19,8 +20,7 @@ bool WiFiFTPClient::begin(const char* host, const char* userName, const char* pa
 
     if (!_controlClient.connect(host, port))
     {
-        _lastError = F("Cannot connect to ");
-        _lastError += host;
+        setLastError(F("Cannot connect to %s:%d"), host, port);
         return false;
     }
     _host = host;
@@ -40,8 +40,6 @@ void WiFiFTPClient::end()
 {
     Tracer Tracer(F("WiFiFTPClient::end"));
 
-    // TODO: read remaining data from control/data clients?
-
     if (_dataClient.connected())
         _dataClient.stop();
 
@@ -59,10 +57,27 @@ void WiFiFTPClient::end()
 }
 
 
+void WiFiFTPClient::setLastError(String format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    int length = vsnprintf(_lastError, sizeof(_lastError) - 1, format.c_str(), args);
+    _lastError[length] = 0;
+    va_end(args);
+
+    TRACE("ERROR: %s\n", _lastError);
+}
+
+
 void WiFiFTPClient::setUnexpectedResponse(const char* response)
 {
-    _lastError = F("Unexpected response: ");
-    _lastError += (response == nullptr) ? _responseBuffer : response;
+    if (response == nullptr)
+        response = _responseBuffer;
+
+    if (response[0] == 0)
+        setLastError(F("No response for '%s'"), _lastCommand.c_str());
+    else
+        setLastError(F("Unexpected for '%s': %s"), _lastCommand.c_str(), response);
 }
 
 
@@ -71,6 +86,7 @@ bool WiFiFTPClient::initialize(const char* userName, const char* password)
     Tracer Tracer(F("WiFiFTPClient::initialize"), userName);
 
     // Retrieve server welcome message
+    _lastCommand = F("[Connect]");
     int responseCode = readServerResponse();
     bool success = (responseCode >= 200) && (responseCode < 300);
     if (!success)
@@ -107,7 +123,7 @@ bool WiFiFTPClient::initialize(const char* userName, const char* password)
         const char* token = strtok(nullptr, ",)");
         if (token == nullptr)
         {
-            TRACE(F("Unable to parse PASV response\n"));
+            setLastError(F("Unable to parse PASV response"));
             return false;
         }
         params[i] = atoi(token);
@@ -123,31 +139,19 @@ int WiFiFTPClient::sendCommand(String cmd, const char* arg, bool awaitResponse)
 {
     Tracer Tracer(F("WiFiFTPClient::sendCommand"), cmd.c_str());
 
+    _lastCommand = cmd;
+    if (arg != nullptr)
+    {
+        _lastCommand += " ";
+        _lastCommand += arg;
+    }
+
     if (_printPtr != nullptr)
-    {
-        if (arg == nullptr)
-            _printPtr->println(cmd);
-        else
-        {
-            _printPtr->print(cmd);
-            _printPtr->print(" ");
-            _printPtr->println(arg);
-        }
-    }
+        _printPtr->println(_lastCommand);
 
-    if (arg == nullptr)
-        _controlClient.println(cmd);
-    else
-    {
-        _controlClient.print(cmd);
-        _controlClient.print(" ");
-        _controlClient.println(arg);
-    }
+    _controlClient.println(_lastCommand);
 
-    if (awaitResponse)
-        return readServerResponse();
-    else
-        return 0;
+    return awaitResponse ? readServerResponse() : 0;
 }
 
 
@@ -163,23 +167,17 @@ int WiFiFTPClient::readServerResponse(char* responseBuffer, size_t responseBuffe
 
     size_t bytesRead = _controlClient.readBytesUntil('\n', responseBuffer, responseBufferSize - 1);
     responseBuffer[bytesRead] = 0;
-    TRACE(F("Response: %s\n"), responseBuffer);
+    TRACE(F("Response: '%s'\n"), responseBuffer);
 
     if (_printPtr != nullptr)
         _printPtr->print(responseBuffer);
 
-    if (bytesRead < 3)
-    {
-        _lastError = F("Timeout");
+    if (bytesRead == 0)
         return FTP_ERROR_TIMEOUT;
-    }
 
     int responseCode;
     if (sscanf(responseBuffer, "%d", &responseCode) != 1)
-    {
-        setUnexpectedResponse(responseBuffer);
         return FTP_ERROR_BAD_RESPONSE;
-    }
 
     TRACE(F("Response code: %d\n"), responseCode);
     return responseCode;
@@ -192,8 +190,7 @@ WiFiClient& WiFiFTPClient::getDataClient()
 
     if (!_dataClient.connect(_host, _serverDataPort))
     {
-        _lastError = F("Cannot connect to data port ");
-        _lastError += _serverDataPort;
+        setLastError(F("Cannot connect to %s:%d"), _host, _serverDataPort);
     }
 
     return _dataClient;
