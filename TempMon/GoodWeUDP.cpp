@@ -39,14 +39,12 @@ int GoodWeUDP::discover(int timeoutMs)
         if (discoveryResponse.length() > 0)
         {
             int commaIndex = discoveryResponse.indexOf(",");
-            if (commaIndex <= 0)
+            if (commaIndex > 0)
             {
-                setLastError(F("Invalid discovery response: '%s'"), discoveryResponse);
-                return -2;
+                String ipAddress = discoveryResponse.substring(0, commaIndex);
+                if (_instanceAddresses[_instanceCount].fromString(ipAddress))
+                    _instanceCount++;
             }
-
-            String ipAddress = discoveryResponse.substring(0, commaIndex);
-            _instanceAddresses[_instanceCount++].fromString(ipAddress);
         }
         else
             waitMs += pollIntervalMs;
