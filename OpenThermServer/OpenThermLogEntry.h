@@ -9,6 +9,7 @@ struct __attribute__ ((packed)) OpenThermLogEntry
     uint16_t tReturn;
     uint16_t tBuffer;
     uint16_t tOutside;
+    uint16_t pressure;
     uint16_t pHeatPump; // kW in OT f8.8 format
 
     bool equals(OpenThermLogEntry* otherPtr)
@@ -21,6 +22,7 @@ struct __attribute__ ((packed)) OpenThermLogEntry
             (otherPtr->tReturn == tReturn) &&
             (otherPtr->tBuffer == tBuffer) &&
             (otherPtr->tOutside == tOutside) &&
+            (otherPtr->pressure == pressure) &&
             (otherPtr->pHeatPump == pHeatPump);
     }
 };

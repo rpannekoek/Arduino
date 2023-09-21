@@ -223,6 +223,12 @@ td.graph
     color: green;
 }
 
+.pressureBar
+{
+	background-color: white;
+    color: white;
+}
+
 .overrideBar
 {
 	background-color: black;

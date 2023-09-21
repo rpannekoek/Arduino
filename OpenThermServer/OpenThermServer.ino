@@ -34,9 +34,10 @@
 #define TSET_OVERRIDE_DURATION (15 * 60)
 #define WEATHER_SERVICE_POLL_INTERVAL (15 * 60)
 #define WEATHER_SERVICE_RESPONSE_TIMEOUT 10
-#define FTP_RETRY_INTERVAL (30 * 60)
+#define FTP_RETRY_INTERVAL (15 * 60)
 #define HEATMON_POLL_INTERVAL 60
 #define MAX_HEATPUMP_POWER 4
+#define MAX_PRESSURE 3
 
 #ifdef DEBUG_ESP_PORT
     #define OTGW_TIMEOUT (5 * 60)
@@ -120,7 +121,8 @@ const char* LogHeaders[] PROGMEM =
     "Treturn",
     "Tbuffer",
     "Toutside",
-    "Pheatpump"
+    "Pheatpump",
+    "Pressure"
 };
 
 OpenThermGateway OTGW(Serial, 14, OTGW_RESPONSE_TIMEOUT_MS);
@@ -506,7 +508,7 @@ void onWiFiInitialized()
         else
         {
             WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError());
-            otLogSyncTime += FTP_RETRY_INTERVAL;
+            otLogSyncTime = currentTime + FTP_RETRY_INTERVAL;
         }
     }
 }
@@ -694,14 +696,14 @@ void logOpenThermValues(bool forceCreate)
     newOTLogEntry.tReturn = getResponse(OpenThermDataId::TReturn);
     newOTLogEntry.tBuffer = getResponse(OpenThermDataId::Tdhw);
     newOTLogEntry.tOutside = getResponse(OpenThermDataId::TOutside);
+    newOTLogEntry.pressure = boilerResponses[OpenThermDataId::Pressure];
     newOTLogEntry.pHeatPump = HeatMon.pIn * 256;
 
     if ((lastOTLogEntryPtr == nullptr) || !newOTLogEntry.equals(lastOTLogEntryPtr) || forceCreate)
     {
         lastOTLogEntryPtr = OpenThermLog.add(&newOTLogEntry);
-        if (++otLogEntriesToSync > OT_LOG_LENGTH)
-            otLogEntriesToSync = OT_LOG_LENGTH;
-        if (PersistentData.isFTPEnabled() && otLogEntriesToSync >= PersistentData.ftpSyncEntries)
+        otLogEntriesToSync = std::min(otLogEntriesToSync + 1, OT_LOG_LENGTH);
+        if (PersistentData.isFTPEnabled() && otLogEntriesToSync == PersistentData.ftpSyncEntries)
             otLogSyncTime = currentTime;
     }
 }
@@ -1106,7 +1108,14 @@ void writeCurrentValues()
         writeOpenThermTemperatureRow(F("T<sub>boiler</sub>"), flame ? F("flameBar") : F("waterBar"), lastOTLogEntryPtr->tBoiler); 
         writeOpenThermTemperatureRow(F("T<sub>return</sub>"), F("waterBar"), lastOTLogEntryPtr->tReturn); 
         writeOpenThermTemperatureRow(F("T<sub>buffer</sub>"), F("waterBar"), lastOTLogEntryPtr->tBuffer); 
-        writeOpenThermTemperatureRow(F("T<sub>outside</sub>"), F("outsideBar"), lastOTLogEntryPtr->tOutside, -10, 30); 
+        writeOpenThermTemperatureRow(F("T<sub>outside</sub>"), F("outsideBar"), lastOTLogEntryPtr->tOutside, -10, 30);
+
+        float pressure = getDecimal(lastOTLogEntryPtr->pressure);
+        Html.writeRowStart();
+        Html.writeHeaderCell(F("Pressure"));
+        Html.writeCell(pressure, F("%0.2f bar"));
+        Html.writeGraphCell(pressure / MAX_PRESSURE, F("pressureBar"), true);
+        Html.writeRowEnd();
     }
 
     if (HeatMon.isInitialized)
@@ -1344,6 +1353,7 @@ void handleHttpOpenThermLogRequest()
         Html.writeCell(getDecimal(otLogEntryPtr->tBuffer));
         Html.writeCell(getDecimal(otLogEntryPtr->tOutside));
         Html.writeCell(getDecimal(otLogEntryPtr->pHeatPump), F("%0.2f"));
+        Html.writeCell(getDecimal(otLogEntryPtr->pressure), F("%0.2f"));
         Html.writeRowEnd();
 
         otLogEntryPtr = OpenThermLog.getNextEntry();
@@ -1428,7 +1438,8 @@ void writeCsvDataLine(OpenThermLogEntry* otLogEntryPtr, time_t time, Print& dest
     destination.printf(";%0.1f", getDecimal(otLogEntryPtr->tReturn));
     destination.printf(";%0.1f", getDecimal(otLogEntryPtr->tBuffer));
     destination.printf(";%0.1f", getDecimal(otLogEntryPtr->tOutside));
-    destination.printf(";%0.2f\r\n", getDecimal(otLogEntryPtr->pHeatPump));
+    destination.printf(";%0.2f", getDecimal(otLogEntryPtr->pHeatPump));
+    destination.printf(";%0.2f\r\n", getDecimal(otLogEntryPtr->pressure));
 }
 
 
