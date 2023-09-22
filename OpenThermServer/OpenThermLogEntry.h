@@ -18,11 +18,16 @@ struct __attribute__ ((packed)) OpenThermLogEntry
             (otherPtr->thermostatMaxRelModulation == thermostatMaxRelModulation) &&
             (otherPtr->boilerStatus == boilerStatus) &&
             (otherPtr->boilerTSet == boilerTSet) &&
-            (otherPtr->tBoiler == tBoiler) &&
-            (otherPtr->tReturn == tReturn) &&
-            (otherPtr->tBuffer == tBuffer) &&
-            (otherPtr->tOutside == tOutside) &&
-            (otherPtr->pressure == pressure) &&
-            (otherPtr->pHeatPump == pHeatPump);
+            isSimilar(otherPtr->tBoiler, tBoiler) &&
+            isSimilar(otherPtr->tReturn, tReturn) &&
+            isSimilar(otherPtr->tBuffer, tBuffer) &&
+            isSimilar(otherPtr->tOutside, tOutside) &&
+            isSimilar(otherPtr->pressure, pressure, 4) &&
+            isSimilar(otherPtr->pHeatPump, pHeatPump, 4);
+    }
+
+    static bool isSimilar(int lhs, int rhs, int maxDiff = 32)
+    {
+        return abs(rhs - lhs) < maxDiff;
     }
 };
