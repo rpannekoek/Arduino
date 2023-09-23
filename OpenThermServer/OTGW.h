@@ -25,6 +25,8 @@ enum OpenThermDataId // Unscoped enum so it can be used as array index without c
     SlaveFault = 5,
     MaxRelModulation = 14,
     TRoomSet = 16,
+    RelModulation = 17,
+    Pressure = 18,
     TRoom = 24,
     TBoiler = 25,
     Tdhw = 26,

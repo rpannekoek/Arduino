@@ -5,6 +5,7 @@ struct __attribute__ ((packed)) OpenThermLogEntry
     uint16_t thermostatMaxRelModulation;
     uint16_t boilerStatus;
     uint16_t boilerTSet;
+    uint16_t boilerRelModulation;
     uint16_t tBoiler;
     uint16_t tReturn;
     uint16_t tBuffer;
@@ -18,6 +19,7 @@ struct __attribute__ ((packed)) OpenThermLogEntry
             (otherPtr->thermostatMaxRelModulation == thermostatMaxRelModulation) &&
             (otherPtr->boilerStatus == boilerStatus) &&
             (otherPtr->boilerTSet == boilerTSet) &&
+            (otherPtr->boilerRelModulation == boilerRelModulation) &&
             isSimilar(otherPtr->tBoiler, tBoiler) &&
             isSimilar(otherPtr->tReturn, tReturn) &&
             isSimilar(otherPtr->tBuffer, tBuffer) &&

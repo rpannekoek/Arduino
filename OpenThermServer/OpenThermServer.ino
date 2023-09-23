@@ -122,7 +122,8 @@ const char* LogHeaders[] PROGMEM =
     "Tbuffer",
     "Toutside",
     "Pheatpump",
-    "Pressure"
+    "Pressure",
+    "Mod (%)"
 };
 
 OpenThermGateway OTGW(Serial, 14, OTGW_RESPONSE_TIMEOUT_MS);
@@ -692,6 +693,7 @@ void logOpenThermValues(bool forceCreate)
     newOTLogEntry.thermostatMaxRelModulation = thermostatRequests[OpenThermDataId::MaxRelModulation];
     newOTLogEntry.boilerStatus = boilerResponses[OpenThermDataId::Status];
     newOTLogEntry.boilerTSet = boilerResponses[OpenThermDataId::TSet];
+    newOTLogEntry.boilerRelModulation = boilerResponses[OpenThermDataId::RelModulation];
     newOTLogEntry.tBoiler = boilerResponses[OpenThermDataId::TBoiler];
     newOTLogEntry.tReturn = getResponse(OpenThermDataId::TReturn);
     newOTLogEntry.tBuffer = getResponse(OpenThermDataId::Tdhw);
@@ -1092,8 +1094,10 @@ void writeCurrentValues()
     if (lastOTLogEntryPtr != nullptr)
     {
         bool flame = boilerResponses[OpenThermDataId::Status] & OpenThermStatus::SlaveFlame;
-        float maxRelMod = getDecimal(lastOTLogEntryPtr->thermostatMaxRelModulation);        
+        float maxRelMod = getDecimal(lastOTLogEntryPtr->thermostatMaxRelModulation);
+        float relMod = getDecimal(lastOTLogEntryPtr->boilerRelModulation);        
         float thermostatTSet = getDecimal(lastOTLogEntryPtr->thermostatTSet);
+        float boilerTset = getDecimal(lastOTLogEntryPtr->boilerTSet);
 
         Html.writeRowStart();
         Html.writeHeaderCell(F("Thermostat"));
@@ -1104,7 +1108,15 @@ void writeCurrentValues()
         Html.writeGraphCell(getBarValue(thermostatTSet), F("setBar"), true);
         Html.writeRowEnd();
 
-        writeOpenThermTemperatureRow(F("T<sub>set</sub>"), F("setBar"), lastOTLogEntryPtr->boilerTSet); 
+        Html.writeRowStart();
+        Html.writeHeaderCell(F("Boiler"));
+        if (boilerResponses[OpenThermDataId::Status] & 0xFF)
+            Html.writeCell(F("%0.1f °C @ %0.0f %%"), boilerTset, relMod);
+        else
+            Html.writeCell(F("Off"));
+        Html.writeGraphCell(getBarValue(boilerTset), F("setBar"), true);
+        Html.writeRowEnd();
+
         writeOpenThermTemperatureRow(F("T<sub>boiler</sub>"), flame ? F("flameBar") : F("waterBar"), lastOTLogEntryPtr->tBoiler); 
         writeOpenThermTemperatureRow(F("T<sub>return</sub>"), F("waterBar"), lastOTLogEntryPtr->tReturn); 
         writeOpenThermTemperatureRow(F("T<sub>buffer</sub>"), F("waterBar"), lastOTLogEntryPtr->tBuffer); 
@@ -1354,6 +1366,7 @@ void handleHttpOpenThermLogRequest()
         Html.writeCell(getDecimal(otLogEntryPtr->tOutside));
         Html.writeCell(getDecimal(otLogEntryPtr->pHeatPump), F("%0.2f"));
         Html.writeCell(getDecimal(otLogEntryPtr->pressure), F("%0.2f"));
+        Html.writeCell(getInteger(otLogEntryPtr->boilerRelModulation));
         Html.writeRowEnd();
 
         otLogEntryPtr = OpenThermLog.getNextEntry();
@@ -1439,7 +1452,8 @@ void writeCsvDataLine(OpenThermLogEntry* otLogEntryPtr, time_t time, Print& dest
     destination.printf(";%0.1f", getDecimal(otLogEntryPtr->tBuffer));
     destination.printf(";%0.1f", getDecimal(otLogEntryPtr->tOutside));
     destination.printf(";%0.2f", getDecimal(otLogEntryPtr->pHeatPump));
-    destination.printf(";%0.2f\r\n", getDecimal(otLogEntryPtr->pressure));
+    destination.printf(";%0.2f", getDecimal(otLogEntryPtr->pressure));
+    destination.printf(";%d\r\n", getInteger(otLogEntryPtr->boilerRelModulation));
 }
 
 
