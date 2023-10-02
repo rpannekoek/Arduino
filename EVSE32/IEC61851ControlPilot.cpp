@@ -65,33 +65,37 @@ bool IEC61851ControlPilot::begin(float scale)
 }
 
 
-float IEC61851ControlPilot::calibrate()
+int IEC61851ControlPilot::calibrate()
 {
     Tracer tracer(F("IEC61851ControlPilot::calibrate"));
 
     if (_dutyCycle == 0)
     {
         digitalWrite(_outputPin, 1); // 12 V
-        delay(10);
     }
 
-    int standbyLevel = 0;
-    for (int i = 0; i < OVERSAMPLING; i++)
-        standbyLevel += adc1_get_raw(_adcChannel);
-    standbyLevel /= OVERSAMPLING;
+    int standbyLevel;
+    int retries = 0;
+    do
+    {
+        delay(100);
+        standbyLevel = 0;
+        for (int i = 0; i < OVERSAMPLING; i++)
+            standbyLevel += adc1_get_raw(_adcChannel);
+        standbyLevel /= OVERSAMPLING;
+    }
+    while ((standbyLevel < MIN_CP_STANDBY_LEVEL) && (retries++ < 20));
 
-    if (_dutyCycle == 0)
-        digitalWrite(_outputPin, 0); // 0 V
-
-    if (standbyLevel > 2500)
+    if (standbyLevel >= MIN_CP_STANDBY_LEVEL)
     {
         _scale = (12.0F - ADC_OFFSET) / standbyLevel;
         TRACE(F("Standby level: %d => scale = %0.4f\n"), standbyLevel, _scale);
     }
-    else
-        TRACE(F("Invalid standby level: %d\n"), standbyLevel);
+ 
+    if (_dutyCycle == 0)
+        digitalWrite(_outputPin, 0); // 0 V
 
-    return _scale;
+    return standbyLevel;
 }
 
 

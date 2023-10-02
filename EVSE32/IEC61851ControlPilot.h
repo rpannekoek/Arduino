@@ -1,6 +1,7 @@
 #include <driver/adc.h>
 #include <Ticker.h>
 
+#define MIN_CP_STANDBY_LEVEL 2500
 
 enum struct ControlPilotStatus
 {
@@ -19,7 +20,7 @@ class IEC61851ControlPilot
 
         bool begin(float scale = 0.0041); // Approximation using 82k/22k voltage divider
 
-        float calibrate();
+        int calibrate();
 
         void setOff();
 
@@ -29,7 +30,7 @@ class IEC61851ControlPilot
 
         float getVoltage();
 
-        bool awaitStatus(ControlPilotStatus status, int timeoutMs = 100);
+        bool awaitStatus(ControlPilotStatus status, int timeoutMs = 500);
 
         ControlPilotStatus inline getStatus()
         {

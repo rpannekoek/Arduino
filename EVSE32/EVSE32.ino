@@ -245,9 +245,7 @@ void setup()
     pinMode(RELAY_ON_PIN, OUTPUT);
     setRelay(false);
 
-    if (ControlPilot.begin())
-        ControlPilot.calibrate();
-    else
+    if (!ControlPilot.begin())
         setFailure(F("Failed initializing Control Pilot"));
 
     if (Bluetooth.begin(PersistentData.hostName))
@@ -463,8 +461,8 @@ void runEVSEStateMachine()
                     setState(EVSEState::Ready);
                 }
             }
-            else if (cpStatus != ControlPilotStatus::VehicleDetected)
-                setUnexpectedControlPilotStatus();
+            else if ((currentTime - stateChangeTime) > 60)
+                setFailure(F("Timeout waiting for charging to start"));
             break;
 
         case EVSEState::Charging:
@@ -632,10 +630,18 @@ bool selfTest()
 {
     Tracer tracer(F(__func__));
 
+    int cpStandbyLevel = ControlPilot.calibrate();
+    WiFiSM.logEvent(F("Control Pilot standby level: %d"), cpStandbyLevel);
+    if (cpStandbyLevel < MIN_CP_STANDBY_LEVEL)
+    {
+        WiFiSM.logEvent(F("Control Pilot standby level too low"));
+        return false;
+    }
+
     ControlPilot.setOff();
     if (!ControlPilot.awaitStatus(ControlPilotStatus::NoPower))
     {
-        WiFiSM.logEvent(F("Control Pilot off: %0.1f V\n"), ControlPilot.getVoltage());
+        WiFiSM.logEvent(F("Control Pilot off: %0.1f V"), ControlPilot.getVoltage());
         return false;
     }
 
