@@ -38,6 +38,7 @@
 #define HEATMON_POLL_INTERVAL 60
 #define MAX_HEATPUMP_POWER 4
 #define MAX_PRESSURE 3
+#define MAX_FLOW_RATE 12
 
 #ifdef DEBUG_ESP_PORT
     #define OTGW_TIMEOUT (5 * 60)
@@ -123,7 +124,8 @@ const char* LogHeaders[] PROGMEM =
     "Toutside",
     "Pheatpump",
     "Pressure",
-    "Mod (%)"
+    "Mod (%)",
+    "Flow"
 };
 
 OpenThermGateway OTGW(Serial, 14, OTGW_RESPONSE_TIMEOUT_MS);
@@ -289,6 +291,7 @@ void setup()
     WiFiSM.on(WiFiInitState::TimeServerSynced, onTimeServerSynced);
     WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
     WiFiSM.on(WiFiInitState::Updating, onWiFiUpdating);
+    WiFiSM.scanAccessPoints();
     WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
 
     //if (!OTGW.initWatchdog(240)) // 4 minutes timeout (almost max possible)
@@ -699,6 +702,9 @@ void logOpenThermValues(bool forceCreate)
     newOTLogEntry.tBuffer = getResponse(OpenThermDataId::Tdhw);
     newOTLogEntry.tOutside = getResponse(OpenThermDataId::TOutside);
     newOTLogEntry.pressure = boilerResponses[OpenThermDataId::Pressure];
+    newOTLogEntry.flowRate = boilerResponses[OpenThermDataId::DHWFlowRate] != 0
+        ? boilerResponses[OpenThermDataId::DHWFlowRate]
+        : (HeatMon.flowRate * 256);
     newOTLogEntry.pHeatPump = HeatMon.pIn * 256;
 
     if ((lastOTLogEntryPtr == nullptr) || !newOTLogEntry.equals(lastOTLogEntryPtr) || forceCreate)
@@ -1128,6 +1134,13 @@ void writeCurrentValues()
         Html.writeCell(pressure, F("%0.2f bar"));
         Html.writeGraphCell(pressure / MAX_PRESSURE, F("pressureBar"), true);
         Html.writeRowEnd();
+
+        float flowRate = getDecimal(lastOTLogEntryPtr->flowRate);
+        Html.writeRowStart();
+        Html.writeHeaderCell(F("Flow"));
+        Html.writeCell(flowRate, F("%0.1f l/min"));
+        Html.writeGraphCell(flowRate / MAX_FLOW_RATE, F("waterBar"), true);
+        Html.writeRowEnd();
     }
 
     if (HeatMon.isInitialized)
@@ -1367,6 +1380,7 @@ void handleHttpOpenThermLogRequest()
         Html.writeCell(getDecimal(otLogEntryPtr->pHeatPump), F("%0.2f"));
         Html.writeCell(getDecimal(otLogEntryPtr->pressure), F("%0.2f"));
         Html.writeCell(getInteger(otLogEntryPtr->boilerRelModulation));
+        Html.writeCell(getDecimal(otLogEntryPtr->flowRate));
         Html.writeRowEnd();
 
         otLogEntryPtr = OpenThermLog.getNextEntry();
@@ -1453,7 +1467,8 @@ void writeCsvDataLine(OpenThermLogEntry* otLogEntryPtr, time_t time, Print& dest
     destination.printf(";%0.1f", getDecimal(otLogEntryPtr->tOutside));
     destination.printf(";%0.2f", getDecimal(otLogEntryPtr->pHeatPump));
     destination.printf(";%0.2f", getDecimal(otLogEntryPtr->pressure));
-    destination.printf(";%d\r\n", getInteger(otLogEntryPtr->boilerRelModulation));
+    destination.printf(";%d", getInteger(otLogEntryPtr->boilerRelModulation));
+    destination.printf(";%0.1f\r\n", getDecimal(otLogEntryPtr->flowRate));
 }
 
 

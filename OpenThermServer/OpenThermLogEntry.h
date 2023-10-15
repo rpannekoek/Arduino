@@ -11,6 +11,7 @@ struct __attribute__ ((packed)) OpenThermLogEntry
     uint16_t tBuffer;
     uint16_t tOutside;
     uint16_t pressure;
+    uint16_t flowRate;
     uint16_t pHeatPump; // kW in OT f8.8 format
 
     bool equals(OpenThermLogEntry* otherPtr)
@@ -25,6 +26,7 @@ struct __attribute__ ((packed)) OpenThermLogEntry
             isSimilar(otherPtr->tBuffer, tBuffer) &&
             isSimilar(otherPtr->tOutside, tOutside) &&
             isSimilar(otherPtr->pressure, pressure, 4) &&
+            isSimilar(otherPtr->flowRate, flowRate) &&
             isSimilar(otherPtr->pHeatPump, pHeatPump, 4);
     }
 
