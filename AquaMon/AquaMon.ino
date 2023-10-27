@@ -22,7 +22,7 @@
 #define TOPIC_LOG_PAGE_SIZE 50
 #define DEFAULT_BAR_LENGTH 60
 #define WIFI_TIMEOUT_MS 2000
-#define FTP_RETRY_INTERVAL (30 * 60)
+#define FTP_RETRY_INTERVAL (15 * 60)
 #define QUERY_AQUAREA_INTERVAL 6
 #define AGGREGATION_INTERVAL 60
 #define ANTI_FREEZE_DELTA_T 5
@@ -93,7 +93,7 @@ TopicLogEntry* lastTopicLogEntryPtr = nullptr;
 DayStatsEntry* lastDayStatsEntryPtr = nullptr;
 
 uint16_t ftpSyncEntries = 0;
-bool heatPumpIsOn = false;
+uint16_t heatPumpOnCount = 0;
 bool isDefrosting = false;
 bool antiFreezeActivated = false;
 bool testAntiFreeze = false;
@@ -264,7 +264,7 @@ void onWiFiInitialized()
         else
         {
             WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError());
-            syncFTPTime += FTP_RETRY_INTERVAL;
+            syncFTPTime = currentTime + FTP_RETRY_INTERVAL;
         }
     }
 }
@@ -342,9 +342,14 @@ void updateDayStats(uint32_t secondsSinceLastUpdate, float powerInKW, float powe
     if (defrostingState != 0 && !isDefrosting)
         lastDayStatsEntryPtr->defrosts++; // Defrost started
     isDefrosting = defrostingState != 0;
-    if (!isDefrosting && (powerInKW > onPowerKW) && !heatPumpIsOn)
-        lastDayStatsEntryPtr->onCount++; // Heat pump was switched on during normal operation
-    heatPumpIsOn = powerInKW > onPowerKW;
+
+    if ((powerInKW > 0) && !isDefrosting)
+    {
+        if (heatPumpOnCount++ == 10)
+            lastDayStatsEntryPtr->onCount++;
+    }
+    else
+        heatPumpOnCount = 0;
 }
 
 
@@ -370,7 +375,7 @@ void updateTopicLog()
         newTopicLogEntry.time = currentTime;
 
         ftpSyncEntries = std::min(ftpSyncEntries + 1, TOPIC_LOG_SIZE);
-        if (PersistentData.ftpIsEnabled() && ftpSyncEntries >= PersistentData.ftpSyncEntries)
+        if (PersistentData.ftpIsEnabled() && ftpSyncEntries == PersistentData.ftpSyncEntries)
             syncFTPTime = currentTime;
     }
 
