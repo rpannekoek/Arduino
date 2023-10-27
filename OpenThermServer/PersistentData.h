@@ -19,6 +19,8 @@ struct PersistentDataStruct : PersistentDataBase
     uint16_t minTSet;
     char heatmonHost[32];
     bool usePumpModulation;
+    float dipDetectionSlope;
+    uint16_t dipDetectionThreshold;
 
     bool isFTPEnabled()
     {
@@ -41,7 +43,9 @@ struct PersistentDataStruct : PersistentDataBase
         sizeof(maxTSet) +
         sizeof(minTSet) +
         sizeof(heatmonHost) +
-        sizeof(usePumpModulation)
+        sizeof(usePumpModulation) +
+        sizeof(dipDetectionSlope) +
+        sizeof(dipDetectionThreshold)
         ) {}
 
     virtual void initialize()
@@ -62,6 +66,8 @@ struct PersistentDataStruct : PersistentDataBase
         minTSet = 40;
         heatmonHost[0] = 0;
         usePumpModulation = false;
+        dipDetectionSlope = 1.0;
+        dipDetectionThreshold = 40;
     }
 
     virtual void validate()
@@ -83,7 +89,9 @@ struct PersistentDataStruct : PersistentDataBase
         if (ftpSyncEntries > 255) ftpSyncEntries = 0;
         if (boilerOnDelay > 3600) boilerOnDelay = 3600;
         maxTSet = std::min(std::max(maxTSet, (uint16_t)40), (uint16_t)80); 
-        minTSet = std::min(std::max(minTSet, (uint16_t)20), (uint16_t)40); 
+        minTSet = std::min(std::max(minTSet, (uint16_t)20), (uint16_t)40);
+        dipDetectionSlope = std::min(std::max(dipDetectionSlope, 0.0F), 60.0F);
+        dipDetectionThreshold = std::min(dipDetectionThreshold, maxTSet);
     }
 };
 

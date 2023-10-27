@@ -32,6 +32,7 @@
 #define OT_LOG_PAGE_SIZE 50
 #define PWM_PERIOD (10 * 60)
 #define TSET_OVERRIDE_DURATION (15 * 60)
+#define DIP_SUPPRESSION_DURATION (5 * 60)
 #define WEATHER_SERVICE_POLL_INTERVAL (15 * 60)
 #define WEATHER_SERVICE_RESPONSE_TIMEOUT 10
 #define FTP_RETRY_INTERVAL (15 * 60)
@@ -66,6 +67,8 @@
 #define CFG_BOILER_ON_DELAY F("boilerOnDelay")
 #define CFG_HEATMON_HOST F("heatmonHost")
 #define CFG_PUMP_MOD F("pumpMod")
+#define CFG_DIP_THRESHOLD F("dipThreshold")
+#define CFG_DIP_SLOPE F("dipSlope")
 
 enum FileId
 {
@@ -159,6 +162,7 @@ time_t lastHeatmonUpdateTime = 0;
 time_t weatherServicePollTime = 0;
 time_t weatherServiceTimeout = 0;
 time_t lastWeatherUpdateTime = 0;
+time_t lastTboilerTime = 0;
 
 time_t lowLoadLastOn = 0;
 time_t lowLoadLastOff = 0;
@@ -182,6 +186,7 @@ BoilerLevel changeBoilerLevel;
 time_t changeBoilerLevelTime = 0;
 int setBoilerLevelRetries = 0; 
 float pwmDutyCycle = 1;
+float tBoilerSlope = 0;
 
 String otgwResponse;
 
@@ -951,6 +956,7 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
     else if (otFrame.dataId == OpenThermDataId::TSet)
     {
         bool masterCHEnable = thermostatRequests[OpenThermDataId::Status] & OpenThermStatus::MasterCHEnable;
+        bool isThermostatLowLoadMode = thermostatRequests[OpenThermDataId::MaxRelModulation] == 0;
         if (masterCHEnable && PersistentData.usePumpModulation && currentBoilerLevel != BoilerLevel::PumpOnly)
         {
             bool pwmPending = pwmDutyCycle < 1;
@@ -958,9 +964,10 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
             float tBoiler = getDecimal(boilerResponses[OpenThermDataId::TBoiler]);
             float tPwmCeiling = std::min(std::max(tBoiler, (float)PersistentData.minTSet), (float)PersistentData.maxTSet);
             const float tPwmFloor = 20;
-            if (tSet >= tPwmFloor && tSet < tPwmCeiling)
+            if (tSet >= tPwmFloor && tSet < tPwmCeiling && !isThermostatLowLoadMode)
             {
                 // Requested TSet in PWM range; use PWM.
+                // We're continuously updating the PWM duty cycle, but this is picked up only when the current one is done.
                 pwmDutyCycle = (tSet - tPwmFloor) / (tPwmCeiling - tPwmFloor);
                 pwmDutyCycle = std::min(std::max(pwmDutyCycle, 0.1F), 0.9F); // Keep between 10% and 90%
                 if (!pwmPending)
@@ -988,6 +995,25 @@ void handleBoilerResponse(OpenThermGatewayMessage otFrame)
 
     if (otFrame.msgType == OpenThermMsgType::UnknownDataId)
         return;
+
+    if (otFrame.dataId == OpenThermDataId::TBoiler)
+    {
+        float tBoiler = getDecimal(otFrame.dataValue);
+        tBoilerSlope = (getDecimal(boilerResponses[OpenThermDataId::TBoiler]) - tBoiler) * 60 / (currentTime - lastTboilerTime);
+        lastTboilerTime = currentTime;
+        if (currentBoilerLevel == BoilerLevel::Low)
+        {
+            // We're in low-load mode and the pump is running.
+            // If a sudden Tboiler dip is detected, immediately stop the pump.
+            // Pump will restart after 5 minutes, or when new load-load cycle starts.
+            if ((tBoiler < PersistentData.dipDetectionThreshold) && (tBoilerSlope > PersistentData.dipDetectionSlope))
+            {
+                WiFiSM.logEvent(F("Dip: %0.1f °C/min @ %0.1f °C"), tBoilerSlope, tBoiler);
+                setBoilerLevel(BoilerLevel::Off, DIP_SUPPRESSION_DURATION);
+                changeBoilerLevel = BoilerLevel::Low;
+            }
+        }
+    }
 
     boilerResponses[otFrame.dataId] = otFrame.dataValue;
 }
@@ -1252,16 +1278,17 @@ void handleHttpOpenThermRequest()
     Html.writeSectionStart(F("Thermostat"));
     Html.writeTableStart();
     Html.writeRow(F("Status"), F("%s"), OTGW.getMasterStatus(thermostatRequests[OpenThermDataId::Status]));
-    Html.writeRow(F("TSet"), F("%0.1f"), getDecimal(thermostatRequests[OpenThermDataId::TSet]));
-    Html.writeRow(F("Max Modulation %"), F("%0.1f"), getDecimal(thermostatRequests[OpenThermDataId::MaxRelModulation]));
-    Html.writeRow(F("Max TSet"), F("%0.1f"), getDecimal(thermostatRequests[OpenThermDataId::MaxTSet]));
+    Html.writeRow(F("TSet"), F("%0.1f °C"), getDecimal(thermostatRequests[OpenThermDataId::TSet]));
+    Html.writeRow(F("Max Modulation"), F("%0.1f %%"), getDecimal(thermostatRequests[OpenThermDataId::MaxRelModulation]));
+    Html.writeRow(F("Max TSet"), F("%0.1f °C"), getDecimal(thermostatRequests[OpenThermDataId::MaxTSet]));
     Html.writeTableEnd();
     Html.writeSectionEnd();
 
     Html.writeSectionStart(F("Boiler"));
     Html.writeTableStart();
     Html.writeRow(F("Status"), F("%s"), OTGW.getSlaveStatus(boilerResponses[OpenThermDataId::Status]));
-    Html.writeRow(F("TSet"), F("%0.1f"), getDecimal(boilerResponses[OpenThermDataId::TSet]));
+    Html.writeRow(F("TSet"), F("%0.1f °C"), getDecimal(boilerResponses[OpenThermDataId::TSet]));
+    Html.writeRow(F("TBoiler slope"), F("%0.1f °C/min"), tBoilerSlope);
     Html.writeRow(F("Fault flags"), F("%s"), OTGW.getFaultFlags(boilerResponses[OpenThermDataId::SlaveFault]));
     Html.writeRow(F("Burner starts"), F("%d"), burnerStarts);
     Html.writeRow(F("Burner on"), F("%d h"), boilerResponses[OpenThermDataId::BoilerBurnerHours]);
@@ -1609,6 +1636,8 @@ void handleHttpConfigFormRequest()
     Html.writeNumberBox(CFG_MIN_TSET, F("Min TSet"), PersistentData.minTSet, 20, 90);
     Html.writeNumberBox(CFG_BOILER_ON_DELAY, F("Boiler on delay (s)"), PersistentData.boilerOnDelay, 0, 7200);
     Html.writeCheckbox(CFG_PUMP_MOD, F("Pump Modulation"), PersistentData.usePumpModulation);
+    Html.writeNumberBox(CFG_DIP_THRESHOLD, F("Dip threshold"), PersistentData.dipDetectionThreshold, 0, 90);
+    Html.writeNumberBox(CFG_DIP_SLOPE, F("Dip slope"), PersistentData.dipDetectionSlope, 0, 60, 1);
     Html.writeSubmitButton(F("Save"));
     Html.writeFormEnd();
 
@@ -1654,6 +1683,8 @@ void handleHttpConfigFormPost()
     PersistentData.minTSet = WebServer.arg(CFG_MIN_TSET).toInt();
     PersistentData.boilerOnDelay = WebServer.arg(CFG_BOILER_ON_DELAY).toInt();
     PersistentData.usePumpModulation = WebServer.hasArg(CFG_PUMP_MOD);
+    PersistentData.dipDetectionThreshold = WebServer.arg(CFG_DIP_THRESHOLD).toInt();
+    PersistentData.dipDetectionSlope = WebServer.arg(CFG_DIP_SLOPE).toFloat();
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();
