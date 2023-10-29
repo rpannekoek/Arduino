@@ -961,8 +961,7 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
         {
             bool pwmPending = pwmDutyCycle < 1;
             float tSet = getDecimal(otFrame.dataValue);
-            float tBoiler = getDecimal(boilerResponses[OpenThermDataId::TBoiler]);
-            float tPwmCeiling = std::min(std::max(tBoiler, (float)PersistentData.minTSet), (float)PersistentData.maxTSet);
+            float tPwmCeiling = std::min(std::max(HeatMon.tBuffer, (float)PersistentData.minTSet), (float)PersistentData.maxTSet);
             const float tPwmFloor = 20;
             if (tSet >= tPwmFloor && tSet < tPwmCeiling && !isThermostatLowLoadMode)
             {
@@ -1001,7 +1000,7 @@ void handleBoilerResponse(OpenThermGatewayMessage otFrame)
         float tBoiler = getDecimal(otFrame.dataValue);
         tBoilerSlope = (getDecimal(boilerResponses[OpenThermDataId::TBoiler]) - tBoiler) * 60 / (currentTime - lastTboilerTime);
         lastTboilerTime = currentTime;
-        if (currentBoilerLevel == BoilerLevel::Low)
+        if (PersistentData.usePumpModulation && currentBoilerLevel == BoilerLevel::Low)
         {
             // We're in low-load mode and the pump is running.
             // If a sudden Tboiler dip is detected, immediately stop the pump.
