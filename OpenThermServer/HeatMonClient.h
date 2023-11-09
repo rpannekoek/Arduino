@@ -25,6 +25,11 @@ class HeatMonClient
             return _lastError;
         }
 
+        inline bool isHeatpumpOn()
+        {
+            return pIn > 0.5;
+        }
+
     private:
         WiFiClient _wifiClient;
         HTTPClient _httpClient;

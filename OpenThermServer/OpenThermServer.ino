@@ -892,7 +892,7 @@ bool handleThermostatLowLoadMode(bool switchedOn)
                     lowLoadDutyInterval = currentTime - lowLoadLastOn;
                 lowLoadLastOff = currentTime;
 
-                if (PersistentData.usePumpModulation && currentBoilerLevel != BoilerLevel::Thermostat)
+                if (PersistentData.usePumpModulation && !HeatMon.isHeatpumpOn() && currentBoilerLevel != BoilerLevel::Thermostat)
                 {
                     // Thermostat switched CH off and pump modulation is on.
                     // Switch CH off, but keep the TSet override (for a while). 
@@ -1000,7 +1000,7 @@ void handleBoilerResponse(OpenThermGatewayMessage otFrame)
         float tBoiler = getDecimal(otFrame.dataValue);
         tBoilerSlope = (getDecimal(boilerResponses[OpenThermDataId::TBoiler]) - tBoiler) * 60 / (currentTime - lastTboilerTime);
         lastTboilerTime = currentTime;
-        if (PersistentData.usePumpModulation && currentBoilerLevel == BoilerLevel::Low)
+        if (PersistentData.usePumpModulation && !HeatMon.isHeatpumpOn() && currentBoilerLevel == BoilerLevel::Low)
         {
             // We're in low-load mode and the pump is running.
             // If a sudden Tboiler dip is detected, immediately stop the pump.
