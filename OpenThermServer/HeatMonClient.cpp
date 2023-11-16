@@ -1,90 +1,33 @@
 #include "HeatMonClient.h"
-#include <ArduinoJson.h>
 #include <Tracer.h>
-
-#define MIN_CONTENT_LENGTH 100
-
-StaticJsonDocument<256> _response;
 
 // Constructor
 HeatMonClient::HeatMonClient(uint16_t timeout)
+    : RESTClient(timeout, new DynamicJsonDocument(256))
 {
-    isInitialized = false;
-    _httpClient.setTimeout(timeout);
-     // Re-use TCP connection (using HTTP Keep-Alive)?
-     // ESP8266 WebServer Keep-Alive times out after 2 sec, so it's useless to request it.
-    _httpClient.setReuse(false);
 }
+
 
 bool HeatMonClient::begin(const char* host)
 {
     Tracer tracer(F("HeatMonClient::begin"), host);
 
-    bool result = _httpClient.begin(_wifiClient, host, 80, F("/json"));
-    if (!result)
-        _lastError = F("Initialization failed");
+    String url = F("http://");
+    url += host;
+    url += F("/json");
 
-    isInitialized = true;
-    return result;
-}
-
-int HeatMonClient::requestData()
-{
-    Tracer tracer(F("HeatMonClient::requestData"));
-
-    int result = _httpClient.GET();
-
-    if (result < 0)
-    {
-        _lastError = HTTPClient::errorToString(result);
-        return result;
-    }
-    else if (result != HTTP_CODE_OK)
-    {
-        _lastError = F("HTTP status code ");
-        _lastError += result;
-        return result;
-    }
-    else if (_httpClient.getSize() < MIN_CONTENT_LENGTH)
-    {
-        _lastError = F("Unexpected Content Length: ");
-        _lastError += _httpClient.getSize();
-        return 0;
-    }
-
-    StreamString jsonResponse;
-    jsonResponse.reserve(_httpClient.getSize());
-
-    int bytesRead = _httpClient.writeToStream(&jsonResponse);
-    if (bytesRead < 0)
-    {
-        _lastError = HTTPClient::errorToString(bytesRead);
-        return bytesRead;
-    }
-
-    return parseJson(jsonResponse) ? HTTP_CODE_OK : 0;
+    return RESTClient::begin(url);
 }
 
 
-bool HeatMonClient::parseJson(String json)
+bool HeatMonClient::parseResponse(const JsonDocument& response)
 {
-    TRACE(F("JSON: '%s'\n"), json.c_str());
-
-    DeserializationError parseError = deserializeJson(_response, json);
-    if (parseError != DeserializationError::Ok)
-    {
-        _lastError = F("JSON error: "); 
-        _lastError += parseError.c_str();
-        TRACE(_lastError);
-        return false;     
-    }
-
-    tIn = _response["Tin"];
-    tOut = _response["Tout"];
-    tBuffer = _response["Tbuffer"];
-    flowRate = _response["Flow"];
-    pIn = _response["Pin"];
-    valve = _response["Valve"];
+    tIn = response["Tin"];
+    tOut = response["Tout"];
+    tBuffer = response["Tbuffer"];
+    flowRate = response["Flow"];
+    pIn = response["Pin"];
+    valve = response["Valve"];
 
     TRACE(F("tIn: %0.1f, tOut: %0.1f, tBuffer: %0.1f\n"), tIn, tOut, tBuffer);
     return true;
