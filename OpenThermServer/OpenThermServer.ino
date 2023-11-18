@@ -460,14 +460,14 @@ void onWiFiInitialized()
             updateHeatmonData = true;
             lastHeatmonUpdateTime = currentTime;
             lastHeatmonResult = result;
-            heatmonPollTime += HEATMON_POLL_INTERVAL;
+            heatmonPollTime = currentTime + HEATMON_POLL_INTERVAL;
         }
         else if (result != HTTP_REQUEST_PENDING)
         {
             if (result != lastHeatmonResult)
                 WiFiSM.logEvent(F("HeatMon: %s"), HeatMon.getLastError().c_str());
             lastHeatmonResult = result;
-            heatmonPollTime += HEATMON_POLL_INTERVAL;
+            heatmonPollTime = currentTime + HEATMON_POLL_INTERVAL;
         }
     }
 
@@ -480,12 +480,12 @@ void onWiFiInitialized()
             float currentTOutside = getDecimal(getResponse(OpenThermDataId::TOutside));
             updateTOutside = (WeatherService.temperature != currentTOutside);
             lastWeatherUpdateTime = currentTime;
-            weatherServicePollTime += WEATHER_SERVICE_POLL_INTERVAL;
+            weatherServicePollTime = currentTime + WEATHER_SERVICE_POLL_INTERVAL;
         }
         else if (result != HTTP_REQUEST_PENDING)
         {
             WiFiSM.logEvent(F("Weather: %s"), WeatherService.getLastError().c_str());
-            weatherServicePollTime += WEATHER_SERVICE_POLL_INTERVAL;
+            weatherServicePollTime = currentTime + WEATHER_SERVICE_POLL_INTERVAL;
         }
     }
 
