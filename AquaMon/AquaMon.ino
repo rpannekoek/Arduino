@@ -187,6 +187,7 @@ void setup()
     WiFiSM.registerStaticFiles(Files, _LastFile);    
     WiFiSM.on(WiFiInitState::TimeServerSynced, onTimeServerSynced);
     WiFiSM.on(WiFiInitState::Initialized, onWiFiInitialized);
+    WiFiSM.scanAccessPoints();
     WiFiSM.begin(PersistentData.wifiSSID, PersistentData.wifiKey, PersistentData.hostName);
 
     Tracer::traceFreeHeap();
