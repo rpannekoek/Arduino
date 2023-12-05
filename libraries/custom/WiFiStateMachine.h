@@ -78,7 +78,7 @@ class WiFiStateMachine
             return _state >= WiFiInitState::Connected;
         }
 
-        void scanAccessPoints(uint32_t intervalSeconds = 300, uint32_t switchDelaySeconds = 600, int8_t rssiThreshold = 3)
+        void scanAccessPoints(uint32_t intervalSeconds = 1800, uint32_t switchDelaySeconds = 1800, int8_t rssiThreshold = 6)
         {
             _scanAccessPointsInterval = intervalSeconds;
             _switchAccessPointDelay = switchDelaySeconds;

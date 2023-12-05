@@ -300,8 +300,8 @@ void WiFiStateMachine::run()
             if (wifiStatus == WL_CONNECTED)
             {
                 logEvent(F("WiFi reconnected. Access Point %s\n"), WiFi.BSSIDstr().c_str());
-                if (_scanAccessPointsInterval > 0)
-                    _scanAccessPointsTime = getCurrentTime() + _scanAccessPointsInterval;
+                if (_scanAccessPointsTime > 0)
+                    _scanAccessPointsTime = std::max(_scanAccessPointsTime, (time_t)(getCurrentTime() + _scanAccessPointsInterval));
                 setState(WiFiInitState::Initialized);
             }
             else if (_staDisconnected || (wifiStatus == WL_NO_SSID_AVAIL) || (currentStateMillis >= CONNECT_TIMEOUT_MS))
@@ -532,7 +532,7 @@ void WiFiStateMachine::scanForBetterAccessPoint()
             {
                 // To prevent frequent switching between equivalent Access Points
                 // we delay the next scan after switching.
-                _scanAccessPointsTime += _switchAccessPointDelay;
+                _scanAccessPointsTime = getCurrentTime() + _scanAccessPointsInterval + _switchAccessPointDelay;
                 setState(WiFiInitState::SwitchingAP);
             }
             else
