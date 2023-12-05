@@ -33,7 +33,7 @@
 #define HTTP_POLL_INTERVAL 60
 #define TEMP_POLL_INTERVAL 10
 #define CHARGE_CONTROL_INTERVAL 10
-#define CHARGE_LOG_SIZE 150
+#define CHARGE_LOG_SIZE 200
 #define CHARGE_LOG_PAGE_SIZE 50
 #define EVENT_LOG_LENGTH 50
 
@@ -223,6 +223,7 @@ void setup()
     Nav.registerHttpHandlers(WebServer);
 
     WebServer.on("/bt/json", handleHttpBluetoothJsonRequest);
+    WebServer.on("/chargelog/csv", handleHttpChargeLogCsvRequest);
     WebServer.on("/current", handleHttpCurrentRequest);
     WebServer.onNotFound(handleHttpNotFound);
     
@@ -478,6 +479,8 @@ void runEVSEStateMachine()
         case EVSEState::StopCharging:
             if (cpStatus == ControlPilotStatus::VehicleDetected)
                 setState(EVSEState::ChargeCompleted);
+            else if (cpStatus == ControlPilotStatus::Standby)
+                setState(EVSEState::Ready);
             else if (cpStatus != ControlPilotStatus::Charging && cpStatus != ControlPilotStatus::ChargingVentilated)
                 setUnexpectedControlPilotStatus();
             break;
@@ -531,6 +534,9 @@ bool stopCharging(const char* cause)
     chargingFinishedTime = currentTime;
 
     ControlPilot.setOff();
+    ControlPilot.awaitStatus(ControlPilotStatus::NoPower);
+
+    // Wait max 2 seconds for output current to drop below threshold
     int timeout = 20;
     do
     {
@@ -546,7 +552,20 @@ bool stopCharging(const char* cause)
     ControlPilot.setReady();
     ControlPilot.awaitStatus(ControlPilotStatus::VehicleDetected);
 
-    setState(EVSEState::StopCharging);
+    switch (ControlPilot.getStatus())
+    {
+        case ControlPilotStatus::Standby:
+            setState(EVSEState::Ready);
+            break;
+
+        case ControlPilotStatus::VehicleDetected:
+            setState(EVSEState::ChargeCompleted);
+            break;
+
+        default:
+            setState(EVSEState::StopCharging);
+    }
+
     return true;
 }
 
@@ -1087,6 +1106,28 @@ void handleHttpChargeLogRequest()
     WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
+void handleHttpChargeLogCsvRequest()
+{
+    Tracer tracer(F(__func__));
+
+    HttpResponse.clear();
+    HttpResponse.println(F("Time;Current Limit;Output Current;Temperature"));
+
+    ChargeLogEntry* logEntryPtr = ChargeLog.getFirstEntry();
+    while (logEntryPtr != nullptr)
+    {
+        HttpResponse.printf(
+            F("%s;%0.1f;%0.1f;%0.1f\r\n"),
+            formatTime("%H:%M:%S", logEntryPtr->time),
+            logEntryPtr->currentLimit,
+            logEntryPtr->outputCurrent,
+            logEntryPtr->temperature);
+
+        logEntryPtr = ChargeLog.getNextEntry();
+    }
+
+    WebServer.send(200, ContentTypeText, HttpResponse.c_str());
+}
 
 void handleHttpEventLogRequest()
 {
