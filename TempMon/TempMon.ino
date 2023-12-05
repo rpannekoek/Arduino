@@ -23,9 +23,10 @@
 
 #define SECONDS_PER_DAY (24 * 3600)
 #define HTTP_POLL_INTERVAL 60
-#define GOODWE_POLL_INTERVAL (5 * 60)
+#define GOODWE_POLL_INTERVAL (6 * 3600)
+#define GOODWE_RETRY_INTERVAL (5 * 60)
 #define EVENT_LOG_LENGTH 50
-#define FTP_RETRY_INTERVAL (30 * 60)
+#define FTP_RETRY_INTERVAL (15 * 60)
 #define HOUR_LOG_INTERVAL (30 * 60)
 #define TEMP_POLL_INTERVAL 6
 #define TEMP_LOG_AGGREGATIONS 10
@@ -348,9 +349,6 @@ void onWiFiInitialized()
         // This starts "night time" after a while (to let the sensor cool down a bit). 
         if (nightTime == 0) nightTime = currentTime  + NIGHT_OFFSET_DELAY;
 
-        // Try to find & initialize GoodWe(s) as soon as WiFi connection is restored
-        initGoodWeTime = currentTime;
-
         // Skip stuff that requires a WiFi connection.
         return;
     }
@@ -372,12 +370,13 @@ void onWiFiInitialized()
         if (initializeGoodWe())
         {
             lastGoodWeInitTime = currentTime;
-            initGoodWeTime = 0;
+            initGoodWeTime = currentTime + GOODWE_POLL_INTERVAL;
+            WiFiSM.logEvent(F("Check again at %s"), formatTime("%H:%M", initGoodWeTime));
         }
         else
         {
-            TRACE(F("Unable to initialize GoodWe; retry in %d s.\n"), GOODWE_POLL_INTERVAL);
-            initGoodWeTime += GOODWE_POLL_INTERVAL;
+            initGoodWeTime = currentTime + GOODWE_RETRY_INTERVAL;
+            TRACE(F("Unable to initialize GoodWe; retry at %s\n"), formatTime("%H:%M", initGoodWeTime));
         }
     }
 
@@ -391,7 +390,7 @@ void onWiFiInitialized()
         else
         {
             WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError());
-            syncFTPTime += FTP_RETRY_INTERVAL;
+            syncFTPTime = currentTime + FTP_RETRY_INTERVAL;
         }
     }
 }
@@ -646,13 +645,9 @@ void updateTempLog()
         {
             lastTempLogEntryPtr = TempLog.add(&newTempLogEntry);
             newTempLogEntry.time = currentTime;
-            if (PersistentData.isFTPEnabled())
-            {
-                if (++ftpSyncEntries > TEMP_LOG_SIZE)
-                    ftpSyncEntries = TEMP_LOG_SIZE;
-                if (ftpSyncEntries >= PersistentData.ftpSyncEntries)
-                    syncFTPTime = currentTime;
-            }
+            ftpSyncEntries = std::min(ftpSyncEntries + 1, TEMP_LOG_SIZE);
+            if (PersistentData.isFTPEnabled() && ftpSyncEntries == PersistentData.ftpSyncEntries)
+                syncFTPTime = currentTime;
         }
         newTempLogEntry.reset(); // Moving average
     }
