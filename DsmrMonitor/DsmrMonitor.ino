@@ -519,7 +519,7 @@ void onWiFiInitialized()
         else
         {
             WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError());
-            syncFTPTime += FTP_RETRY_INTERVAL;
+            syncFTPTime = currentTime + FTP_RETRY_INTERVAL;
         }
     }
 }
