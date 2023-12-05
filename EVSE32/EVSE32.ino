@@ -111,7 +111,7 @@ const char* ButtonClass = "button";
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
-DsmrMonitorClient SmartMeter(WIFI_TIMEOUT_MS);
+DsmrMonitorClient SmartMeter(5000); // 5s timeout
 BLE Bluetooth;
 StringBuilder HttpResponse(8192); // 8KB HTTP response buffer
 HtmlWriter Html(HttpResponse, Files[Logo], Files[Styles], 60);
