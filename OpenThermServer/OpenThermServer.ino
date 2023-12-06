@@ -12,6 +12,7 @@
 #include <HtmlWriter.h>
 #include "OTGW.h"
 #include <Log.h>
+#include <AsyncHTTPRequest_Generic.h>
 #include "WeatherAPI.h"
 #include <Wire.h>
 #include "PersistentData.h"
@@ -135,8 +136,8 @@ OpenThermGateway OTGW(Serial, 14, OTGW_RESPONSE_TIMEOUT_MS);
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
-HeatMonClient HeatMon(WIFI_TIMEOUT_MS);
-WeatherAPI WeatherService(WIFI_TIMEOUT_MS);
+HeatMonClient HeatMon;
+WeatherAPI WeatherService;
 StringBuilder HttpResponse(12 * 1024); // 12KB HTTP response buffer
 HtmlWriter Html(HttpResponse, Files[FileId::Logo], Files[FileId::Styles], 40);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
@@ -160,7 +161,6 @@ time_t otgwTimeout = OTGW_TIMEOUT;
 time_t heatmonPollTime = 0;
 time_t lastHeatmonUpdateTime = 0;
 time_t weatherServicePollTime = 0;
-time_t weatherServiceTimeout = 0;
 time_t lastWeatherUpdateTime = 0;
 time_t lastTboilerTime = 0;
 
@@ -312,6 +312,10 @@ void setup()
     {
         HeatMon.begin(PersistentData.heatmonHost);
     }
+    if (PersistentData.weatherApiKey[0] != 0)
+    {
+        WeatherService.begin(PersistentData.weatherApiKey, PersistentData.weatherLocation);
+    }
 
     Tracer::traceFreeHeap();
 
@@ -422,6 +426,7 @@ void onTimeServerSynced()
     
     updateLogTime = currentTime + 1;
     heatmonPollTime = currentTime + 10;
+    weatherServicePollTime = currentTime + 15;
 }
 
 
@@ -449,61 +454,38 @@ void onWiFiInitialized()
     if ((currentTime >= heatmonPollTime) && HeatMon.isInitialized)
     {
         // Get data from HeatMon
-        heatmonPollTime = currentTime + HEATMON_POLL_INTERVAL;
-        OTGW.feedWatchdog();
         int result = HeatMon.requestData();
-        if (result == HTTP_CODE_OK)
+        if (result == HTTP_OK)
         {
             updateHeatmonData = true;
             lastHeatmonUpdateTime = currentTime;
+            lastHeatmonResult = result;
+            heatmonPollTime = currentTime + HEATMON_POLL_INTERVAL;
         }
-        else if (result != lastHeatmonResult)
-            WiFiSM.logEvent(F("HeatMon: %s"), HeatMon.getLastError().c_str());
-        lastHeatmonResult = result;
-        return;
+        else if (result != HTTP_REQUEST_PENDING)
+        {
+            if (result != lastHeatmonResult)
+                WiFiSM.logEvent(F("HeatMon: %s"), HeatMon.getLastError().c_str());
+            lastHeatmonResult = result;
+            heatmonPollTime = currentTime + HEATMON_POLL_INTERVAL;
+        }
     }
 
-    if (currentTime >= weatherServicePollTime)
+    if ((currentTime >= weatherServicePollTime) && WeatherService.isInitialized)
     {
         // Get outside temperature from Weather Service
-        weatherServicePollTime = currentTime + WEATHER_SERVICE_POLL_INTERVAL;
-
-        const char* apiKey = PersistentData.weatherApiKey;
-        if (apiKey[0] != 0)
+        int result = WeatherService.requestData();
+        if (result == HTTP_OK)
         {
-            OTGW.feedWatchdog();
-            if (WeatherService.beginRequestData(apiKey, PersistentData.weatherLocation))
-                weatherServiceTimeout = currentTime + WEATHER_SERVICE_RESPONSE_TIMEOUT;
-            else
-                TRACE(F("Failed sending Weather service request"));
-            return;
+            float currentTOutside = getDecimal(getResponse(OpenThermDataId::TOutside));
+            updateTOutside = (WeatherService.temperature != currentTOutside);
+            lastWeatherUpdateTime = currentTime;
+            weatherServicePollTime = currentTime + WEATHER_SERVICE_POLL_INTERVAL;
         }
-    }
-
-    if (weatherServiceTimeout != 0)
-    {
-        if (currentTime >= weatherServiceTimeout)
+        else if (result != HTTP_REQUEST_PENDING)
         {
-            WiFiSM.logEvent(F("Weather service timeout"));
-            WeatherService.close();
-            weatherServiceTimeout = 0;
-            return;
-        }
-
-        int httpCode = WeatherService.endRequestData();
-        if (httpCode != 0)
-        {
-            weatherServiceTimeout = 0;
-            if (httpCode == HTTP_CODE_OK)
-            {
-                lastWeatherUpdateTime = currentTime;
-                float currentTOutside = getDecimal(getResponse(OpenThermDataId::TOutside));
-                updateTOutside = (WeatherService.temperature != currentTOutside);
-            }
-            else
-            {
-                WiFiSM.logEvent(F("Weather service error %d"), httpCode);
-            }
+            WiFiSM.logEvent(F("Weather: %s"), WeatherService.getLastError().c_str());
+            weatherServicePollTime = currentTime + WEATHER_SERVICE_POLL_INTERVAL;
         }
     }
 
