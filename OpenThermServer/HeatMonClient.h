@@ -1,12 +1,11 @@
 #ifndef HEATMON_CLIENT_H
 #define HEATMON_CLIENT_H
 
-#include <ESPHTTPClient.h>
+#include <RESTClient.h>
 
-class HeatMonClient
+class HeatMonClient : public RESTClient
 {
     public:
-        bool isInitialized;
         float tIn;
         float tOut;
         float tBuffer;
@@ -15,27 +14,17 @@ class HeatMonClient
         bool valve;
 
         // Constructor
-        HeatMonClient(uint16_t timeout);
+        HeatMonClient(uint16_t timeout = 10);
 
         bool begin(const char* host);
-        int requestData();
-
-        inline String getLastError()
-        {
-            return _lastError;
-        }
 
         inline bool isHeatpumpOn()
         {
             return pIn > 0.5;
         }
 
-    private:
-        WiFiClient _wifiClient;
-        HTTPClient _httpClient;
-        String _lastError;
-
-        bool parseJson(String json);
+    protected:
+        virtual bool parseResponse(const JsonDocument& response);
 };
 
 
