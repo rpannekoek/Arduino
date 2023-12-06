@@ -97,6 +97,7 @@ const char* Files[] PROGMEM =
 
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
+const char* ContentTypeJson = "application/json";
 const char* ContentTypeText = "text/plain";
 const char* ButtonClass = "button";
 
@@ -169,6 +170,7 @@ time_t lowLoadLastOff = 0;
 uint32_t lowLoadPeriod = 0;
 uint32_t lowLoadDutyInterval = 0;
 
+bool pumpOff = false;
 bool updateTOutside = false;
 bool updateHeatmonData = false;
 int lastHeatmonResult = 0;
@@ -288,6 +290,7 @@ void setup()
     };
 
     Nav.registerHttpHandlers(WebServer);
+    WebServer.on("/pump", handleHttpPumpRequest);
     WebServer.on("/traffic", handleHttpOpenThermTrafficRequest);
     WebServer.on("/log-otgw", handleHttpOTGWMessageLogRequest);
     WebServer.onNotFound(handleHttpNotFound);
@@ -630,6 +633,7 @@ bool setBoilerLevel(BoilerLevel level, time_t duration)
 
 void cancelOverride()
 {
+    pumpOff = false;
     pwmDutyCycle = 1;
     lowLoadPeriod = 0;
     lowLoadDutyInterval = 0;
@@ -860,7 +864,7 @@ bool handleThermostatLowLoadMode(bool switchedOn)
 {
     bool isThermostatLowLoadMode = thermostatRequests[OpenThermDataId::MaxRelModulation] == 0;
 
-    if (isThermostatLowLoadMode)
+    if (isThermostatLowLoadMode && !pumpOff)
     {
         if (currentBoilerLevel == BoilerLevel::PumpOnly)
         {
@@ -1344,6 +1348,34 @@ void writeHtmlOpenThermDataTable(const String& title, uint16_t* otDataTable)
 
     Html.writeTableEnd();
     Html.writeSectionEnd();
+}
+
+
+void handleHttpPumpRequest()
+{
+    String state = WebServer.arg("state");
+    Tracer tracer(F("handleHttpPumpRequest"), state.c_str());
+
+    if (state == "off")
+    {
+        if (currentBoilerLevel == BoilerLevel::Low)
+        {
+            pumpOff = true;
+            setBoilerLevel(BoilerLevel::Off, TSET_OVERRIDE_DURATION);
+            WiFiSM.logEvent(F("Pump off on request"));
+        }
+    }
+    else if (pumpOff)
+    {
+        pumpOff = false;
+        setBoilerLevel(BoilerLevel::Low, TSET_OVERRIDE_DURATION);
+        WiFiSM.logEvent(F("Pump resume on request"));
+    }
+
+    HttpResponse.clear();
+    HttpResponse.printf(F("\"%s\""), BoilerLevelNames[currentBoilerLevel]);
+
+    WebServer.send(200, ContentTypeJson, HttpResponse.c_str());
 }
 
 
