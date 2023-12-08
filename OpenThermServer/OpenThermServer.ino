@@ -33,7 +33,6 @@
 #define OT_LOG_PAGE_SIZE 50
 #define PWM_PERIOD (10 * 60)
 #define TSET_OVERRIDE_DURATION (15 * 60)
-#define DIP_SUPPRESSION_DURATION (5 * 60)
 #define WEATHER_SERVICE_POLL_INTERVAL (15 * 60)
 #define WEATHER_SERVICE_RESPONSE_TIMEOUT 10
 #define FTP_RETRY_INTERVAL (15 * 60)
@@ -68,8 +67,6 @@
 #define CFG_BOILER_ON_DELAY F("boilerOnDelay")
 #define CFG_HEATMON_HOST F("heatmonHost")
 #define CFG_PUMP_MOD F("pumpMod")
-#define CFG_DIP_THRESHOLD F("dipThreshold")
-#define CFG_DIP_SLOPE F("dipSlope")
 
 enum FileId
 {
@@ -188,7 +185,6 @@ BoilerLevel changeBoilerLevel;
 time_t changeBoilerLevelTime = 0;
 int setBoilerLevelRetries = 0; 
 float pwmDutyCycle = 1;
-float tBoilerSlope = 0;
 
 String otgwResponse;
 
@@ -981,25 +977,6 @@ void handleBoilerResponse(OpenThermGatewayMessage otFrame)
     if (otFrame.msgType == OpenThermMsgType::UnknownDataId)
         return;
 
-    if (otFrame.dataId == OpenThermDataId::TBoiler)
-    {
-        float tBoiler = getDecimal(otFrame.dataValue);
-        tBoilerSlope = (getDecimal(boilerResponses[OpenThermDataId::TBoiler]) - tBoiler) * 60 / (currentTime - lastTboilerTime);
-        lastTboilerTime = currentTime;
-        if (PersistentData.usePumpModulation && !HeatMon.isHeatpumpOn() && currentBoilerLevel == BoilerLevel::Low)
-        {
-            // We're in low-load mode and the pump is running.
-            // If a sudden Tboiler dip is detected, immediately stop the pump.
-            // Pump will restart after 5 minutes, or when new load-load cycle starts.
-            if ((tBoiler < PersistentData.dipDetectionThreshold) && (tBoilerSlope > PersistentData.dipDetectionSlope))
-            {
-                WiFiSM.logEvent(F("Dip: %0.1f °C/min @ %0.1f °C"), tBoilerSlope, tBoiler);
-                setBoilerLevel(BoilerLevel::Off, DIP_SUPPRESSION_DURATION);
-                changeBoilerLevel = BoilerLevel::Low;
-            }
-        }
-    }
-
     boilerResponses[otFrame.dataId] = otFrame.dataValue;
 }
 
@@ -1273,7 +1250,6 @@ void handleHttpOpenThermRequest()
     Html.writeTableStart();
     Html.writeRow(F("Status"), F("%s"), OTGW.getSlaveStatus(boilerResponses[OpenThermDataId::Status]));
     Html.writeRow(F("TSet"), F("%0.1f °C"), getDecimal(boilerResponses[OpenThermDataId::TSet]));
-    Html.writeRow(F("TBoiler slope"), F("%0.1f °C/min"), tBoilerSlope);
     Html.writeRow(F("Fault flags"), F("%s"), OTGW.getFaultFlags(boilerResponses[OpenThermDataId::SlaveFault]));
     Html.writeRow(F("Burner starts"), F("%d"), burnerStarts);
     Html.writeRow(F("Burner on"), F("%d h"), boilerResponses[OpenThermDataId::BoilerBurnerHours]);
@@ -1649,8 +1625,6 @@ void handleHttpConfigFormRequest()
     Html.writeNumberBox(CFG_MIN_TSET, F("Min TSet"), PersistentData.minTSet, 20, 90);
     Html.writeNumberBox(CFG_BOILER_ON_DELAY, F("Boiler on delay (s)"), PersistentData.boilerOnDelay, 0, 7200);
     Html.writeCheckbox(CFG_PUMP_MOD, F("Pump Modulation"), PersistentData.usePumpModulation);
-    Html.writeNumberBox(CFG_DIP_THRESHOLD, F("Dip threshold"), PersistentData.dipDetectionThreshold, 0, 90);
-    Html.writeNumberBox(CFG_DIP_SLOPE, F("Dip slope"), PersistentData.dipDetectionSlope, 0, 60, 1);
     Html.writeSubmitButton(F("Save"));
     Html.writeFormEnd();
 
@@ -1696,8 +1670,6 @@ void handleHttpConfigFormPost()
     PersistentData.minTSet = WebServer.arg(CFG_MIN_TSET).toInt();
     PersistentData.boilerOnDelay = WebServer.arg(CFG_BOILER_ON_DELAY).toInt();
     PersistentData.usePumpModulation = WebServer.hasArg(CFG_PUMP_MOD);
-    PersistentData.dipDetectionThreshold = WebServer.arg(CFG_DIP_THRESHOLD).toInt();
-    PersistentData.dipDetectionSlope = WebServer.arg(CFG_DIP_SLOPE).toFloat();
 
     PersistentData.validate();
     PersistentData.writeToEEPROM();
