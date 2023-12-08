@@ -10,10 +10,12 @@
 #include <StringBuilder.h>
 #include <HtmlWriter.h>
 #include <Log.h>
+#include <AsyncHTTPRequest_Generic.h>
 #include "PersistentData.h"
 #include "Aquarea.h"
 #include "MonitoredTopics.h"
 #include "DayStatsEntry.h"
+#include "OTGWClient.h"
 
 #define SECONDS_PER_DAY (24 * 3600)
 #define HTTP_POLL_INTERVAL 60
@@ -41,6 +43,7 @@
 #define CFG_ANTI_FREEZE_TEMP F("AntiFreezeTemp")
 #define CFG_LOG_PACKET_ERRORS F("LogPacketErrors")
 #define CFG_ZONE1_OFFSET F("Zone1Offset")
+#define CFG_OTGW_HOST F("OTGW")
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeText = "text/plain";
@@ -77,7 +80,8 @@ const char* Files[] PROGMEM =
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
-StringBuilder HttpResponse(8 * 1024); // 8 KB HTTP response buffer
+OTGWClient OTGW;
+StringBuilder HttpResponse(4 * 1024); // 4 kB HTTP response buffer (we're using chunked responses)
 HtmlWriter Html(HttpResponse, Files[Logo], Files[Styles], DEFAULT_BAR_LENGTH);
 Log<const char> EventLog(EVENT_LOG_LENGTH);
 StaticLog<TopicLogEntry> TopicLog(TOPIC_LOG_SIZE);
@@ -97,6 +101,9 @@ uint16_t heatPumpOnCount = 0;
 bool isDefrosting = false;
 bool antiFreezeActivated = false;
 bool testAntiFreeze = false;
+bool testDefrost = false;
+bool pumpPrime = false;
+int otgwAttempt = 0;
 
 time_t currentTime = 0;
 time_t queryAquareaTime = 0;
@@ -195,6 +202,11 @@ void setup()
     HeatPump.setZone1Offset(PersistentData.zone1Offset);
     HeatPump.begin();
 
+    if (PersistentData.otgwHost[0] != 0)
+    {
+        OTGW.begin(PersistentData.otgwHost);
+    }
+
     digitalWrite(LED_BUILTIN, LED_OFF);
 }
 
@@ -255,7 +267,23 @@ void onWiFiInitialized()
             WiFiSM.logEvent(F("Failed sending Aquarea query"));
     }
 
-    if ((syncFTPTime != 0) && (currentTime >= syncFTPTime) && WiFiSM.isConnected())
+    if (!WiFiSM.isConnected())
+        return;
+
+    if (OTGW.isInitialized && OTGW.isRequestPending())
+    {
+        int otgwResult = OTGW.requestData();
+        if (otgwResult == HTTP_OK)
+            WiFiSM.logEvent(F("OTGW: '%s'"), OTGW.boilerLevel);
+        else if (otgwResult != HTTP_REQUEST_PENDING)
+        {
+            WiFiSM.logEvent(F("OTGW: %s (#%d)"), OTGW.getLastError().c_str(), ++otgwAttempt);
+            if (otgwAttempt < 3)
+                OTGW.retry();
+        }
+    }
+
+    if ((syncFTPTime != 0) && (currentTime >= syncFTPTime))
     {
         if (trySyncFTP(nullptr))
         {
@@ -283,10 +311,59 @@ void handleNewAquareaData()
     float compPower = HeatPump.getTopic(TopicId::Compressor_Power).getValue().toFloat();
     float heatPower = HeatPump.getTopic(TopicId::Heat_Power).getValue().toFloat();
     int defrostingState = HeatPump.getTopic(TopicId::Defrosting_State).getValue().toInt();
+    float pumpFlow = HeatPump.getTopic(TopicId::Pump_Flow).getValue().toFloat();
 
+    if (testDefrost) defrostingState = 1;
+
+    if (OTGW.isInitialized && WiFiSM.isConnected())
+        otgwPumpControl(pumpFlow, compPower, defrostingState);
     antiFreezeControl(inletTemp, outletTemp, compPower);
     updateDayStats(secondsSinceLastUpdate, compPower, heatPower, defrostingState);
     updateTopicLog();
+}
+
+
+bool otgwSetPump(bool on, const String& reason = "")
+{
+    if (on)
+        WiFiSM.logEvent(F("OTGW Pump resume"));
+    else
+        WiFiSM.logEvent(F("OTGW Pump off: %s"), reason.c_str());
+
+    otgwAttempt = 0;
+    if (OTGW.setPump(on, reason) != HTTP_REQUEST_PENDING)
+    {
+        WiFiSM.logEvent(F("OTGW: %s"), OTGW.getLastError().c_str());
+        return false;
+    }
+    return true;
+}
+
+
+void otgwPumpControl(float pumpFlow, float compPower, int defrostingState)
+{
+    if ((defrostingState != 0) && !isDefrosting)
+    {
+        // Defrost started
+        otgwSetPump(false, F("Defrost"));
+    }
+    else if ((defrostingState == 0) && isDefrosting)
+    {
+        // Defrost stopped
+        otgwSetPump(true);
+    }
+    else if ((pumpFlow > 7) && (compPower == 0) && !isDefrosting && !antiFreezeActivated && !pumpPrime)
+    {
+        // Pump is on, but compressor not yet: "pump prime"
+        pumpPrime = true;
+        otgwSetPump(false, F("Prime"));
+    }
+    else if ((heatPumpOnCount == 10) && pumpPrime)
+    {
+        // Compressor is on for 1 minute; pump prime finished
+        pumpPrime = false;
+        otgwSetPump(true);
+    }
 }
 
 
@@ -450,6 +527,16 @@ void writeTopicLogCsv(TopicLogEntry* logEntryPtr, Print& destination)
 }
 
 
+void sendChunk(bool isLast = false)
+{
+    TRACE(F("Chunk size: %d\n"), HttpResponse.length());
+    WebServer.sendContent(HttpResponse);
+    HttpResponse.clear();
+    if (isLast)
+        WebServer.chunkedResponseFinalize();
+}
+
+
 void handleHttpRootRequest()
 {
     Tracer tracer(F("handleHttpRootRequest"));
@@ -472,6 +559,7 @@ void handleHttpRootRequest()
         ? "Not yet"
         : formatTime("%H:%M:%S", lastPacketReceivedTime);
 
+    WebServer.chunkedResponseModeStart(200, ContentTypeHtml);
     Html.writeHeader(F("Home"), Nav, HTTP_POLL_INTERVAL);
 
     Html.writeDivStart(F("flex-container"));
@@ -489,15 +577,19 @@ void handleHttpRootRequest()
     Html.writeTableEnd();
     Html.writeSectionEnd();
 
+    sendChunk();
+
     if (lastPacketReceivedTime != 0)
         writeCurrentValues();
     
+    sendChunk();
+
     writeStatisticsPerDay();
 
     Html.writeDivEnd();
     Html.writeFooter();
 
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    sendChunk(true);
 }
 
 
@@ -595,6 +687,7 @@ void handleHttpTopicsRequest()
 {
     Tracer tracer(F("handleHttpTopicsRequest"));
 
+    WebServer.chunkedResponseModeStart(200, ContentTypeHtml);
     Html.writeHeader(F("Topics"), Nav);
 
     if (lastPacketReceivedTime != 0)
@@ -605,6 +698,7 @@ void handleHttpTopicsRequest()
 
         Html.writeTableStart();
 
+        int i = 0;
         for (TopicId topicId : HeatPump.getAllTopicIds())
         {
             Topic topic = HeatPump.getTopic(topicId);
@@ -614,14 +708,16 @@ void handleHttpTopicsRequest()
             Html.writeCell(topic.getValue());
             Html.writeCell(topic.getDescription());
             Html.writeRowEnd();
+
+            if (i++ % 20 == 0)
+                sendChunk();
         }
 
         Html.writeTableEnd();
     }
 
     Html.writeFooter();
-
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    sendChunk(true);
 }
 
 
@@ -662,11 +758,7 @@ void handleHttpTopicLogRequest()
         Html.writeRowEnd();
 
         if (i % 10 == 0)
-        {
-            TRACE(F("Chunk size: %d\n"), strlen(HttpResponse));
-            WebServer.sendContent(HttpResponse);
-            HttpResponse.clear();
-        }
+            sendChunk();
 
         logEntryPtr = TopicLog.getNextEntry();
     }
@@ -674,9 +766,7 @@ void handleHttpTopicLogRequest()
     Html.writeTableEnd();
     Html.writeFooter();
 
-    TRACE(F("Chunk size: %d\n"), strlen(HttpResponse));
-    WebServer.sendContent(HttpResponse);
-    WebServer.chunkedResponseFinalize();
+    sendChunk(true);
 }
 
 
@@ -747,7 +837,18 @@ void handleHttpTestRequest()
             switchState);
     }
 
+    if (WiFiSM.shouldPerformAction(F("defrost")))
+    {
+        testDefrost = !testDefrost;
+        handleNewAquareaData();
+        const char* switchState = testDefrost ? "on" : "off"; 
+        Html.writeParagraph(
+            F("Defrost test: %s"),
+            switchState);
+    }
+
     Html.writeActionLink(F("antiFreeze"), F("Test anti-freeze (switch)"), currentTime, ButtonClass);
+    Html.writeActionLink(F("defrost"), F("Test defrost (switch)"), currentTime, ButtonClass);
 
     if (WiFiSM.shouldPerformAction(F("fillDayStats")))
     {
@@ -774,6 +875,17 @@ void handleHttpTestRequest()
     }
     else
         Html.writeActionLink(F("fillTopicLog"), F("Fill Topic Log"), currentTime, ButtonClass);
+
+    if (WiFiSM.shouldPerformAction(F("fillEventLog")))
+    {
+        for (int i = 0; i < EVENT_LOG_LENGTH; i++)
+        {
+            WiFiSM.logEvent(F("Test event to fill the event log"));
+        }
+        Html.writeParagraph(F("Event Log filled."));
+    }
+    else
+        Html.writeActionLink(F("fillEventLog"), F("Fill Event Log"), currentTime, ButtonClass);
 
     Html.writeFooter();
 
@@ -847,6 +959,7 @@ void handleHttpEventLogRequest()
 {
     Tracer tracer(F("handleHttpEventLogRequest"));
 
+    WebServer.chunkedResponseModeStart(200, ContentTypeHtml);
     Html.writeHeader(F("Event log"), Nav);
 
     if (WiFiSM.shouldPerformAction(F("clear")))
@@ -855,18 +968,20 @@ void handleHttpEventLogRequest()
         WiFiSM.logEvent(F("Event log cleared."));
     }
 
+    int i = 0;
     const char* event = EventLog.getFirstEntry();
     while (event != nullptr)
     {
         Html.writeDiv(F("%s"), event);
         event = EventLog.getNextEntry();
+        if (i++ % 20 == 0)
+            sendChunk();
     }
 
     Html.writeActionLink(F("clear"), F("Clear event log"), currentTime, ButtonClass);
 
     Html.writeFooter();
-
-    WebServer.send(200, ContentTypeHtml, HttpResponse);
+    sendChunk(true);
 }
 
 
@@ -888,6 +1003,7 @@ void handleHttpConfigFormRequest()
     Html.writeNumberBox(CFG_ANTI_FREEZE_TEMP, F("T<sub>Anti-freeze</sub>"), PersistentData.antiFreezeTemp, 4, 10);
     Html.writeNumberBox(CFG_ZONE1_OFFSET, F("Zone1 offset"), PersistentData.zone1Offset, -5, 5, 1);
     Html.writeCheckbox(CFG_LOG_PACKET_ERRORS, F("Log packet errors"), PersistentData.logPacketErrors);
+    Html.writeTextBox(CFG_OTGW_HOST, F("OTGW host"), PersistentData.otgwHost, sizeof(PersistentData.otgwHost) - 1);
     Html.writeSubmitButton(F("Save"));
     Html.writeFormEnd();
 
@@ -923,6 +1039,7 @@ void handleHttpConfigFormPost()
     copyString(WebServer.arg(CFG_FTP_SERVER), PersistentData.ftpServer, sizeof(PersistentData.ftpServer)); 
     copyString(WebServer.arg(CFG_FTP_USER), PersistentData.ftpUser, sizeof(PersistentData.ftpUser)); 
     copyString(WebServer.arg(CFG_FTP_PASSWORD), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword)); 
+    copyString(WebServer.arg(CFG_OTGW_HOST), PersistentData.otgwHost, sizeof(PersistentData.otgwHost)); 
 
     PersistentData.ftpSyncEntries = WebServer.arg(CFG_FTP_SYNC_ENTRIES).toInt();
     PersistentData.antiFreezeTemp = WebServer.arg(CFG_ANTI_FREEZE_TEMP).toInt();

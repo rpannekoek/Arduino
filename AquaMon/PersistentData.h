@@ -13,6 +13,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
     uint16_t antiFreezeTemp;
     bool logPacketErrors;
     float zone1Offset;
+    char otgwHost[32];
 
 
     bool inline ftpIsEnabled()
@@ -31,7 +32,8 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         sizeof(ftpSyncEntries)  +
         sizeof(antiFreezeTemp) +
         sizeof(logPacketErrors) + 
-        sizeof(zone1Offset)
+        sizeof(zone1Offset) +
+        sizeof(otgwHost)
         ) {}
 
     virtual void initialize()
@@ -47,6 +49,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         antiFreezeTemp = 5;
         logPacketErrors = false;
         zone1Offset = 0;
+        otgwHost[0] = 0;
     }
 
     virtual void validate()
@@ -59,6 +62,7 @@ struct __attribute__ ((packed)) PersistentDataStruct : PersistentDataBase
         ftpServer[sizeof(ftpServer) - 1] = 0;
         ftpUser[sizeof(ftpUser) - 1] = 0;
         ftpPassword[sizeof(ftpPassword) - 1] = 0;
+        otgwHost[sizeof(otgwHost) - 1] = 0;
 
         ftpSyncEntries = std::min(ftpSyncEntries, (uint16_t)250);
         antiFreezeTemp = std::min(antiFreezeTemp, (uint16_t)10);

@@ -11,22 +11,22 @@ RESTClient::RESTClient(uint16_t timeout, JsonDocument* responseDocPtr)
 }
 
 
-bool RESTClient::begin(const String& url)
+bool RESTClient::begin(const String& baseUrl)
 {
-    _url = url;
+    _baseUrl = baseUrl;
     _requestPending = false;
     isInitialized = true;
     return isInitialized;
 }
 
 
-int RESTClient::requestData()
+int RESTClient::requestData(const String& urlSuffix)
 {
     if (!_requestPending)
     {
-        const char* url = _url.c_str();
-        TRACE(F("HTTP GET %s\n"), url);
-        if (!_asyncHttpRequest.open("GET", url))
+        String url = _baseUrl + urlSuffix;
+        TRACE(F("HTTP GET %s\n"), url.c_str());
+        if (!_asyncHttpRequest.open("GET", url.c_str()))
         {
             _lastError = F("Open failed");
             return HTTP_OPEN_FAILED;

@@ -1335,23 +1335,23 @@ void writeHtmlOpenThermDataTable(const String& title, uint16_t* otDataTable)
 
 void handleHttpPumpRequest()
 {
-    String state = WebServer.arg("state");
-    Tracer tracer(F("handleHttpPumpRequest"), state.c_str());
+   Tracer tracer(F("handleHttpPumpRequest"));
 
-    if (state == "off")
+    if (WebServer.hasArg("off"))
     {
         if (currentBoilerLevel == BoilerLevel::Low)
         {
             pumpOff = true;
             setBoilerLevel(BoilerLevel::Off, TSET_OVERRIDE_DURATION);
-            WiFiSM.logEvent(F("Pump off on request"));
+            String reason = WebServer.arg("reason");
+            WiFiSM.logEvent(F("Pump off: %s"), reason.c_str());
         }
     }
     else if (pumpOff)
     {
         pumpOff = false;
         setBoilerLevel(BoilerLevel::Low, TSET_OVERRIDE_DURATION);
-        WiFiSM.logEvent(F("Pump resume on request"));
+        WiFiSM.logEvent(F("Pump resume"));
     }
 
     HttpResponse.clear();

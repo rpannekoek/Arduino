@@ -18,22 +18,27 @@ class RESTClient
         // Constructor
         RESTClient(uint16_t timeout, JsonDocument* responseDocPtr);
 
-        int requestData();
+        int requestData(const String& urlSuffix = "");
 
         inline String getLastError()
         {
             return _lastError;
         }
 
+        inline bool isRequestPending()
+        {
+            return _requestPending;
+        }
+
     protected:
         AsyncHTTPRequest _asyncHttpRequest;
         JsonDocument& _responseDoc;
-        String _url;
+        String _baseUrl;
         String _lastError;
         uint16_t _timeout;
         bool _requestPending;
 
-        bool begin(const String& url);
+        bool begin(const String& baseUrl);
         virtual DeserializationError parseJson(const String& json);
         virtual bool parseResponse(const JsonDocument& response) = 0;
 };
