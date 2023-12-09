@@ -28,6 +28,8 @@
 #define QUERY_AQUAREA_INTERVAL 6
 #define AGGREGATION_INTERVAL 60
 #define ANTI_FREEZE_DELTA_T 5
+#define HP_ON_THRESHOLD 10
+#define PUMP_FLOW_THRESHOLD 7
 
 #define LED_ON 0
 #define LED_OFF 1
@@ -315,11 +317,19 @@ void handleNewAquareaData()
 
     if (testDefrost) defrostingState = 1;
 
+    bool pumpIsOn = pumpFlow >= PUMP_FLOW_THRESHOLD;
+    if (!pumpIsOn)
+        heatPumpOnCount = 0;
+    else if (compPower > 0)
+        heatPumpOnCount++;
+
     if (OTGW.isInitialized && WiFiSM.isConnected())
-        otgwPumpControl(pumpFlow, compPower, defrostingState);
+        otgwPumpControl(pumpIsOn, defrostingState);
     antiFreezeControl(inletTemp, outletTemp, compPower);
     updateDayStats(secondsSinceLastUpdate, compPower, heatPower, defrostingState);
     updateTopicLog();
+
+    isDefrosting = defrostingState != 0;
 }
 
 
@@ -340,7 +350,7 @@ bool otgwSetPump(bool on, const String& reason = "")
 }
 
 
-void otgwPumpControl(float pumpFlow, float compPower, int defrostingState)
+void otgwPumpControl(bool pumpIsOn, int defrostingState)
 {
     if ((defrostingState != 0) && !isDefrosting)
     {
@@ -352,13 +362,13 @@ void otgwPumpControl(float pumpFlow, float compPower, int defrostingState)
         // Defrost stopped
         otgwSetPump(true);
     }
-    else if ((pumpFlow > 7) && (compPower == 0) && !isDefrosting && !antiFreezeActivated && !pumpPrime)
+    else if (pumpIsOn && (heatPumpOnCount == 0) && !isDefrosting && !antiFreezeActivated && !pumpPrime)
     {
         // Pump is on, but compressor not yet: "pump prime"
         pumpPrime = true;
         otgwSetPump(false, F("Prime"));
     }
-    else if ((heatPumpOnCount == 10) && pumpPrime)
+    else if ((heatPumpOnCount == HP_ON_THRESHOLD) && pumpPrime)
     {
         // Compressor is on for 1 minute; pump prime finished
         pumpPrime = false;
@@ -406,9 +416,6 @@ void antiFreezeControl(float inletTemp, float outletTemp, float compPower)
 
 void updateDayStats(uint32_t secondsSinceLastUpdate, float powerInKW, float powerOutKW, int defrostingState)
 {
-    const float onPowerKW = 0.2;
-    TRACE(F("Pin: %0.2f kW, Pout: %0.2f kW, dt: %u s\n"), powerInKW, powerOutKW, secondsSinceLastUpdate);
-
     if ((currentTime / SECONDS_PER_DAY) > (lastDayStatsEntryPtr->startTime / SECONDS_PER_DAY))
     {
         newDayStatsEntry();
@@ -419,15 +426,9 @@ void updateDayStats(uint32_t secondsSinceLastUpdate, float powerInKW, float powe
 
     if (defrostingState != 0 && !isDefrosting)
         lastDayStatsEntryPtr->defrosts++; // Defrost started
-    isDefrosting = defrostingState != 0;
 
-    if ((powerInKW > 0) && !isDefrosting)
-    {
-        if (heatPumpOnCount++ == 10)
-            lastDayStatsEntryPtr->onCount++;
-    }
-    else
-        heatPumpOnCount = 0;
+    if (heatPumpOnCount == HP_ON_THRESHOLD)
+        lastDayStatsEntryPtr->onCount++;
 }
 
 
