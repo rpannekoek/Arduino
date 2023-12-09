@@ -1315,7 +1315,7 @@ void handleHttpPumpRequest()
 
     if (WebServer.hasArg("off"))
     {
-        if (currentBoilerLevel == BoilerLevel::Low)
+        if (currentBoilerLevel == BoilerLevel::Low || currentBoilerLevel == BoilerLevel::Off)
         {
             pumpOff = true;
             setBoilerLevel(BoilerLevel::Off, TSET_OVERRIDE_DURATION);
