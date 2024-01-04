@@ -20,37 +20,34 @@
 #include "StatusLogEntry.h"
 #include "HeatMonClient.h"
 
-#define SECONDS_PER_DAY (24 * 3600)
-#define SET_BOILER_RETRY_INTERVAL 6
-#define OTGW_WATCHDOG_INTERVAL 10
-#define OTGW_STARTUP_TIME 5
-#define WIFI_TIMEOUT_MS 2000
-#define HTTP_POLL_INTERVAL 60
-#define DATA_VALUE_NONE 0xFFFF
-#define EVENT_LOG_LENGTH 50
-#define OTGW_MESSAGE_LOG_LENGTH 40
-#define OT_LOG_LENGTH 250
-#define OT_LOG_PAGE_SIZE 50
-#define PWM_PERIOD (10 * 60)
-#define TSET_OVERRIDE_DURATION (20 * 60)
-#define WEATHER_SERVICE_POLL_INTERVAL (15 * 60)
-#define WEATHER_SERVICE_RESPONSE_TIMEOUT 10
-#define FTP_RETRY_INTERVAL (15 * 60)
-#define HEATMON_POLL_INTERVAL 60
-#define MAX_HEATPUMP_POWER 4
-#define MAX_PRESSURE 3
-#define MAX_FLOW_RATE 12
+constexpr int SET_BOILER_RETRY_INTERVAL = 6;
+constexpr int OTGW_WATCHDOG_INTERVAL = 10;
+constexpr int OTGW_STARTUP_TIME = 5;
+constexpr int HTTP_POLL_INTERVAL = 60;
+constexpr uint16_t DATA_VALUE_NONE = 0xFFFF;
+constexpr int EVENT_LOG_LENGTH = 50;
+constexpr int OTGW_MESSAGE_LOG_LENGTH = 40;
+constexpr int OT_LOG_LENGTH = 250;
+constexpr int OT_LOG_PAGE_SIZE = 50;
+constexpr int PWM_PERIOD = 10 * SECONDS_PER_MINUTE;
+constexpr int TSET_OVERRIDE_DURATION = 20 * SECONDS_PER_MINUTE;
+constexpr int WEATHER_SERVICE_POLL_INTERVAL = 15 * SECONDS_PER_MINUTE;
+constexpr int FTP_RETRY_INTERVAL = 15 * SECONDS_PER_MINUTE;
+constexpr int HEATMON_POLL_INTERVAL = 1 * SECONDS_PER_MINUTE;
+constexpr float MAX_HEATPUMP_POWER = 4.0F; // kW
+constexpr float MAX_PRESSURE = 3.0F; // bar
+constexpr float MAX_FLOW_RATE = 12.0F; // l/min
 
 #ifdef DEBUG_ESP_PORT
-    #define OTGW_TIMEOUT (5 * 60)
-    #define OTGW_RESPONSE_TIMEOUT_MS 5000
+    constexpr int OTGW_TIMEOUT = 5 * SECONDS_PER_MINUTE;
+    constexpr int OTGW_RESPONSE_TIMEOUT_MS = 5000;
 #else
-    #define OTGW_TIMEOUT 60
-    #define OTGW_RESPONSE_TIMEOUT_MS 2000
+    constexpr int OTGW_TIMEOUT = 1 * SECONDS_PER_MINUTE;
+    constexpr int OTGW_RESPONSE_TIMEOUT_MS = 2000;
 #endif
 
-#define LED_ON 0
-#define LED_OFF 1
+constexpr uint8_t LED_ON = 0;
+constexpr uint8_t LED_OFF = 1;
 
 #define CFG_WIFI_SSID F("WifiSSID")
 #define CFG_WIFI_KEY F("WifiKey")
@@ -133,7 +130,7 @@ const char* LogHeaders[] PROGMEM =
 OpenThermGateway OTGW(Serial, 14, OTGW_RESPONSE_TIMEOUT_MS);
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
-WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
+WiFiFTPClient FTPClient(2000); // 2s timeout
 HeatMonClient HeatMon;
 WeatherAPI WeatherService;
 StringBuilder HttpResponse(12 * 1024); // 12KB HTTP response buffer
@@ -448,7 +445,10 @@ void onWiFiInitialized()
 
     // Stuff below needs a WiFi connection. If the connection is lost, we skip it.
     if (WiFiSM.getState() < WiFiInitState::Connected)
+    {
+        HeatMon.setOffline();
         return;
+    }
 
     if ((currentTime >= heatmonPollTime) && HeatMon.isInitialized)
     {
@@ -613,6 +613,8 @@ void cancelOverride()
 {
     pumpOff = false;
     pwmDutyCycle = 1;
+    lowLoadLastOn = 0;
+    lowLoadLastOff = 0;
     lowLoadPeriod = 0;
     lowLoadDutyInterval = 0;
     WiFiSM.logEvent(F("Override %s stopped"), BoilerLevelNames[currentBoilerLevel]);
@@ -865,13 +867,14 @@ bool handleThermostatLowLoadMode(bool switchedOn)
             if (switchedOn)
             {
                 if (lowLoadLastOn != 0)
+                {
                     lowLoadPeriod = currentTime - lowLoadLastOn;
+                    lowLoadDutyInterval = lowLoadLastOff - lowLoadLastOn;
+                }
                 lowLoadLastOn = currentTime;
             }
             else
             {
-                if (lowLoadLastOn != 0)
-                    lowLoadDutyInterval = currentTime - lowLoadLastOn;
                 lowLoadLastOff = currentTime;
 
                 if (PersistentData.usePumpModulation && !HeatMon.isHeatpumpOn() && currentBoilerLevel != BoilerLevel::Thermostat)
@@ -1263,8 +1266,12 @@ void handleHttpOpenThermRequest()
     if (changeBoilerLevelTime != 0)
     {
         Html.writeRow(F("Change to"), F("%s"), BoilerLevelNames[changeBoilerLevel]);
-        Html.writeRow(F("Change at"), F("%s"), formatTime("%H:%M", changeBoilerLevelTime));
+        Html.writeRow(F("Change at"), F("%s"), formatTime("%H:%M:%S", changeBoilerLevelTime));
     }
+    if (lowLoadLastOn != 0)
+        Html.writeRow(F("Low-load on"), F("%s"), formatTime("%H:%M:%S", lowLoadLastOn));
+    if (lowLoadLastOff != 0)
+        Html.writeRow(F("Low-load off"), F("%s"), formatTime("%H:%M:%S", lowLoadLastOff));
     if (lowLoadPeriod != 0)
         Html.writeRow(F("Low-load period"), F("%s"), formatTimeSpan(lowLoadPeriod, false));
     if (lowLoadDutyInterval != 0)

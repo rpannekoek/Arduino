@@ -18,6 +18,12 @@ class HeatMonClient : public RESTClient
 
         bool begin(const char* host);
 
+        void setOffline()
+        {
+            flowRate = 0;
+            pIn = 0;
+        }
+
         inline bool isHeatpumpOn()
         {
             return pIn > 0.5;

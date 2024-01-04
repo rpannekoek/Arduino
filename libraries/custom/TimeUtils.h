@@ -3,6 +3,11 @@
 
 #include <time.h>
 
+constexpr int SECONDS_PER_MINUTE = 60;
+constexpr int SECONDS_PER_HOUR = 60 * SECONDS_PER_MINUTE;
+constexpr int SECONDS_PER_DAY = 24 * SECONDS_PER_HOUR;
+constexpr int SECONDS_PER_WEEK = 7 * SECONDS_PER_DAY;
+
 const char* formatTime(const char* format, time_t time)
 {
     static char result[32];
