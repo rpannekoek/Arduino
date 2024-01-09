@@ -15,33 +15,22 @@
 #include "PersistentData.h"
 #include "EnergyLogEntry.h"
 
- // Use same baud rate for debug output as ROM boot code
-#define DEBUG_BAUDRATE 74880
-// 36 seconds poll interval => 100 polls per hour
-#define POLL_INTERVAL 36
-#define TODAY_LOG_INTERVAL (30 * 60)
-#define MIN_NIGHT_DURATION (4 * 3600)
-#define SECONDS_PER_DAY (3600 * 24)
-#define MAX_EVENT_LOG_SIZE 50
-#define MAX_BAR_LENGTH 50
-#define FTP_RETRY_INTERVAL (15 * 60)
-#define WIFI_TIMEOUT_MS 2000
+constexpr int DEBUG_BAUDRATE = 74880; // Same as ROM boot output
+
+constexpr int  POLL_INTERVAL = 36; // 100 polls per hour
+constexpr float POLL_INTERVAL_HOURS = float(POLL_INTERVAL) / SECONDS_PER_HOUR;
+constexpr int TODAY_LOG_INTERVAL = 30 * SECONDS_PER_MINUTE;
+constexpr int MIN_NIGHT_DURATION = 4 * SECONDS_PER_HOUR;
+constexpr int MAX_EVENT_LOG_SIZE = 50;
+constexpr int MAX_BAR_LENGTH = 50;
+constexpr int FTP_RETRY_INTERVAL = 15 * SECONDS_PER_MINUTE;
+constexpr int WIFI_TIMEOUT_MS = 2000;
 
 #define SHOW_ENERGY "showEnergy"
 #define TODAY F("today")
 #define DAY F("day")
 #define WEEK F("week")
 #define MONTH F("month")
-
-#define CFG_WIFI_SSID F("WifiSSID")
-#define CFG_WIFI_KEY F("WifiKey")
-#define CFG_HOST_NAME F("HostName")
-#define CFG_NTP_SERVER F("NTPServer")
-#define CFG_FTP_SERVER F("FTPServer")
-#define CFG_FTP_USER F("FTPUser")
-#define CFG_FTP_PASSWORD F("FTPPassword")
-
-const float pollIntervalHours = float(POLL_INTERVAL) / 3600;
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
 const char* ContentTypeText = "text/plain";
@@ -331,8 +320,8 @@ bool trySyncFTP(Print* printTo)
                     );
             }
         }
-        else
-            TRACE("Nothing to sync.\n");
+        else if (printTo != nullptr)
+            printTo->println(F("Nothing to sync."));
         dataClient.stop();
 
         if (FTPClient.readServerResponse() == 226)
@@ -341,7 +330,7 @@ bool trySyncFTP(Print* printTo)
             success = true;
         }
         else
-            TRACE(F("FTP Append command failed: %s\n"), FTPClient.getLastResponse());
+            FTPClient.setUnexpectedResponse();
     }
 
     FTPClient.end();
@@ -368,10 +357,10 @@ void pollSoladin()
 
     soladinLastOnTime = currentTime;
 
-    energyTodayLogEntryPtr->update(Soladin.gridPower, pollIntervalHours, false);
-    energyPerDayLogEntryPtr->update(Soladin.gridPower, pollIntervalHours, true);
-    energyPerWeekLogEntryPtr->update(Soladin.gridPower, pollIntervalHours, true);
-    energyPerMonthLogEntryPtr->update(Soladin.gridPower, pollIntervalHours, true);
+    energyTodayLogEntryPtr->update(Soladin.gridPower, POLL_INTERVAL_HOURS, false);
+    energyPerDayLogEntryPtr->update(Soladin.gridPower, POLL_INTERVAL_HOURS, true);
+    energyPerWeekLogEntryPtr->update(Soladin.gridPower, POLL_INTERVAL_HOURS, true);
+    energyPerMonthLogEntryPtr->update(Soladin.gridPower, POLL_INTERVAL_HOURS, true);
 
     if (Soladin.flags.length() > 0)
         WiFiSM.logEvent("Soladin: %s",Soladin.flags.c_str());
@@ -447,7 +436,7 @@ void handleSerialRequest()
     else if (cmd == 'f')
     {
         trySyncFTP(nullptr);
-        TRACE(F("FTPClient.getLastResponse(): %s\n"), FTPClient.getLastResponse());
+        TRACE(F("FTPClient.getLastError(): %s\n"), FTPClient.getLastError());
     }
 }
 
@@ -655,13 +644,7 @@ void handleHttpConfigFormRequest()
     Html.writeHeader(F("Settings"), Nav);
 
     Html.writeFormStart(F("/config"), F("grid"));
-    Html.writeTextBox(CFG_WIFI_SSID, F("WiFi SSID"), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID) - 1);
-    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1, F("password"));
-    Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
-    Html.writeTextBox(CFG_NTP_SERVER, F("NTP server"), PersistentData.ntpServer, sizeof(PersistentData.ntpServer) - 1);
-    Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
-    Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
-    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1, F("password"));
+    PersistentData.writeHtmlForm(Html);
     Html.writeSubmitButton(F("Save"));
     Html.writeFormEnd();
 
@@ -679,25 +662,11 @@ void handleHttpConfigFormRequest()
 }
 
 
-void copyString(const String& input, char* buffer, size_t bufferSize)
-{
-    strncpy(buffer, input.c_str(), bufferSize);
-    buffer[bufferSize - 1] = 0;
-}
-
-
 void handleHttpConfigFormPost()
 {
     Tracer tracer(F("handleHttpConfigFormPost"));
 
-    copyString(WebServer.arg(CFG_WIFI_SSID), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID)); 
-    copyString(WebServer.arg(CFG_WIFI_KEY), PersistentData.wifiKey, sizeof(PersistentData.wifiKey)); 
-    copyString(WebServer.arg(CFG_HOST_NAME), PersistentData.hostName, sizeof(PersistentData.hostName)); 
-    copyString(WebServer.arg(CFG_NTP_SERVER), PersistentData.ntpServer, sizeof(PersistentData.ntpServer)); 
-    copyString(WebServer.arg(CFG_FTP_SERVER), PersistentData.ftpServer, sizeof(PersistentData.ftpServer)); 
-    copyString(WebServer.arg(CFG_FTP_USER), PersistentData.ftpUser, sizeof(PersistentData.ftpUser)); 
-    copyString(WebServer.arg(CFG_FTP_PASSWORD), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword)); 
-
+    PersistentData.parseHtmlFormData([](const String& id) -> const String& { return WebServer.arg(id); });
     PersistentData.validate();
     PersistentData.writeToEEPROM();
 

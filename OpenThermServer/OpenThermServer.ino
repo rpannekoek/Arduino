@@ -10,15 +10,15 @@
 #include <StringBuilder.h>
 #include <Navigation.h>
 #include <HtmlWriter.h>
-#include "OTGW.h"
 #include <Log.h>
 #include <AsyncHTTPRequest_Generic.h>
-#include "WeatherAPI.h"
 #include <Wire.h>
 #include "PersistentData.h"
 #include "OpenThermLogEntry.h"
 #include "StatusLogEntry.h"
 #include "HeatMonClient.h"
+#include "WeatherAPI.h"
+#include "OTGW.h"
 
 constexpr int SET_BOILER_RETRY_INTERVAL = 6;
 constexpr int OTGW_WATCHDOG_INTERVAL = 10;
@@ -34,9 +34,9 @@ constexpr int TSET_OVERRIDE_DURATION = 20 * SECONDS_PER_MINUTE;
 constexpr int WEATHER_SERVICE_POLL_INTERVAL = 15 * SECONDS_PER_MINUTE;
 constexpr int FTP_RETRY_INTERVAL = 15 * SECONDS_PER_MINUTE;
 constexpr int HEATMON_POLL_INTERVAL = 1 * SECONDS_PER_MINUTE;
-constexpr float MAX_HEATPUMP_POWER = 4.0F; // kW
-constexpr float MAX_PRESSURE = 3.0F; // bar
-constexpr float MAX_FLOW_RATE = 12.0F; // l/min
+constexpr float MAX_HEATPUMP_POWER = 4.0; // kW
+constexpr float MAX_PRESSURE = 3.0; // bar
+constexpr float MAX_FLOW_RATE = 12.0; // l/min
 
 #ifdef DEBUG_ESP_PORT
     constexpr int OTGW_TIMEOUT = 5 * SECONDS_PER_MINUTE;
@@ -48,22 +48,6 @@ constexpr float MAX_FLOW_RATE = 12.0F; // l/min
 
 constexpr uint8_t LED_ON = 0;
 constexpr uint8_t LED_OFF = 1;
-
-#define CFG_WIFI_SSID F("WifiSSID")
-#define CFG_WIFI_KEY F("WifiKey")
-#define CFG_HOST_NAME F("HostName")
-#define CFG_NTP_SERVER F("NTPServer")
-#define CFG_FTP_SERVER F("FTPServer")
-#define CFG_FTP_USER F("FTPUser")
-#define CFG_FTP_PASSWORD F("FTPPassword")
-#define CFG_FTP_SYNC_ENTRIES F("ftpSyncEntries")
-#define CFG_WEATHER_API_KEY F("weatherApiKey")
-#define CFG_WEATHER_LOC F("weatherLocation")
-#define CFG_MAX_TSET F("maxTSet")
-#define CFG_MIN_TSET F("minTSet")
-#define CFG_BOILER_ON_DELAY F("boilerOnDelay")
-#define CFG_HEATMON_HOST F("heatmonHost")
-#define CFG_PUMP_MOD F("pumpMod")
 
 enum FileId
 {
@@ -934,7 +918,8 @@ void handleThermostatRequest(OpenThermGatewayMessage otFrame)
             // Thermostat started requesting more than minimal Modulation (no longer in low-load mode).
             // If we're still in low-load mode and CH is on, we cancel the override here.
             // If the CH is off, it will be cancelled later when CH is switched on again.
-            if (currentBoilerLevel == BoilerLevel::Low && pwmDutyCycle == 1)
+            bool masterCHEnable = thermostatRequests[OpenThermDataId::Status] & OpenThermStatus::MasterCHEnable;
+            if (masterCHEnable && currentBoilerLevel == BoilerLevel::Low && pwmDutyCycle == 1)
                 cancelOverride();
         }
     }
@@ -1617,21 +1602,7 @@ void handleHttpConfigFormRequest()
     Html.writeHeader(F("Settings"), Nav);
 
     Html.writeFormStart(F("/config"));
-    Html.writeTextBox(CFG_WIFI_SSID, F("WiFi SSID"), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID) - 1);
-    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1, F("password"));
-    Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
-    Html.writeTextBox(CFG_HEATMON_HOST, F("Heatmon host"), PersistentData.heatmonHost, sizeof(PersistentData.heatmonHost) - 1);
-    Html.writeTextBox(CFG_NTP_SERVER, F("NTP server"), PersistentData.ntpServer, sizeof(PersistentData.ntpServer) - 1);
-    Html.writeTextBox(CFG_FTP_SERVER, F("FTP server"), PersistentData.ftpServer, sizeof(PersistentData.ftpServer) - 1);
-    Html.writeTextBox(CFG_FTP_USER, F("FTP user"), PersistentData.ftpUser, sizeof(PersistentData.ftpUser) - 1);
-    Html.writeTextBox(CFG_FTP_PASSWORD, F("FTP password"), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword) - 1, F("password"));
-    Html.writeNumberBox(CFG_FTP_SYNC_ENTRIES, F("FTP Sync Entries"), PersistentData.ftpSyncEntries, 0, OT_LOG_LENGTH);
-    Html.writeTextBox(CFG_WEATHER_API_KEY, F("Weather API Key"), PersistentData.weatherApiKey, 16);
-    Html.writeTextBox(CFG_WEATHER_LOC, F("Weather Location"), PersistentData.weatherLocation, 16);
-    Html.writeNumberBox(CFG_MAX_TSET, F("Max TSet"), PersistentData.maxTSet, 20, 90);
-    Html.writeNumberBox(CFG_MIN_TSET, F("Min TSet"), PersistentData.minTSet, 20, 90);
-    Html.writeNumberBox(CFG_BOILER_ON_DELAY, F("Boiler on delay (s)"), PersistentData.boilerOnDelay, 0, 7200);
-    Html.writeCheckbox(CFG_PUMP_MOD, F("Pump Modulation"), PersistentData.usePumpModulation);
+    PersistentData.writeHtmlForm(Html);
     Html.writeSubmitButton(F("Save"));
     Html.writeFormEnd();
 
@@ -1649,35 +1620,11 @@ void handleHttpConfigFormRequest()
 }
 
 
-void copyString(const String& input, char* buffer, size_t bufferSize)
-{
-    strncpy(buffer, input.c_str(), bufferSize);
-    buffer[bufferSize - 1] = 0;
-}
-
 void handleHttpConfigFormPost()
 {
     Tracer tracer(F("handleHttpConfigFormPost"));
 
-    copyString(WebServer.arg(CFG_WIFI_SSID), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID)); 
-    copyString(WebServer.arg(CFG_WIFI_KEY), PersistentData.wifiKey, sizeof(PersistentData.wifiKey)); 
-    copyString(WebServer.arg(CFG_HOST_NAME), PersistentData.hostName, sizeof(PersistentData.hostName)); 
-    copyString(WebServer.arg(CFG_NTP_SERVER), PersistentData.ntpServer, sizeof(PersistentData.ntpServer)); 
-    copyString(WebServer.arg(CFG_FTP_SERVER), PersistentData.ftpServer, sizeof(PersistentData.ftpServer)); 
-    copyString(WebServer.arg(CFG_FTP_USER), PersistentData.ftpUser, sizeof(PersistentData.ftpUser)); 
-    copyString(WebServer.arg(CFG_FTP_PASSWORD), PersistentData.ftpPassword, sizeof(PersistentData.ftpPassword)); 
-    copyString(WebServer.arg(CFG_HEATMON_HOST), PersistentData.heatmonHost, sizeof(PersistentData.heatmonHost)); 
-
-    PersistentData.ftpSyncEntries = WebServer.arg(CFG_FTP_SYNC_ENTRIES).toInt();
-
-    copyString(WebServer.arg(CFG_WEATHER_API_KEY), PersistentData.weatherApiKey, sizeof(PersistentData.weatherApiKey));
-    copyString(WebServer.arg(CFG_WEATHER_LOC), PersistentData.weatherLocation, sizeof(PersistentData.weatherLocation));
-
-    PersistentData.maxTSet = WebServer.arg(CFG_MAX_TSET).toInt();
-    PersistentData.minTSet = WebServer.arg(CFG_MIN_TSET).toInt();
-    PersistentData.boilerOnDelay = WebServer.arg(CFG_BOILER_ON_DELAY).toInt();
-    PersistentData.usePumpModulation = WebServer.hasArg(CFG_PUMP_MOD);
-
+    PersistentData.parseHtmlFormData([](const String& id) -> const String& { return WebServer.arg(id); });
     PersistentData.validate();
     PersistentData.writeToEEPROM();
 
