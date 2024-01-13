@@ -141,7 +141,7 @@ time_t heatmonPollTime = 0;
 time_t lastHeatmonUpdateTime = 0;
 time_t weatherServicePollTime = 0;
 time_t lastWeatherUpdateTime = 0;
-time_t lastTboilerTime = 0;
+time_t flameSwitchedOnTime = 0;
 
 time_t lowLoadLastOn = 0;
 time_t lowLoadLastOff = 0;
@@ -548,7 +548,7 @@ bool setBoilerLevel(BoilerLevel level, time_t duration)
     }
 
     if (level == currentBoilerLevel)
-        return true;
+        return false;
 
     if ((changeBoilerLevelTime != 0) && (level == changeBoilerLevel))
         changeBoilerLevelTime = 0;
@@ -965,6 +965,28 @@ void handleBoilerResponse(OpenThermGatewayMessage otFrame)
     if (otFrame.msgType == OpenThermMsgType::UnknownDataId)
         return;
 
+    if (otFrame.dataId == OpenThermDataId::Status)
+    {
+        if (otFrame.dataValue & OpenThermStatus::SlaveFlame)
+        {
+            // Boiler flame is on
+            if (boilerResponses[OpenThermDataId::Status] & OpenThermStatus::SlaveFlame)
+            {
+                if ((PersistentData.flameTimeout != 0) && (currentTime - flameSwitchedOnTime >= PersistentData.flameTimeout))
+                {
+                    if (setBoilerLevel(BoilerLevel::PumpOnly, TSET_OVERRIDE_DURATION))
+                        WiFiSM.logEvent(F("Flame timeout. Pump-only until %s"), formatTime("%H:%M", changeBoilerLevelTime));
+                }
+            }
+            else
+                // Boiler flame is switched on
+                flameSwitchedOnTime = currentTime;
+        }
+        else
+            // Boiler flame is off
+            flameSwitchedOnTime = 0;
+    }
+
     boilerResponses[otFrame.dataId] = otFrame.dataValue;
 }
 
@@ -1242,6 +1264,8 @@ void handleHttpOpenThermRequest()
     Html.writeRow(F("Burner starts"), F("%d"), burnerStarts);
     Html.writeRow(F("Burner on"), F("%d h"), boilerResponses[OpenThermDataId::BoilerBurnerHours]);
     Html.writeRow(F("Avg burner on"), F("%s"), formatTimeSpan(avgBurnerOnTime));
+    if (flameSwitchedOnTime != 0)
+        Html.writeRow(F("Flame on"), F("%s"), formatTime("%H:%M:%S", flameSwitchedOnTime));
     Html.writeTableEnd();
     Html.writeSectionEnd();
 
@@ -1253,14 +1277,24 @@ void handleHttpOpenThermRequest()
         Html.writeRow(F("Change to"), F("%s"), BoilerLevelNames[changeBoilerLevel]);
         Html.writeRow(F("Change at"), F("%s"), formatTime("%H:%M:%S", changeBoilerLevelTime));
     }
+    if (flameSwitchedOnTime != 0 && PersistentData.flameTimeout != 0)
+    {
+        time_t flameTimeoutAt = flameSwitchedOnTime + PersistentData.flameTimeout;
+        Html.writeRow(F("Flame timeout"), F("%s"), formatTime("%H:%M:%S", flameTimeoutAt));
+    }
+    Html.writeTableEnd();
+    Html.writeSectionEnd();
+
+    Html.writeSectionStart(F("Low-load mode"));
+    Html.writeTableStart();
     if (lowLoadLastOn != 0)
-        Html.writeRow(F("Low-load on"), F("%s"), formatTime("%H:%M:%S", lowLoadLastOn));
+        Html.writeRow(F("Last on"), F("%s"), formatTime("%H:%M:%S", lowLoadLastOn));
     if (lowLoadLastOff != 0)
-        Html.writeRow(F("Low-load off"), F("%s"), formatTime("%H:%M:%S", lowLoadLastOff));
+        Html.writeRow(F("Last off"), F("%s"), formatTime("%H:%M:%S", lowLoadLastOff));
     if (lowLoadPeriod != 0)
-        Html.writeRow(F("Low-load period"), F("%s"), formatTimeSpan(lowLoadPeriod, false));
+        Html.writeRow(F("Period"), F("%s"), formatTimeSpan(lowLoadPeriod, false));
     if (lowLoadDutyInterval != 0)
-        Html.writeRow(F("Low-load duty"), F("%s"), formatTimeSpan(lowLoadDutyInterval, false));
+        Html.writeRow(F("Duty"), F("%s"), formatTimeSpan(lowLoadDutyInterval, false));
     Html.writeTableEnd();
     Html.writeSectionEnd();
 
