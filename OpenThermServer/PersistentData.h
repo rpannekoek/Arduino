@@ -10,6 +10,7 @@ struct PersistentSettings : WiFiSettingsWithFTP
     char heatmonHost[32];
     bool usePumpModulation;
     int boilerOnDelay; // seconds
+    int flameTimeout; // seconds
 
     PersistentSettings() : WiFiSettingsWithFTP(PSTR("OTGW"))
     {
@@ -20,7 +21,8 @@ struct PersistentSettings : WiFiSettingsWithFTP
         addIntegerField(maxTSet, PSTR("Max TSet"), 40, 80, 60);
         addIntegerField(minTSet, PSTR("Min TSet"), 20, 40, 40);
         addBooleanField(usePumpModulation, PSTR("Use pump modulation"), true, 4); // 4 bytes for alignment
-        addTimeSpanField(boilerOnDelay, PSTR("Boiler on delay"), 0, 7200, 0);        
+        addTimeSpanField(boilerOnDelay, PSTR("Boiler on delay"), 0, 2 * 3600);
+        addTimeSpanField(flameTimeout, PSTR("Flame timeout"), 0, 12 * 3600);        
     }
 };
 
