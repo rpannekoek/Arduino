@@ -827,52 +827,48 @@ void test(String message)
 bool handleThermostatLowLoadMode(bool switchedOn)
 {
     bool isThermostatLowLoadMode = thermostatRequests[OpenThermDataId::MaxRelModulation] == 0;
+    if (!isThermostatLowLoadMode) return false;
 
-    if (isThermostatLowLoadMode && !pumpOff)
+    if (switchedOn)
     {
-        if (currentBoilerLevel == BoilerLevel::PumpOnly)
+        if (lowLoadLastOn != 0)
         {
-            // Keep Pump Only level, but switch to Low level afterwards.
-            if (changeBoilerLevel == BoilerLevel::Thermostat)
-            {
-                changeBoilerLevel = BoilerLevel::Low;
-                WiFiSM.logEvent(F("Start low-load at %s"), formatTime("%H:%M", changeBoilerLevelTime));
-            }
+            lowLoadPeriod = currentTime - lowLoadLastOn;
+            lowLoadDutyInterval = lowLoadLastOff - lowLoadLastOn;
         }
-        else
+        lowLoadLastOn = currentTime;
+    }
+    else
+        lowLoadLastOff = currentTime;
+
+    if (currentBoilerLevel == BoilerLevel::PumpOnly)
+    {
+        // Keep Pump Only level, but switch to Low level afterwards.
+        if (changeBoilerLevel == BoilerLevel::Thermostat)
         {
-            if (currentBoilerLevel == BoilerLevel::Thermostat || pwmDutyCycle < 1)
-            {
-                pwmDutyCycle = 1;
-                WiFiSM.logEvent(F("Low-load started"));
-            }
-
-            BoilerLevel newBoilerLevel = BoilerLevel::Low;
-            if (switchedOn)
-            {
-                if (lowLoadLastOn != 0)
-                {
-                    lowLoadPeriod = currentTime - lowLoadLastOn;
-                    lowLoadDutyInterval = lowLoadLastOff - lowLoadLastOn;
-                }
-                lowLoadLastOn = currentTime;
-            }
-            else
-            {
-                lowLoadLastOff = currentTime;
-
-                if (PersistentData.usePumpModulation && !HeatMon.isHeatpumpOn() && currentBoilerLevel != BoilerLevel::Thermostat)
-                {
-                    // Thermostat switched CH off and pump modulation is on.
-                    // Switch CH off, but keep the TSet override (for a while). 
-                    newBoilerLevel = BoilerLevel::Off;
-                }
-            }
-            setBoilerLevel(newBoilerLevel, TSET_OVERRIDE_DURATION);
+            changeBoilerLevel = BoilerLevel::Low;
+            WiFiSM.logEvent(F("Start low-load at %s"), formatTime("%H:%M", changeBoilerLevelTime));
         }
     }
+    else if (!pumpOff)
+    {
+        if (currentBoilerLevel == BoilerLevel::Thermostat || pwmDutyCycle < 1)
+        {
+            pwmDutyCycle = 1;
+            WiFiSM.logEvent(F("Low-load started"));
+        }
 
-    return isThermostatLowLoadMode;
+        BoilerLevel newBoilerLevel = BoilerLevel::Low;;
+        if (!switchedOn && PersistentData.usePumpModulation && !HeatMon.isHeatpumpOn() && currentBoilerLevel != BoilerLevel::Thermostat)
+        {
+            // Thermostat switched CH off, pump modulation is on and heatpump is off.
+            // Switch CH/pump off, but keep the TSet override (for a while). 
+            newBoilerLevel = BoilerLevel::Off;
+        }
+        setBoilerLevel(newBoilerLevel, TSET_OVERRIDE_DURATION);
+    }
+
+    return true;
 }
 
 
