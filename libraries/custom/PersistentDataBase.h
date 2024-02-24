@@ -91,7 +91,7 @@ struct PersistentDataBase
         virtual void initialize();
         virtual void validate();
         virtual void writeHtmlForm(HtmlWriter& html);
-        virtual void parseHtmlFormData(std::function<const String&(const String&)> formDataById);
+        virtual void parseHtmlFormData(std::function<String(const String&)> formDataById);
 
     protected:
         void addField(PersistentDataField* fieldPtr, size_t dataSize);

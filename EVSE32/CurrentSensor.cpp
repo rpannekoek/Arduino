@@ -83,10 +83,17 @@ float CurrentSensor::calibrateScale(float actualRMS)
     Tracer tracer(F("CurrentSensor::calibrateScale"));
 
     float measuredRMS = getRMS();
-    _scale *= actualRMS / measuredRMS;
-
-    TRACE(F("Measured %0.3f A, Actual %0.3f A => scale = %0.3f\n"), measuredRMS, actualRMS, _scale);
-
+    if ((measuredRMS > 0) && (measuredRMS < 100))
+    {
+        _scale *= actualRMS / measuredRMS;
+        TRACE(F("Measured %0.3f A, Actual %0.3f A => scale = %0.3f\n"), measuredRMS, actualRMS, _scale);
+    }
+    else
+    {
+        _scale = 0.016;
+        TRACE(F("Measured RMS out of range. Reset scale.\n"));
+    }
+ 
     return _scale;
 }
 

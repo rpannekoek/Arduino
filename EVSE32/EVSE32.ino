@@ -27,46 +27,31 @@
 #include "DayStatistics.h"
 #include "ChargeLogEntry.h"
 
+constexpr int FTP_RETRY_INTERVAL = 15 * SECONDS_PER_MINUTE;
+constexpr int HTTP_POLL_INTERVAL = 60;
+constexpr int TEMP_POLL_INTERVAL = 10;
+constexpr int CHARGE_CONTROL_INTERVAL = 10;
+constexpr int CHARGE_LOG_SIZE = 200;
+constexpr int CHARGE_LOG_PAGE_SIZE = 50;
+constexpr int EVENT_LOG_LENGTH = 50;
 
-#define SECONDS_PER_DAY (24 * 3600)
-#define WIFI_TIMEOUT_MS 2000
-#define HTTP_POLL_INTERVAL 60
-#define TEMP_POLL_INTERVAL 10
-#define CHARGE_CONTROL_INTERVAL 10
-#define CHARGE_LOG_SIZE 200
-#define CHARGE_LOG_PAGE_SIZE 50
-#define EVENT_LOG_LENGTH 50
+constexpr uint8_t RELAY_START_PIN = 12;
+constexpr uint8_t RELAY_ON_PIN = 13;
+constexpr uint8_t CURRENT_SENSE_PIN = 34;
+constexpr uint8_t VOLTAGE_SENSE_PIN = 32;
+constexpr uint8_t RGB_LED_PIN = 17;
+constexpr uint8_t CP_OUTPUT_PIN = 15;
+constexpr uint8_t CP_INPUT_PIN = 33;
+constexpr uint8_t CP_FEEDBACK_PIN = 16;
+constexpr uint8_t TEMP_SENSOR_PIN = 14;
 
-#define RELAY_START_PIN 12
-#define RELAY_ON_PIN 13
-#define CURRENT_SENSE_PIN 34
-#define VOLTAGE_SENSE_PIN 32
-#define RGB_LED_PIN 17
-#define CP_OUTPUT_PIN 15
-#define CP_INPUT_PIN 33
-#define CP_FEEDBACK_PIN 16
-#define TEMP_SENSOR_PIN 14
+constexpr float ZERO_CURRENT_THRESHOLD = 0.2;
+constexpr float LOW_CURRENT_THRESHOLD = 0.75;
+constexpr float CHARGE_VOLTAGE = 230;
 
-#define TEMP_LIMIT 50
-#define ZERO_CURRENT_THRESHOLD 0.2F
-#define LOW_CURRENT_THRESHOLD 0.75F
-#define CHARGE_VOLTAGE 230
+constexpr uint8_t LED_ON = 0;
+constexpr uint8_t LED_OFF = 1;
 
-#define LED_ON 0
-#define LED_OFF 1
-
-#define CFG_WIFI_SSID F("WifiSSID")
-#define CFG_WIFI_KEY F("WifiKey")
-#define CFG_HOST_NAME F("HostName")
-#define CFG_NTP_SERVER F("NTPServer")
-#define CFG_FTP_SERVER F("FTPServer")
-#define CFG_FTP_USER F("FTPUser")
-#define CFG_FTP_PASSWORD F("FTPPassword")
-#define CFG_FTP_ENTRIES F("FTPEntries")
-#define CFG_DSMR_MONITOR F("DSMRMonitor")
-#define CFG_DSMR_PHASE F("DSMRPhase")
-#define CFG_CURRENT_LIMIT F("CurrentLimit")
-#define CFG_AUTH_TIMEOUT F("AuthTimeout")
 #define CAL_CURRENT F("ActualCurrent")
 #define CAL_CURRENT_ZERO F("CurrentZero")
 #define CAL_TEMP_OFFSET F("TempOffset")
@@ -84,6 +69,7 @@ enum FileId
     LogFileIcon,
     MeterIcon,
     SettingsIcon,
+    UploadIcon,
     _LastFileId
 };
 
@@ -99,7 +85,8 @@ const char* Files[] PROGMEM =
     "Home.svg",
     "LogFile.svg",
     "Meter.svg",
-    "Settings.svg"
+    "Settings.svg",
+    "Upload.svg"
 };
 
 const char* ContentTypeHtml = "text/html;charset=UTF-8";
@@ -110,7 +97,7 @@ const char* ButtonClass = "button";
 
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
-WiFiFTPClient FTPClient(WIFI_TIMEOUT_MS);
+WiFiFTPClient FTPClient(2000); // 2s timeout
 DsmrMonitorClient SmartMeter(5000); // 5s timeout
 BLE Bluetooth;
 StringBuilder HttpResponse(8192); // 8KB HTTP response buffer
@@ -142,7 +129,10 @@ time_t tempPollTime = 0;
 time_t chargeControlTime = 0;
 time_t chargingStartedTime = 0;
 time_t chargingFinishedTime = 0;
+time_t ftpSyncTime = 0;
+time_t lastFTPSyncTime = 0;
 
+int logEntriesToSync = 0;
 ChargeLogEntry newChargeLogEntry;
 ChargeLogEntry* lastChargeLogEntryPtr = nullptr;
 
@@ -191,6 +181,13 @@ void setup()
         },
         MenuItem
         {
+            .icon = Files[UploadIcon],
+            .label = PSTR("FTP Sync"),
+            .urlPath = PSTR("sync"),
+            .handler= handleHttpSyncFTPRequest
+        },
+        MenuItem
+        {
             .icon = Files[BluetoothIcon],
             .label = PSTR("Bluetooth"),
             .urlPath = PSTR("bt"),
@@ -223,7 +220,6 @@ void setup()
     Nav.registerHttpHandlers(WebServer);
 
     WebServer.on("/bt/json", handleHttpBluetoothJsonRequest);
-    WebServer.on("/chargelog/csv", handleHttpChargeLogCsvRequest);
     WebServer.on("/current", handleHttpCurrentRequest);
     WebServer.onNotFound(handleHttpNotFound);
     
@@ -331,6 +327,8 @@ bool initTempSensor()
     if (!TempSensors.isConnected(addr))
     {
         setFailure(F("Temperature sensor is not connected"));
+        memset(PersistentData.tempSensorAddress, 0, sizeof(DeviceAddress));
+        PersistentData.writeToEEPROM();
         return false;
     }
 
@@ -536,8 +534,8 @@ bool stopCharging(const char* cause)
     ControlPilot.setOff();
     ControlPilot.awaitStatus(ControlPilotStatus::NoPower);
 
-    // Wait max 2 seconds for output current to drop below threshold
-    int timeout = 20;
+    // Wait max 5 seconds for output current to drop below threshold
+    int timeout = 50;
     do
     {
         OutputCurrentSensor.measure();
@@ -566,6 +564,9 @@ bool stopCharging(const char* cause)
             setState(EVSEState::StopCharging);
     }
 
+    if (PersistentData.isFTPEnabled() && (logEntriesToSync > 0))
+        ftpSyncTime = currentTime;
+
     return true;
 }
 
@@ -573,10 +574,10 @@ bool stopCharging(const char* cause)
 float getDeratedCurrentLimit()
 {
     float result = PersistentData.currentLimit;
-    if (temperature > TEMP_LIMIT)
+    if (temperature > PersistentData.tempLimit)
     {
         // Derate current when above temperature limit: 1 A/degree.
-        result = std::min(result, 16.0F) - (temperature - TEMP_LIMIT);
+        result = std::min(result, 16.0F) - (temperature - PersistentData.tempLimit);
     }
     return result;
 }
@@ -590,15 +591,15 @@ float determineCurrentLimit()
         return deratedCurrentLimit;
 
     if (!WiFiSM.isConnected())
-        return (temperature > TEMP_LIMIT) ? deratedCurrentLimit : 0;
+        return (temperature > PersistentData.tempLimit) ? deratedCurrentLimit : 0;
 
     if (SmartMeter.requestData() != HTTP_CODE_OK)
     {
         WiFiSM.logEvent(F("Smart Meter: %s"), SmartMeter.getLastError().c_str());
-        return (temperature > TEMP_LIMIT) ? deratedCurrentLimit : 0;
+        return (temperature > PersistentData.tempLimit) ? deratedCurrentLimit : 0;
     }
 
-    PhaseData& phase = SmartMeter.getElectricity()[PersistentData.dsmrPhase]; 
+    PhaseData& phase = SmartMeter.getElectricity()[PersistentData.dsmrPhase - 1]; 
     float phaseCurrent = phase.Pdelivered / phase.U; 
     if (state == EVSEState::Charging)
         phaseCurrent = std::max(phaseCurrent - outputCurrent, 0.0F);
@@ -641,6 +642,10 @@ void chargeControl()
     {
         newChargeLogEntry.time = currentTime;
         lastChargeLogEntryPtr = ChargeLog.add(&newChargeLogEntry);
+
+        logEntriesToSync = std::min(logEntriesToSync + 1, CHARGE_LOG_SIZE);
+        if (PersistentData.isFTPEnabled() && (logEntriesToSync == PersistentData.ftpSyncEntries))
+            ftpSyncTime = currentTime;
     }
 }
 
@@ -710,6 +715,8 @@ bool selfTest()
 }
 
 
+
+
 void onWiFiTimeSynced()
 {
     if (state == EVSEState::Booting)
@@ -742,12 +749,88 @@ void onWiFiInitialized()
         {
             temperature = tMeasured + PersistentData.tempSensorOffset;
             DayStats.update(currentTime, temperature);
-            if (temperature > (TEMP_LIMIT + 10) && state != EVSEState::Failure)
+            if (temperature > (PersistentData.tempLimit + 10) && state != EVSEState::Failure)
                 setFailure(F("Temperature too high"));
         }
         
         isMeasuringTemp = false;
         digitalWrite(LED_BUILTIN, LED_OFF);
+    }
+
+    if ((ftpSyncTime != 0) && (currentTime >= ftpSyncTime) && WiFiSM.isConnected())
+    {
+        if (trySyncFTP(nullptr))
+        {
+            WiFiSM.logEvent(F("FTP sync"));
+            ftpSyncTime = 0;
+        }
+        else
+        {
+            WiFiSM.logEvent(F("FTP sync failed: %s"), FTPClient.getLastError());
+            ftpSyncTime = currentTime + FTP_RETRY_INTERVAL;
+        }
+    }
+}
+
+
+bool trySyncFTP(Print* printTo)
+{
+    Tracer tracer(F(__func__));
+
+    char filename[32];
+    snprintf(filename, sizeof(filename), "%s.csv", PersistentData.hostName);
+
+    if (!FTPClient.begin(
+        PersistentData.ftpServer,
+        PersistentData.ftpUser,
+        PersistentData.ftpPassword,
+        FTP_DEFAULT_CONTROL_PORT,
+        printTo))
+    {
+        return false;
+    }
+
+    bool success = false;
+    WiFiClient& dataClient = FTPClient.append(filename);
+    if (dataClient.connected())
+    {
+        if (logEntriesToSync > 0)
+        {
+            ChargeLogEntry* firstLogEntryPtr = ChargeLog.getEntryFromEnd(logEntriesToSync);
+            writeCsvChangeLogEntries(firstLogEntryPtr, dataClient);
+            logEntriesToSync = 0;
+        }
+        else if (printTo != nullptr)
+            printTo->println(F("Nothing to sync."));
+        dataClient.stop();
+
+        if (FTPClient.readServerResponse() == 226)
+        {
+            lastFTPSyncTime = currentTime;
+            success = true;
+        }
+        else
+            FTPClient.setUnexpectedResponse();
+    }
+
+    FTPClient.end();
+
+    return success;
+}
+
+
+void writeCsvChangeLogEntries(ChargeLogEntry* logEntryPtr, Print& destination)
+{
+    while (logEntryPtr != nullptr)
+    {
+        destination.printf(
+            "%s;%0.1f;%0.1f;%0.1f\r\n",
+            formatTime("%F %H:%M:%S", logEntryPtr->time),
+            logEntryPtr->currentLimit,
+            logEntryPtr->outputCurrent,
+            logEntryPtr->temperature);
+
+        logEntryPtr = ChargeLog.getNextEntry();
     }
 }
 
@@ -769,6 +852,7 @@ void test(String message)
             newChargeLogEntry.temperature = i % 20 + 10;
             lastChargeLogEntryPtr = ChargeLog.add(&newChargeLogEntry);
         }
+        logEntriesToSync = 3;
     }
     else if (message.startsWith("testB"))
     {
@@ -876,6 +960,18 @@ void handleHttpRootRequest()
     Html.writeRow(F("WiFi AP"), F("%s"), WiFi.BSSIDstr().c_str());
     Html.writeRow(F("Free Heap"), F("%0.1f kB"), float(ESP.getFreeHeap()) / 1024);
     Html.writeRow(F("Uptime"), F("%0.1f days"), float(WiFiSM.getUptime()) / SECONDS_PER_DAY);
+
+    String ftpSync;
+    if (!PersistentData.isFTPEnabled())
+        ftpSync = F("Disabled");
+    else if (lastFTPSyncTime == 0)
+        ftpSync = F("Not yet");
+    else
+        ftpSync = formatTime("%H:%M", lastFTPSyncTime);
+
+    Html.writeRow(F("FTP Sync"), ftpSync);
+    if (PersistentData.isFTPEnabled())
+        Html.writeRow(F("Sync entries"), F("%d / %d"), logEntriesToSync, PersistentData.ftpSyncEntries);
 
     Html.writeTableEnd();
 
@@ -1106,28 +1202,6 @@ void handleHttpChargeLogRequest()
     WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
-void handleHttpChargeLogCsvRequest()
-{
-    Tracer tracer(F(__func__));
-
-    HttpResponse.clear();
-    HttpResponse.println(F("Time;Current Limit;Output Current;Temperature"));
-
-    ChargeLogEntry* logEntryPtr = ChargeLog.getFirstEntry();
-    while (logEntryPtr != nullptr)
-    {
-        HttpResponse.printf(
-            F("%s;%0.1f;%0.1f;%0.1f\r\n"),
-            formatTime("%H:%M:%S", logEntryPtr->time),
-            logEntryPtr->currentLimit,
-            logEntryPtr->outputCurrent,
-            logEntryPtr->temperature);
-
-        logEntryPtr = ChargeLog.getNextEntry();
-    }
-
-    WebServer.send(200, ContentTypeText, HttpResponse.c_str());
-}
 
 void handleHttpEventLogRequest()
 {
@@ -1149,6 +1223,35 @@ void handleHttpEventLogRequest()
     }
 
     Html.writeActionLink(F("clear"), F("Clear event log"), currentTime, ButtonClass);
+
+    Html.writeFooter();
+
+    WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
+}
+
+
+void handleHttpSyncFTPRequest()
+{
+    Tracer tracer(F("handleHttpSyncFTPRequest"));
+
+    Html.writeHeader(F("FTP Sync"), Nav);
+
+    HttpResponse.println("<pre>");
+    bool success = trySyncFTP(&HttpResponse); 
+    HttpResponse.println("</pre>");
+
+    if (success)
+    {
+        Html.writeParagraph(F("Success!"));
+        ftpSyncTime = 0; // Cancel scheduled sync (if any)
+    }
+    else
+        Html.writeParagraph(F("Failed: %s"), FTPClient.getLastError());
+
+    Html.writeHeading(F("CSV header"), 2);
+    HttpResponse.print(F("<pre>"));
+    HttpResponse.println(F("Time;Current Limit;Output Current;Temperature"));
+    HttpResponse.println(F("</pre>"));
 
     Html.writeFooter();
 
@@ -1191,7 +1294,7 @@ void handleHttpSmartMeterRequest()
 
             TRACE(F("DSMR phase: %d\n"), PersistentData.dsmrPhase);
 
-            PhaseData& monitoredPhaseData = electricity[PersistentData.dsmrPhase];
+            PhaseData& monitoredPhaseData = electricity[PersistentData.dsmrPhase - 1];
             Html.writeParagraph(
                 F("Phase '%s' current: %0.1f A"),
                 monitoredPhaseData.Name.c_str(),
@@ -1324,14 +1427,7 @@ void handleHttpConfigFormRequest()
     Html.writeHeader(F("Settings"), Nav);
 
     Html.writeFormStart(F("/config"), F("grid"));
-    Html.writeTextBox(CFG_WIFI_SSID, F("WiFi SSID"), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID) - 1);
-    Html.writeTextBox(CFG_WIFI_KEY, F("WiFi Key"), PersistentData.wifiKey, sizeof(PersistentData.wifiKey) - 1, F("password"));
-    Html.writeTextBox(CFG_HOST_NAME, F("Host name"), PersistentData.hostName, sizeof(PersistentData.hostName) - 1);
-    Html.writeTextBox(CFG_NTP_SERVER, F("NTP server"), PersistentData.ntpServer, sizeof(PersistentData.ntpServer) - 1);
-    Html.writeTextBox(CFG_DSMR_MONITOR, F("DSMR monitor"), PersistentData.dsmrMonitor, sizeof(PersistentData.dsmrMonitor) - 1);
-    Html.writeNumberBox(CFG_DSMR_PHASE, F("DSMR phase"), PersistentData.dsmrPhase + 1, 1, 3);
-    Html.writeNumberBox(CFG_CURRENT_LIMIT, F("Current limit (A)"), PersistentData.currentLimit, 6, 35);
-    Html.writeNumberBox(CFG_AUTH_TIMEOUT, F("Authorize timeout (s)"), PersistentData.authorizeTimeout, 0, 65535);
+    PersistentData.writeHtmlForm(Html);
     Html.writeSubmitButton(F("Save"));
     Html.writeFormEnd();
 
@@ -1346,27 +1442,11 @@ void handleHttpConfigFormRequest()
 }
 
 
-void copyString(const String& input, char* buffer, size_t bufferSize)
-{
-    strncpy(buffer, input.c_str(), bufferSize);
-    buffer[bufferSize - 1] = 0;
-}
-
-
 void handleHttpConfigFormPost()
 {
     Tracer tracer(F(__func__));
 
-    copyString(WebServer.arg(CFG_WIFI_SSID), PersistentData.wifiSSID, sizeof(PersistentData.wifiSSID)); 
-    copyString(WebServer.arg(CFG_WIFI_KEY), PersistentData.wifiKey, sizeof(PersistentData.wifiKey)); 
-    copyString(WebServer.arg(CFG_HOST_NAME), PersistentData.hostName, sizeof(PersistentData.hostName)); 
-    copyString(WebServer.arg(CFG_NTP_SERVER), PersistentData.ntpServer, sizeof(PersistentData.ntpServer));
-    copyString(WebServer.arg(CFG_DSMR_MONITOR), PersistentData.dsmrMonitor, sizeof(PersistentData.dsmrMonitor)); 
-
-    PersistentData.dsmrPhase = WebServer.arg(CFG_DSMR_PHASE).toInt() - 1;
-    PersistentData.currentLimit = WebServer.arg(CFG_CURRENT_LIMIT).toInt();
-    PersistentData.authorizeTimeout = WebServer.arg(CFG_AUTH_TIMEOUT).toInt();
-
+    PersistentData.parseHtmlFormData([](const String& id) -> String { return WebServer.arg(id); });
     PersistentData.validate();
     PersistentData.writeToEEPROM();
 

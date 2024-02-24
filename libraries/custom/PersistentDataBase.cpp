@@ -194,7 +194,7 @@ void PersistentDataBase::writeHtmlForm(HtmlWriter& html)
     }
 }
 
-void PersistentDataBase::parseHtmlFormData(std::function<const String&(const String&)> formDataById)
+void PersistentDataBase::parseHtmlFormData(std::function<String(const String&)> formDataById)
 {
     Tracer tracer(F("PersistentDataBase::parseHtmlFormData"));
 
@@ -204,7 +204,7 @@ void PersistentDataBase::parseHtmlFormData(std::function<const String&(const Str
         String fieldLabel = FPSTR(fieldPtr->label);
         String fieldId = "f";
         fieldId += i++;
-        const String& fieldValue = formDataById(fieldId);
+        String fieldValue = formDataById(fieldId);
         TRACE(F("'%s' = '%s'\n"), fieldLabel.c_str(), fieldValue.c_str());
         fieldPtr->parse(fieldValue);
     }
