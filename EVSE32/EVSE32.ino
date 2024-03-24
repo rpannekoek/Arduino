@@ -26,11 +26,14 @@
 #include "DsmrMonitorClient.h"
 #include "DayStatistics.h"
 #include "ChargeLogEntry.h"
+#include "ChargeStatsEntry.h"
 
 constexpr int FTP_RETRY_INTERVAL = 15 * SECONDS_PER_MINUTE;
 constexpr int HTTP_POLL_INTERVAL = 60;
 constexpr int TEMP_POLL_INTERVAL = 10;
 constexpr int CHARGE_CONTROL_INTERVAL = 10;
+constexpr int CHARGE_LOG_AGGREGATIONS = 6;
+constexpr int CHARGE_STATS_SIZE = 5;
 constexpr int CHARGE_LOG_SIZE = 200;
 constexpr int CHARGE_LOG_PAGE_SIZE = 50;
 constexpr int EVENT_LOG_LENGTH = 50;
@@ -111,30 +114,32 @@ StatusLED RGBLED(RGB_LED_PIN);
 OneWire OneWireBus(TEMP_SENSOR_PIN);
 DallasTemperature TempSensors(&OneWireBus);
 StaticLog<ChargeLogEntry> ChargeLog(CHARGE_LOG_SIZE);
+StaticLog<ChargeStatsEntry> ChargeStats(CHARGE_STATS_SIZE);
 DayStatistics DayStats;
 Navigation Nav;
 
 EVSEState state = EVSEState::Booting;
 float temperature = 0;
-float energyCharged = 0;
 float outputCurrent = 0;
 float currentLimit = 0;
+int aggregations = 0;
 bool isRelayActivated = false;
 bool isWebAuthorized = false;
 bool isMeasuringTemp = false;
+bool ftpSyncChargeStats = false;
 
 time_t currentTime = 0;
 time_t stateChangeTime = 0;
 time_t tempPollTime = 0;
 time_t chargeControlTime = 0;
-time_t chargingStartedTime = 0;
-time_t chargingFinishedTime = 0;
 time_t ftpSyncTime = 0;
 time_t lastFTPSyncTime = 0;
 
 int logEntriesToSync = 0;
 ChargeLogEntry newChargeLogEntry;
 ChargeLogEntry* lastChargeLogEntryPtr = nullptr;
+
+ChargeStatsEntry* lastChargeStatsPtr = nullptr;
 
 // Boot code
 void setup()
@@ -286,8 +291,6 @@ void setFailure(const String& reason)
             setRelay(false);
         } 
     }
-    if (state == EVSEState::Charging)
-        chargingFinishedTime = currentTime;
     setState(EVSEState::Failure);
 }
 
@@ -431,10 +434,6 @@ void runEVSEStateMachine()
             {
                 if (setRelay(true))
                 {
-                    chargingStartedTime = 0;
-                    chargingFinishedTime = 0;
-                    energyCharged = 0;
-                    ChargeLog.clear();
                     currentLimit = ControlPilot.setCurrentLimit(determineCurrentLimit());
                     setState(EVSEState::AwaitCharging);
                 }
@@ -448,7 +447,12 @@ void runEVSEStateMachine()
         case EVSEState::AwaitCharging: // Authorized; Wait till vehicle starts charging
             if (cpStatus == ControlPilotStatus::Charging || cpStatus == ControlPilotStatus::ChargingVentilated)
             {
-                chargingStartedTime = currentTime;
+                ChargeStatsEntry newChargeStats;
+                newChargeStats.init(currentTime);
+                lastChargeStatsPtr = ChargeStats.add(&newChargeStats);
+                newChargeLogEntry.reset(currentTime);
+                ChargeLog.clear();
+                aggregations = 0;
                 chargeControlTime = currentTime + CHARGE_CONTROL_INTERVAL;
                 setState(EVSEState::Charging);
             }
@@ -529,8 +533,6 @@ bool stopCharging(const char* cause)
 
     WiFiSM.logEvent(F("Charging stopped by %s."), cause);
 
-    chargingFinishedTime = currentTime;
-
     ControlPilot.setOff();
     ControlPilot.awaitStatus(ControlPilotStatus::NoPower);
 
@@ -564,8 +566,12 @@ bool stopCharging(const char* cause)
             setState(EVSEState::StopCharging);
     }
 
-    if (PersistentData.isFTPEnabled() && (logEntriesToSync > 0))
+    lastChargeStatsPtr->update(currentTime, outputCurrent * CHARGE_VOLTAGE, temperature);
+    if (PersistentData.isFTPEnabled())
+    {
         ftpSyncTime = currentTime;
+        ftpSyncChargeStats = true;
+    }
 
     return true;
 }
@@ -633,19 +639,22 @@ void chargeControl()
     else
         WiFiSM.logEvent(F("Insufficient current samples: %d"), OutputCurrentSensor.getSampleCount());
 
-    energyCharged += outputCurrent * CHARGE_VOLTAGE * CHARGE_CONTROL_INTERVAL; // Ws (J)
+    lastChargeStatsPtr->update(currentTime, outputCurrent * CHARGE_VOLTAGE, temperature);
 
-    newChargeLogEntry.currentLimit = currentLimit;
-    newChargeLogEntry.outputCurrent = outputCurrent;
-    newChargeLogEntry.temperature = temperature;
-    if (lastChargeLogEntryPtr == nullptr || !newChargeLogEntry.equals(lastChargeLogEntryPtr))
+    newChargeLogEntry.update(currentLimit, outputCurrent, temperature);
+    if (++aggregations == CHARGE_LOG_AGGREGATIONS)
     {
-        newChargeLogEntry.time = currentTime;
-        lastChargeLogEntryPtr = ChargeLog.add(&newChargeLogEntry);
+        newChargeLogEntry.average(aggregations);
+        if (lastChargeLogEntryPtr == nullptr || !newChargeLogEntry.equals(lastChargeLogEntryPtr))
+        {
+            lastChargeLogEntryPtr = ChargeLog.add(&newChargeLogEntry);
 
-        logEntriesToSync = std::min(logEntriesToSync + 1, CHARGE_LOG_SIZE);
-        if (PersistentData.isFTPEnabled() && (logEntriesToSync == PersistentData.ftpSyncEntries))
-            ftpSyncTime = currentTime;
+            logEntriesToSync = std::min(logEntriesToSync + 1, CHARGE_LOG_SIZE);
+            if (PersistentData.isFTPEnabled() && (logEntriesToSync == PersistentData.ftpSyncEntries))
+                ftpSyncTime = currentTime;
+        }
+        newChargeLogEntry.reset(currentTime);
+        aggregations = 0;
     }
 }
 
@@ -813,9 +822,45 @@ bool trySyncFTP(Print* printTo)
             FTPClient.setUnexpectedResponse();
     }
 
+    if (ftpSyncChargeStats)
+    {
+        snprintf(filename, sizeof(filename), "%s_stats.csv", PersistentData.hostName);
+        if (FTPClient.passive())
+        {
+            WiFiClient& dataClient = FTPClient.append(filename);
+            if (dataClient.connected())
+            {
+                writeCsvChargeStatsEntry(lastChargeStatsPtr, dataClient);
+                dataClient.stop();
+            }
+
+            if (FTPClient.readServerResponse() == 226)
+                ftpSyncChargeStats = false;
+            else
+            {
+                success = false;
+                FTPClient.setUnexpectedResponse();
+            }
+        }
+        else
+            success = false;
+    }
+
     FTPClient.end();
 
     return success;
+}
+
+
+void writeCsvChargeStatsEntry(ChargeStatsEntry* chargeStatsPtr, Print& destination)
+{
+    destination.printf(
+        "%s;%0.1f;%0.1f;%0.1f;%0.1f\r\n",
+        formatTime("%F %H:%M", chargeStatsPtr->startTime),
+        chargeStatsPtr->getAvgTemperature(),
+        chargeStatsPtr->getDurationHours(),
+        chargeStatsPtr->getAvgPower() / 1000,
+        chargeStatsPtr->energy / 1000);
 }
 
 
@@ -853,6 +898,16 @@ void test(String message)
             lastChargeLogEntryPtr = ChargeLog.add(&newChargeLogEntry);
         }
         logEntriesToSync = 3;
+
+        for (int i = 0; i < CHARGE_STATS_SIZE; i++)
+        {
+            time_t startTime = currentTime + i * SECONDS_PER_DAY;
+            ChargeStatsEntry newChargeStats;
+            newChargeStats.init(startTime);
+            newChargeStats.update(startTime + (i * SECONDS_PER_HOUR), i * 100, i + 40);
+            lastChargeStatsPtr = ChargeStats.add(&newChargeStats);
+        }
+        ftpSyncChargeStats = true;
     }
     else if (message.startsWith("testB"))
     {
@@ -939,19 +994,6 @@ void handleHttpRootRequest()
         Html.writeRow(F("Output current"), F("%0.1f A"), outputCurrent);
     }
 
-    Html.writeRow(F("Energy charged"), F("%0.1f kWh"), energyCharged / 3600000);
-
-    if (chargingStartedTime != 0)
-    {
-        time_t endTime = (chargingFinishedTime == 0) ? currentTime : chargingFinishedTime;
-
-        Html.writeRow(F("Charge duration"), F("%s"), formatTimeSpan(endTime - chargingStartedTime));
-        Html.writeRow(F("Charging started"), F("%s"), formatTime("%a %H:%M", chargingStartedTime));
-    }
-
-    if (chargingFinishedTime != 0)
-        Html.writeRow(F("Charging stopped"), F("%s"), formatTime("%a %H:%M", chargingFinishedTime));
-
     Html.writeRow(F("Temperature"), F("%0.1f °C"), temperature);
     Html.writeRow(F("T<sub>max</sub>"), F("%0.1f °C @ %s"), DayStats.tMax, formatTime("%H:%M", DayStats.tMaxTime));
     Html.writeRow(F("T<sub>min</sub>"), F("%0.1f °C @ %s"), DayStats.tMin, formatTime("%H:%M", DayStats.tMinTime));
@@ -1012,11 +1054,42 @@ void handleHttpRootRequest()
             break;
     }
 
+    writeChargeStatistics();
+
     Html.writeFooter();
 
     WebServer.send(200, ContentTypeHtml, HttpResponse.c_str());
 }
 
+void writeChargeStatistics()
+{
+    Html.writeHeading("Charging sessions");
+
+    Html.writeTableStart();
+    Html.writeRowStart();
+    Html.writeHeaderCell("Start");
+    Html.writeHeaderCell("Hours");
+    Html.writeHeaderCell("T (°C)");
+    Html.writeHeaderCell("P (kW)");
+    Html.writeHeaderCell("E (kWh)");
+    Html.writeRowEnd();
+
+    ChargeStatsEntry* chargeStatsPtr = ChargeStats.getFirstEntry();
+    while (chargeStatsPtr != nullptr)
+    {
+        Html.writeRowStart();
+        Html.writeCell(formatTime("%d %b %H:%M", chargeStatsPtr->startTime));
+        Html.writeCell(chargeStatsPtr->getDurationHours(), F("%0.1f"));
+        Html.writeCell(chargeStatsPtr->getAvgTemperature(), F("%0.1f"));
+        Html.writeCell(chargeStatsPtr->getAvgPower() / 1000, F("%0.1f"));
+        Html.writeCell(chargeStatsPtr->energy / 1000, F("%0.1f"));
+        Html.writeRowEnd();
+
+        chargeStatsPtr = ChargeStats.getNextEntry();
+    }
+
+    Html.writeTableEnd();
+}
 
 void handleHttpBluetoothRequest()
 {
@@ -1187,7 +1260,7 @@ void handleHttpChargeLogRequest()
     for (int i = 0; i < CHARGE_LOG_PAGE_SIZE && logEntryPtr != nullptr; i++)
     {
         Html.writeRowStart();
-        Html.writeCell(formatTime("%H:%M:%S", logEntryPtr->time));
+        Html.writeCell(formatTime("%d %b %H:%M", logEntryPtr->time));
         Html.writeCell(logEntryPtr->currentLimit);
         Html.writeCell(logEntryPtr->outputCurrent);
         Html.writeCell(logEntryPtr->temperature);
@@ -1251,6 +1324,7 @@ void handleHttpSyncFTPRequest()
     Html.writeHeading(F("CSV header"), 2);
     HttpResponse.print(F("<pre>"));
     HttpResponse.println(F("Time;Current Limit;Output Current;Temperature"));
+    HttpResponse.println(F("Start;Hours;Temperature;P (kW);E (kWh)"));
     HttpResponse.println(F("</pre>"));
 
     Html.writeFooter();

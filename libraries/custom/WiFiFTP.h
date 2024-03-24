@@ -19,6 +19,7 @@ class WiFiFTPClient
         bool begin(const char* host, const char* userName, const char* password, uint16_t port = FTP_DEFAULT_CONTROL_PORT, Print* printTo = nullptr);
         void end();
 
+        bool passive();
         int sendCommand(String cmd, const char* arg = nullptr, bool awaitResponse = true);
         int readServerResponse(char* responseBuffer = nullptr, size_t responseBufferSize = 0);
         WiFiClient& getDataClient();

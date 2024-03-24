@@ -108,7 +108,15 @@ bool WiFiFTPClient::initialize(const char* userName, const char* password)
         return false;
     }
 
-    responseCode = sendCommand(F("PASV"));
+    return passive();
+}
+
+
+bool WiFiFTPClient::passive()
+{
+    Tracer tracer(F("WiFiFTPClient::passive"));
+
+    int responseCode = sendCommand(F("PASV"));
     if (responseCode != 227)
     {
         setUnexpectedResponse();
@@ -130,7 +138,6 @@ bool WiFiFTPClient::initialize(const char* userName, const char* password)
     }   
     _serverDataPort = (params[4] << 8) + params[5];
     TRACE(F("Server data port: %d\n"), _serverDataPort);
-
     return true;
 }
 
