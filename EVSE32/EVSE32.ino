@@ -857,8 +857,8 @@ void writeCsvChargeStatsEntry(ChargeStatsEntry* chargeStatsPtr, Print& destinati
     destination.printf(
         "%s;%0.1f;%0.1f;%0.1f;%0.1f\r\n",
         formatTime("%F %H:%M", chargeStatsPtr->startTime),
-        chargeStatsPtr->getAvgTemperature(),
         chargeStatsPtr->getDurationHours(),
+        chargeStatsPtr->getAvgTemperature(),
         chargeStatsPtr->getAvgPower() / 1000,
         chargeStatsPtr->energy / 1000);
 }
