@@ -213,19 +213,6 @@ void WiFiStateMachine::initializeSTA()
         TRACE(F("WiFi disconnect failed\n"));
     if (!WiFi.hostname(_hostName))
         TRACE(F("Unable to set host name\n"));
-#elif defined(ESP32V1)
-    if (!WiFi.mode(WIFI_STA))
-        TRACE(F("Unable to set WiFi mode\n"));
-    if (!WiFi.disconnect())
-        TRACE(F("WiFi disconnect failed\n"));
-    // ESP32 doesn't reliably set the status to WL_DISCONNECTED despite disconnect() call.
-    WiFiSTAClass::_setStatus(WL_DISCONNECTED);
-    // See https://github.com/espressif/arduino-esp32/issues/2537
-    IPAddress none = IPAddress(0,0,0,0);
-    if (!WiFi.config(none, none, none))
-        TRACE(F("WiFi.config failed\n"));
-    if (!WiFi.setHostname(_hostName.c_str()))
-        TRACE(F("Unable to set host name ('%s')\n"), _hostName.c_str());
 #else
     if (!WiFi.mode(WIFI_MODE_NULL))
         TRACE(F("Unable to set WiFi mode\n"));
@@ -235,6 +222,8 @@ void WiFiStateMachine::initializeSTA()
         TRACE(F("Unable to set WiFi mode\n"));
     if (!WiFi.disconnect())
         TRACE(F("WiFi disconnect failed\n"));
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
     // ESP32 doesn't reliably set the status to WL_DISCONNECTED despite disconnect() call.
     WiFiSTAClass::_setStatus(WL_DISCONNECTED);
 #endif
