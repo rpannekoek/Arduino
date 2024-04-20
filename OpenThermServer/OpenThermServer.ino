@@ -1,3 +1,5 @@
+//#define DEBUG_ESP_PORT Serial
+
 #include <math.h>
 #include <ESPWiFi.h>
 #include <ESPWebServer.h>
@@ -46,8 +48,24 @@ constexpr float MAX_FLOW_RATE = 12.0; // l/min
     constexpr int OTGW_RESPONSE_TIMEOUT_MS = 2000;
 #endif
 
-constexpr uint8_t LED_ON = 0;
-constexpr uint8_t LED_OFF = 1;
+#ifdef ESP8266
+    constexpr uint8_t LED_ON = 0;
+    constexpr uint8_t LED_OFF = 1;
+    constexpr uint8_t OTGW_RESET_PIN = 14;
+#else
+    constexpr uint8_t LED_ON = 1;
+    constexpr uint8_t LED_OFF = 0;
+    constexpr uint8_t OTGW_RESET_PIN = 7;
+#endif
+
+#if defined(ESP8266) || defined(DEBUG_ESP_PORT)
+    #define OTGW_SERIAL Serial
+    #define OTGW_SERIAL_INIT Serial.begin(9600);
+#else
+    #define OTGW_SERIAL Serial0
+    #define OTGW_SERIAL_INIT Serial0.begin(9600, SERIAL_8N1, RX, TX)
+#endif
+
 
 enum FileId
 {
@@ -111,7 +129,7 @@ const char* LogHeaders[] PROGMEM =
     "Flow"
 };
 
-OpenThermGateway OTGW(Serial, 14, OTGW_RESPONSE_TIMEOUT_MS);
+OpenThermGateway OTGW(OTGW_SERIAL, OTGW_RESET_PIN, OTGW_RESPONSE_TIMEOUT_MS);
 ESPWebServer WebServer(80); // Default HTTP port
 WiFiNTP TimeServer;
 WiFiFTPClient FTPClient(2000); // 2s timeout
@@ -188,7 +206,7 @@ void setup()
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, LED_ON);
 
-    Serial.begin(9600);
+    OTGW_SERIAL_INIT;
     Serial.println("Boot"); // Flush garbage caused by ESP boot output.
 
     #ifdef DEBUG_ESP_PORT
@@ -1654,7 +1672,7 @@ void handleHttpConfigFormPost()
 {
     Tracer tracer(F("handleHttpConfigFormPost"));
 
-    PersistentData.parseHtmlFormData([](const String& id) -> const String& { return WebServer.arg(id); });
+    PersistentData.parseHtmlFormData([](const String& id) -> const String { return WebServer.arg(id); });
     PersistentData.validate();
     PersistentData.writeToEEPROM();
 
