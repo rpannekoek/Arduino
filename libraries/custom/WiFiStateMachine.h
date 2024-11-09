@@ -42,7 +42,9 @@ class WiFiStateMachine
         void begin(String ssid, String password, String hostName, uint32_t reconnectInterval = 60);
         void run();
         void reset();
+        void forceReconnect();
 
+        void traceDiag();
         void logEvent(String format, ...);
         void logEvent(const char* msg);
         time_t getCurrentTime();
@@ -78,7 +80,7 @@ class WiFiStateMachine
             return _state >= WiFiInitState::Connected;
         }
 
-        void scanAccessPoints(uint32_t intervalSeconds = 1800, uint32_t switchDelaySeconds = 1800, int8_t rssiThreshold = 6)
+        void scanAccessPoints(uint32_t intervalSeconds = 1800, uint32_t switchDelaySeconds = 0, int8_t rssiThreshold = 6)
         {
             _scanAccessPointsInterval = intervalSeconds;
             _switchAccessPointDelay = switchDelaySeconds;
@@ -117,13 +119,12 @@ class WiFiStateMachine
         void blinkLED(int tOn, int tOff);
         String getResetReason();
         void scanForBetterAccessPoint();
+        void handleHttpCoreDump();
+        void handleHttpNotFound();
         
 #ifdef ESP8266
         WiFiEventHandler _staDisconnectedEvent; 
         static void onStationDisconnected(const WiFiEventStationModeDisconnected& evt);
-#elif defined(ESP32V1)
-        wifi_event_id_t _staDisconnectedEvent;
-        static void onStationDisconnected(system_event_id_t event, system_event_info_t info);
 #else
         wifi_event_id_t _staDisconnectedEvent;
         static void onStationDisconnected(arduino_event_id_t event, arduino_event_info_t info);

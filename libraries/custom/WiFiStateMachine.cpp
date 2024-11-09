@@ -3,10 +3,15 @@
 #include <ArduinoOTA.h>
 #include <ESPWiFi.h>
 #include <ESPFileSystem.h>
+#include <ESPCoreDump.h>
 #include <Tracer.h>
+#include <StringBuilder.h>
 
 #ifdef ESP32
     #include <rom/rtc.h>
+    #include <esp_wifi.h>
+    #include <esp_task_wdt.h>
+    constexpr int TASK_WDT_TIMEOUT = 30;
 #else
     #define U_SPIFFS U_FS
 #endif
@@ -17,7 +22,7 @@
 #define MAX_RETRY_INTERVAL_MS 300000U
 
 bool WiFiStateMachine::_staDisconnected = false;
-
+StringBuilder _coreDumpBuilder(256);
 
 // Constructor
 WiFiStateMachine::WiFiStateMachine(WiFiNTP& timeServer, ESPWebServer& webServer, Log<const char>& eventLog)
@@ -74,6 +79,13 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName, uint
     _resetTime = 0;
 
     logEvent(F("Booted from %s"), getResetReason().c_str());
+    logEvent(F("CPU @ %d MHz"), ESP.getCpuFreqMHz());
+
+#ifdef ESP32
+    esp_core_dump_init();
+    esp_task_wdt_init(TASK_WDT_TIMEOUT, true);
+    enableLoopWDT();
+#endif
 
     ArduinoOTA.onStart(
         [this]() 
@@ -81,6 +93,9 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName, uint
             TRACE(F("OTA start %d\n"), ArduinoOTA.getCommand());
             if (ArduinoOTA.getCommand() == U_SPIFFS)
                 SPIFFS.end();
+#ifdef ESP32
+            disableLoopWDT();
+#endif                
             setState(WiFiInitState::Updating, true);
         });
 
@@ -100,13 +115,30 @@ void WiFiStateMachine::begin(String ssid, String password, String hostName, uint
 
 #ifdef ESP8266
     _staDisconnectedEvent = WiFi.onStationModeDisconnected(&WiFiStateMachine::onStationDisconnected);
-#elif defined(ESP32V1)
-    _staDisconnectedEvent = WiFi.onEvent(WiFiStateMachine::onStationDisconnected, SYSTEM_EVENT_STA_DISCONNECTED);
 #else
     _staDisconnectedEvent = WiFi.onEvent(WiFiStateMachine::onStationDisconnected, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
 #endif
 
+    _webServer.on("/coredump", std::bind(&WiFiStateMachine::handleHttpCoreDump, this));
+    _webServer.onNotFound(std::bind(&WiFiStateMachine::handleHttpNotFound, this));
+
     setState(WiFiInitState::Initializing);
+}
+
+
+void WiFiStateMachine::forceReconnect()
+{
+    Tracer tracer(F("WiFiStateMachine::forceReconnect"));
+
+#ifdef ESP8266
+    if (!WiFi.reconnect())
+        TRACE(F("WiFi.reconnect() failed.\n"));
+#else
+    // It seems ESP32 needs more force to make it forget the earlier AP
+    if (!WiFi.eraseAP())
+        TRACE("WiFi.eraseAP failed\n");
+    initializeSTA();
+#endif
 }
 
 
@@ -116,6 +148,33 @@ time_t WiFiStateMachine::getCurrentTime()
         return _timeServer.getCurrentTime();
     else
         return millis() / 1000;
+}
+
+
+void WiFiStateMachine::traceDiag()
+{
+#ifdef DEBUG_ESP_PORT
+    WiFi.printDiag(DEBUG_ESP_PORT);
+
+#ifdef ESP32
+    wifi_config_t wifiConfig;
+    esp_err_t err = esp_wifi_get_config((wifi_interface_t)ESP_IF_WIFI_STA, &wifiConfig);
+    if (err != ESP_OK)
+    {
+        TRACE("esp_wifi_get_config() returned %d\n", err);
+        return;
+    }
+
+    uint8_t* bssid = wifiConfig.sta.bssid;
+    TRACE(
+        "bssid: %02X:%02X:%02X:%02X:%02X:%02X\n",
+        bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+    TRACE("scan_method: %d\n", wifiConfig.sta.scan_method);
+    TRACE("sort_method: %d\n", wifiConfig.sta.sort_method);
+    TRACE("threshold.rssi: %d\n", wifiConfig.sta.threshold.rssi);
+    TRACE("failure_retry_cnt: %d\n", wifiConfig.sta.failure_retry_cnt);
+#endif
+#endif
 }
 
 
@@ -214,12 +273,12 @@ void WiFiStateMachine::initializeSTA()
     if (!WiFi.hostname(_hostName))
         TRACE(F("Unable to set host name\n"));
 #else
-    if (!WiFi.mode(WIFI_MODE_NULL))
-        TRACE(F("Unable to set WiFi mode\n"));
+    if (!WiFi.mode(WIFI_OFF))
+        TRACE(F("Unable to set WiFi mode (OFF)\n"));
     if (!WiFi.setHostname(_hostName.c_str()))
         TRACE(F("Unable to set host name ('%s')\n"), _hostName.c_str());
     if (!WiFi.mode(WIFI_STA))
-        TRACE(F("Unable to set WiFi mode\n"));
+        TRACE(F("Unable to set WiFi mode (STA)\n"));
     if (!WiFi.disconnect())
         TRACE(F("WiFi disconnect failed\n"));
     WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
@@ -228,7 +287,6 @@ void WiFiStateMachine::initializeSTA()
     WiFiSTAClass::_setStatus(WL_DISCONNECTED);
 #endif
     ArduinoOTA.setHostname(_hostName.c_str());
-    _staDisconnected = false;
     WiFi.begin(_ssid.c_str(), _password.c_str());
 }
 
@@ -256,6 +314,7 @@ void WiFiStateMachine::run()
             else
             {
                 initializeSTA();
+                _staDisconnected = false;
                 _isInAccessPointMode = false;
                 setState(WiFiInitState::Connecting);
             }
@@ -265,6 +324,7 @@ void WiFiStateMachine::run()
         case WiFiInitState::AwaitingConnection:
             if (WiFi.softAPgetStationNum() > 0)
             {
+                traceDiag();
                 _webServer.begin();
                 // Skip actual time server sync (no internet access), but still trigger TimeServerSynced event.
                 setState(WiFiInitState::TimeServerSynced);
@@ -288,6 +348,7 @@ void WiFiStateMachine::run()
         case WiFiInitState::Reconnecting:
             if (wifiStatus == WL_CONNECTED)
             {
+                traceDiag();
                 logEvent(F("WiFi reconnected. Access Point %s\n"), WiFi.BSSIDstr().c_str());
                 if (_scanAccessPointsTime > 0)
                     _scanAccessPointsTime = std::max(_scanAccessPointsTime, (time_t)(getCurrentTime() + _scanAccessPointsInterval));
@@ -313,6 +374,7 @@ void WiFiStateMachine::run()
         case WiFiInitState::ConnectionLost:
             if (wifiStatus == WL_CONNECTED)
             {
+                traceDiag();
                 logEvent(F("WiFi reconnected. Access Point %s"), WiFi.BSSIDstr().c_str());
                 _staDisconnected = false;
                 setState(WiFiInitState::Initialized);
@@ -361,9 +423,7 @@ void WiFiStateMachine::run()
             break;
 
         case WiFiInitState::Connected:
-#ifdef DEBUG_ESP_PORT
-            WiFi.printDiag(DEBUG_ESP_PORT);
-#endif
+            traceDiag();
             _staDisconnected = false;
             _ipAddress = WiFi.localIP();
             logEvent(F("WiFi connected. Access Point %s"), WiFi.BSSIDstr().c_str());
@@ -460,6 +520,7 @@ void WiFiStateMachine::run()
 
 void WiFiStateMachine::scanForBetterAccessPoint()
 {
+
     time_t currentTime = getCurrentTime();
     if (currentTime >= _scanAccessPointsTime)
     {
@@ -496,7 +557,7 @@ void WiFiStateMachine::scanForBetterAccessPoint()
         TRACE(F("Found %d Access Points:\n"), scannedAPs);
 
         int8_t bestRSSI = -100;
-        int8_t currentRSSI;
+        int8_t currentRSSI = 0;
         String bestBSSID;
         String currentBSSID = WiFi.BSSIDstr();
 
@@ -517,15 +578,9 @@ void WiFiStateMachine::scanForBetterAccessPoint()
         {
             logEvent(F("Found better Access Point: %s (%d vs %d dBm)"), bestBSSID.c_str(), bestRSSI, currentRSSI);
             _staDisconnected = false;
-            if (WiFi.reconnect())
-            {
-                // To prevent frequent switching between equivalent Access Points
-                // we delay the next scan after switching.
-                _scanAccessPointsTime = getCurrentTime() + _scanAccessPointsInterval + _switchAccessPointDelay;
-                setState(WiFiInitState::SwitchingAP);
-            }
-            else
-                TRACE(F("WiFi.reconnect() failed.\n"));
+            forceReconnect();
+            _scanAccessPointsTime = getCurrentTime() + _scanAccessPointsInterval + _switchAccessPointDelay;
+            setState(WiFiInitState::SwitchingAP);
         }
         else
             TRACE(F("Sticking with current AP: %s\n"), currentBSSID.c_str());
@@ -602,12 +657,6 @@ void WiFiStateMachine::onStationDisconnected(const WiFiEventStationModeDisconnec
     TRACE(F("STA disconnected. Reason: %d\n"), evt.reason);
     _staDisconnected = true;
 }
-#elif defined(ESP32V1)
-void WiFiStateMachine::onStationDisconnected(system_event_id_t event, system_event_info_t info)
-{
-    TRACE(F("STA disconnected. Reason: %d\n"), info.disconnected.reason);
-    _staDisconnected = true;
-}
 #else
 void WiFiStateMachine::onStationDisconnected(arduino_event_id_t event, arduino_event_info_t info)
 {
@@ -615,3 +664,19 @@ void WiFiStateMachine::onStationDisconnected(arduino_event_id_t event, arduino_e
     _staDisconnected = true;
 }
 #endif
+
+
+void WiFiStateMachine::handleHttpCoreDump()
+{
+    Tracer tracer("WiFiStateMachine::handleHttpCoreDump");
+
+    _coreDumpBuilder.clear();
+    writeCoreDump(_coreDumpBuilder);
+    _webServer.send(200, "text/plain", _coreDumpBuilder.c_str());
+}
+
+void WiFiStateMachine::handleHttpNotFound()
+{
+    logEvent("Unexpected HTTP request: %s", _webServer.uri().c_str());
+    _webServer.send(404, "text/plain", "Unexpected request.");
+}
